@@ -53,6 +53,15 @@ struct Ssd1677Config {
   // collapsing toward B/W). The X4 keeps the panel powered between fast
   // refreshes, so it never needs this and keeps stock behavior.
   bool grayPowerUpFirst = false;
+  // Run HALF refreshes on the FULL waveform (0x34) instead of the temperature-
+  // spoofed 0xD4 path, in the incremental (no-seqOverride) branch. The 0xD4 trick
+  // writes a high fake temperature to pick a shorter waveform; on panels whose
+  // wrapper carries its own OTP waveform that lookup lands somewhere weak and the
+  // refresh under-drives — grey/stuck pixels and heavy flicker rather than a
+  // clean clear. Such a board pays the full waveform's extra time for a refresh
+  // that actually completes. (de-link's own SDK reached the same conclusion
+  // independently and hard-coded 0x34 for HALF.)
+  bool halfUsesFullWaveform = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT

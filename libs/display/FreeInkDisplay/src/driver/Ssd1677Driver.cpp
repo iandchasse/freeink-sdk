@@ -95,6 +95,50 @@ static const Ssd1677Config& ssd1677StickyConfig() {
   return cfg;
 }
 
+// de-link. Same GDEQ0426T82 panel as the X4, but behind a different flex wrapper,
+// and that wrapper does not tolerate the X4's absolute FULL/HALF sequences. Values
+// carried over from the board's own SDK fork (iandchasse/community-sdk-de-link),
+// where each was arrived at against the hardware:
+//
+//   * Booster 5th byte 0xC0, not the X4's 0x80. Its author walked 0x40 -> 0x80 ->
+//     0xC0, recording "shorter on-time led to weak refreshes on my hardware" and
+//     "boost it up, better quality images". An under-driven charge pump shows up
+//     exactly where demand is highest: FULL/HALF drive every pixel through a full
+//     swing, so they smear and flicker while the short FAST/DU and gray-LUT
+//     phases still look clean.
+//
+//   * FULL and HALF both on the incremental 0x34 path (overrides cleared), which
+//     keeps the rails powered between updates instead of self-cycling them per
+//     refresh like the X4's 0xF7/0xD7 sequences do. Re-ramping the booster on
+//     every full-page refresh is visible flicker on this wrapper.
+//
+//   * HALF on the full waveform rather than the 0xD4 temperature spoof — the
+//     fork's comment: "The FL wrapper's OTP waveform doesn't work well with the
+//     temp trick."
+//
+// FAST keeps the X4's absolute 0xFC sequence: validated good on this board, and
+// the incremental 0x1C path is exactly the one freeink warns can silently promote
+// a DU refresh to a full waveform.
+static const Ssd1677Config& ssd1677DeLinkConfig() {
+  static const Ssd1677Config cfg = {
+      {0xAE, 0xC7, 0xC3, 0xC0, 0xC0},  // booster soft-start: 5th byte boosted (see above)
+      DRIVER_OUTPUT_SCAN,
+      0x80,  // borderWaveformInit
+      0x5A,  // halfRefreshTemp (unused: halfUsesFullWaveform skips the temp write)
+      lut_grayscale,
+      0x00,  // fullSeqOverride: 0 -> incremental 0x34, rails stay powered
+      0xFC,  // fastSeqOverride: stock X4 partial sequence (validated on this board)
+      0x00,  // halfSeqOverride: 0 -> incremental, and halfUsesFullWaveform picks 0x34
+      0x00,  // borderWaveformFull: unused on the incremental path
+      0xC0,  // borderWaveformFast: stock X4 border
+      0x00,  // borderWaveformHalf: unused on the incremental path
+      0x00,  // borderWaveformGray
+      false, // grayPowerUpFirst: rails stay up between refreshes here
+      true,  // halfUsesFullWaveform
+  };
+  return cfg;
+}
+
 // ── Reusable per-board waveform shortcuts ────────────────────────────────────
 // Opt-in optimizations a board can layer onto a base Ssd1677Config when its
 // specific panel is known to tolerate them. Each is a pure copy-and-tweak so a
@@ -382,9 +426,15 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   if (mode == RefreshMode::Full) {
     displayMode |= 0x34;
   } else if (mode == RefreshMode::Half) {
-    bus.cmd(CMD_WRITE_TEMP);
-    bus.data(_cfg.halfRefreshTemp);
-    displayMode |= 0xD4;
+    if (_cfg.halfUsesFullWaveform) {
+      // No temperature spoof: this panel's wrapper doesn't select a usable
+      // waveform from a faked temperature, so take the full one (see the field).
+      displayMode |= 0x34;
+    } else {
+      bus.cmd(CMD_WRITE_TEMP);
+      bus.data(_cfg.halfRefreshTemp);
+      displayMode |= 0xD4;
+    }
   } else {  // Fast
     displayMode |= _customLutActive ? 0x0C : 0x1C;
   }
@@ -703,6 +753,7 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
+    case BoardConfig::Board::DeLink: return ssd1677DeLinkConfig();
     // X4 layers the fast-DU shortcut on the default only when the build has
     // opted in (see ssd1677X4Config); stock 0xFC parity otherwise.
 #ifdef FREEINK_X4_FAST_DU_SHORTCUT
