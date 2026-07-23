@@ -28,7 +28,27 @@
 // pairs of averaged values above.
 const int InputManager::ADC_RANGES_1[] = {ADC_NO_BUTTON, 3100, 2090, 750, INT32_MIN};
 const int InputManager::ADC_RANGES_2[] = {ADC_NO_BUTTON, 1120, INT32_MIN};
-const char* InputManager::BUTTON_NAMES[] = {"Back", "Confirm", "Left", "Right", "Up", "Down", "Power"};
+
+// de-link carries a second pair of side buttons on the group-2 ladder, so its
+// GPIO2 divider has four bands instead of two. Measured windows on the board
+// (from the de-link SDK fork's ButtonMap): Up 0-500, Down 1900-2300,
+// Up2 2800-3200, Down2 3300-3700 — idle floats above 3800. Converted to this
+// file's midpoint-threshold form, highest band first:
+//   (3250, 3800] Down2 | (2550, 3250] Up2 | (1200, 2550] Down | <= 1200 Up
+// The top of the ladder is de-link's own no-button ceiling (3800, from its SDK
+// fork) rather than the shared ADC_NO_BUTTON of 3900. Down2 tops out at 3700 and
+// the rail floats near 4095, so 3800 sits in the dead zone between them; leaving
+// it at 3900 made an ADC sample of exactly 3900 read as a Down2 press.
+// Group 1 needs no de-link table: its measured windows (Back 3200-3600,
+// Confirm 2300-2700, Left 800-1500, Right 0-500) already fall inside the
+// shared ADC_RANGES_1 bands above.
+const int InputManager::ADC_RANGES_2_DUAL[] = {3800, 3250, 2550, 1200, INT32_MIN};
+// Band index -> BTN_* for the four-band ladder (the two-band ladder maps
+// index+BTN_UP directly, which no longer works once the order interleaves).
+const uint8_t InputManager::ADC_BUTTONS_2_DUAL[] = {BTN_DOWN_2, BTN_UP_2, BTN_DOWN, BTN_UP};
+
+const char* InputManager::BUTTON_NAMES[] = {"Back", "Confirm", "Left",  "Right", "Up",
+                                            "Down", "Power",   "Up(2)", "Down(2)"};
 
 namespace {
 int absInt(const int value) { return value < 0 ? -value : value; }
@@ -105,6 +125,18 @@ int InputManager::getButtonFromADC(const int adcValue, const int ranges[], const
   return -1;
 }
 
+int InputManager::decodeGroup2(const int adcValue) {
+  // Boards with the second side-button pair use a four-band ladder whose bands
+  // interleave the two pairs, so they need an explicit index->BTN_* table. The
+  // stock two-band ladder keeps its arithmetic mapping (local 0/1 -> UP/DOWN).
+  if (hasDualSideButtons()) {
+    const int band = getButtonFromADC(adcValue, ADC_RANGES_2_DUAL, NUM_BUTTONS_2_DUAL);
+    return band >= 0 ? static_cast<int>(ADC_BUTTONS_2_DUAL[band]) : -1;
+  }
+  const int band = getButtonFromADC(adcValue, ADC_RANGES_2, NUM_BUTTONS_2);
+  return band >= 0 ? band + BTN_UP : -1;
+}
+
 void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2) {
   group1 = {BUTTON_ADC_PIN_1, -1, -1};
   group2 = {BUTTON_ADC_PIN_2, -1, -1};
@@ -116,12 +148,11 @@ void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group
   group1.button = getButtonFromADC(group1.raw, ADC_RANGES_1, NUM_BUTTONS_1);
 
   group2.raw = analogRead(BUTTON_ADC_PIN_2);
-  const int b2 = getButtonFromADC(group2.raw, ADC_RANGES_2, NUM_BUTTONS_2);
-  group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
+  group2.button = decodeGroup2(group2.raw);
 }
 
-uint8_t InputManager::getState() {
-  uint8_t state = 0;
+InputManager::ButtonMask InputManager::getState() {
+  ButtonMask state = 0;
 
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     state = getDigitalState();
@@ -137,11 +168,11 @@ uint8_t InputManager::getState() {
     state |= (1 << button1);
   }
 
-  // Read GPIO2 buttons
+  // Read GPIO2 buttons (BTN_UP/BTN_DOWN, plus BTN_UP_2/BTN_DOWN_2 on de-link)
   const int adcValue2 = analogRead(BUTTON_ADC_PIN_2);
-  const int button2 = getButtonFromADC(adcValue2, ADC_RANGES_2, NUM_BUTTONS_2);
+  const int button2 = decodeGroup2(adcValue2);
   if (button2 >= 0) {
-    state |= (1 << (button2 + 4));
+    state |= static_cast<ButtonMask>(1u << button2);
   }
 
   // Read power button (polarity per board; X4 active-LOW, de-link active-HIGH)
@@ -217,8 +248,8 @@ bool InputManager::isDigitalPressed(const int8_t pin) const {
   return pin >= 0 && digitalRead(pin) == LOW;
 }
 
-uint8_t InputManager::getDigitalState() const {
-  uint8_t state = 0;
+InputManager::ButtonMask InputManager::getDigitalState() const {
+  ButtonMask state = 0;
 
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmBackHold &&
       BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold) {
@@ -239,7 +270,7 @@ uint8_t InputManager::getDigitalState() const {
   return state;
 }
 
-void InputManager::applyStateChange(const uint8_t state, const unsigned long currentTime) {
+void InputManager::applyStateChange(const ButtonMask state, const unsigned long currentTime) {
   pressedEvents = state & ~currentState;
   releasedEvents = currentState & ~state;
 
@@ -269,7 +300,7 @@ void InputManager::applyStateChange(const uint8_t state, const unsigned long cur
 
 void InputManager::updateConfirmBackHold(const unsigned long currentTime) {
   const bool pressed = isDigitalPressed(BoardConfig::ACTIVE.input.confirm);
-  const uint8_t nonSharedState = getDigitalState();
+  const ButtonMask nonSharedState = getDigitalState();
   bool emitConfirmClick = false;
 
   if (pressed && !confirmBackPhysicalPressed) {
@@ -278,7 +309,7 @@ void InputManager::updateConfirmBackHold(const unsigned long currentTime) {
     confirmBackPressStart = currentTime;
   }
 
-  uint8_t nextState = nonSharedState;
+  ButtonMask nextState = nonSharedState;
   if (pressed && currentTime - confirmBackPressStart >= CONFIRM_BACK_HOLD_MS) {
     confirmBackLongPressActive = true;
     nextState |= (1 << BTN_BACK);
@@ -306,7 +337,7 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
   const int8_t sharedPin =
       BoardConfig::ACTIVE.input.confirm >= 0 ? BoardConfig::ACTIVE.input.confirm : BoardConfig::ACTIVE.input.power;
   const bool pressed = isDigitalPressed(sharedPin);
-  uint8_t nonSharedState = getDigitalState();
+  ButtonMask nonSharedState = getDigitalState();
   nonSharedState |= serviceTouch();
   if (s_buttonHook) nonSharedState |= s_buttonHook();
   bool emitConfirmClick = false;
@@ -317,7 +348,7 @@ void InputManager::updateConfirmPowerHold(const unsigned long currentTime) {
     confirmPowerPressStart = currentTime;
   }
 
-  uint8_t nextState = nonSharedState;
+  ButtonMask nextState = nonSharedState;
   if (pressed && s_sharedConfirmPowerShortPressEmitsPower) {
     nextState |= (1 << BTN_POWER);
   } else if (pressed && currentTime - confirmPowerPressStart >= CONFIRM_POWER_HOLD_MS) {
@@ -367,7 +398,7 @@ void InputManager::update() {
     return;
   }
 
-  const uint8_t state = getState();
+  const ButtonMask state = getState();
 
   // Debounce
   if (state != lastState) {
@@ -608,7 +639,7 @@ void InputManager::beginTouch() {
 #endif
 }
 
-uint8_t InputManager::serviceTouch() {
+InputManager::ButtonMask InputManager::serviceTouch() {
 #if FREEINK_CAP_TOUCH
   if (!touchDataEnabled) {
     return 0;

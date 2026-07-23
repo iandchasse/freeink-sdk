@@ -16,9 +16,13 @@
 
 class InputManager {
  public:
+  // Bitmask of BTN_* indices. 16-bit because BTN_DOWN_2 is bit 8, which does not
+  // fit the byte this used to be; every mask-typed member below moved with it.
+  using ButtonMask = uint16_t;
+
   InputManager();
   void begin();
-  uint8_t getState();
+  ButtonMask getState();
 
   // Call regularly from the main loop to update button and touch edge state.
   void update();
@@ -58,6 +62,14 @@ class InputManager {
   static constexpr uint8_t BTN_UP = 4;
   static constexpr uint8_t BTN_DOWN = 5;
   static constexpr uint8_t BTN_POWER = 6;
+  // Second side-button pair, raised only by boards whose group-2 ADC ladder
+  // carries four bands (de-link). Deliberately numbered AFTER BTN_POWER so the
+  // 0..6 indices above stay byte-identical to every other board: consumers
+  // persist button indices in their settings, and renumbering would silently
+  // remap saved remaps. Boards without the extra pair never raise these bits.
+  static constexpr uint8_t BTN_UP_2 = 7;
+  static constexpr uint8_t BTN_DOWN_2 = 8;
+  static constexpr uint8_t BTN_COUNT = 9;
 
   // Pins. POWER_BUTTON_PIN stays constexpr (consumers reference it in pin-config
   // contexts) and is bound to the build's default device; the input code reads
@@ -118,7 +130,7 @@ class InputManager {
   // an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It returns
   // a (1<<BTN_*) bitmask that is OR'd into every update(); the board reads its
   // expander, so InputManager itself stays device-agnostic. Default: none.
-  using ButtonHook = uint8_t (*)();
+  using ButtonHook = ButtonMask (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
 
   // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
@@ -186,16 +198,19 @@ class InputManager {
   void asyncPoll();
 
   int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
+  // Classify a group-2 ADC sample into a BTN_* index (-1 = none), picking the
+  // two- or four-band ladder for the active board.
+  int decodeGroup2(int adcValue);
   bool isDigitalPressed(int8_t pin) const;
-  uint8_t getDigitalState() const;
+  ButtonMask getDigitalState() const;
   void updateConfirmBackHold(unsigned long currentTime);
   void updateConfirmPowerHold(unsigned long currentTime);
-  void applyStateChange(uint8_t state, unsigned long currentTime);
+  void applyStateChange(ButtonMask state, unsigned long currentTime);
 
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
   // BoardConfig::ACTIVE.touch.controller (CHSC6x IRQ-driven, GT911 polled).
   void beginTouch();
-  uint8_t serviceTouch();                                   // runs the machine; returns synthesized button mask
+  ButtonMask serviceTouch();                                   // runs the machine; returns synthesized button mask
   void updateTouchFromIrq(unsigned long now, int irqRaw);   // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);                        // GT911 polled read
   bool readChsc6xPoint(TouchPoint& point);
@@ -205,10 +220,10 @@ class InputManager {
   bool gt911ReadReg(uint16_t reg, uint8_t* buf, uint8_t len);
   void gt911ClearStatus();
 
-  uint8_t currentState;
-  uint8_t lastState;
-  uint8_t pressedEvents;
-  uint8_t releasedEvents;
+  ButtonMask currentState;
+  ButtonMask lastState;
+  ButtonMask pressedEvents;
+  ButtonMask releasedEvents;
   unsigned long lastDebounceTime;
   unsigned long buttonPressStart;
   unsigned long buttonPressFinish;
@@ -242,6 +257,16 @@ class InputManager {
 
   static constexpr int NUM_BUTTONS_2 = 2;
   static const int ADC_RANGES_2[];
+
+  // Four-band variant of the group-2 ladder, for boards that carry a second pair
+  // of side buttons (de-link). Selected at runtime by hasDualSideButtons().
+  static constexpr int NUM_BUTTONS_2_DUAL = 4;
+  static const int ADC_RANGES_2_DUAL[];
+  static const uint8_t ADC_BUTTONS_2_DUAL[];
+
+  // True when the active board's group-2 ladder carries four bands rather than
+  // two, i.e. it has the BTN_UP_2 / BTN_DOWN_2 pair.
+  static bool hasDualSideButtons() { return BoardConfig::ACTIVE.board == BoardConfig::Board::DeLink; }
 
   static constexpr int ADC_NO_BUTTON = 3900;
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
