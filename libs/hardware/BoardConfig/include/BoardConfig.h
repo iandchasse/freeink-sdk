@@ -399,11 +399,31 @@ struct TouchConfig {
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
+//
+// The first four fields describe the single brightness channel every frontlight
+// board has. The optional block below describes a two-temperature boost-driver
+// frontlight (de-link): a switched supply rail, separate warm and cool sink
+// channels blended against each other, and a regulation-sense line. They default
+// to unassigned, so a board that only dims one channel is unaffected and
+// FrontlightManager keeps using its plain single-channel path.
 struct FrontlightConfig {
   int8_t gpio;
   uint32_t pwmFrequency;
   uint8_t pwmResolutionBits;
   bool activeHigh;
+
+  int8_t warmGpio = PIN_UNASSIGNED;  // warm LED string sink
+  int8_t coolGpio = PIN_UNASSIGNED;  // cool LED string sink
+  // Supply-rail gate for the boost converter. Active LOW (P-FET gate): the
+  // rail must be up before the sink channels are driven, and dropping it is
+  // what actually turns the light off.
+  int8_t railEnableGpio = PIN_UNASSIGNED;
+  // Regulation sense. LOW = converter in regulation; a rising edge means the
+  // boost output went open-circuit or hit over-voltage, i.e. a hardware fault.
+  int8_t senseGpio = PIN_UNASSIGNED;
+  // Warm/cool blend PWM frequency. Deliberately far below the brightness
+  // frequency: the two sinks alternate to mix colour temperature.
+  uint32_t blendFrequency = 200;
 };
 
 // Audio output description (AudioOutput::None disables it).
@@ -748,10 +768,11 @@ constexpr BoardProfile DE_LINK = {Board::DeLink,
                                   2.0f,
                                   PIN_UNASSIGNED,
                                   NO_TOUCH,
-                                  // Brightness PWM on GPIO5 (AP3012 SHDN), 20 kHz / 8-bit. The warm/cool
-                                  // mix (GPIO6/7), the LED power gate (GPIO17) and the fault sense line
-                                  // (GPIO18) are driven by FrontlightManager's de-link path.
-                                  {5, 20000, 8, true},
+                                  // Brightness PWM on GPIO5 (AP3012 SHDN), 20 kHz / 8-bit, plus the
+                                  // two-temperature block: warm sink GPIO6 and cool sink GPIO7
+                                  // (BSS138 toggles) blended at 200 Hz, LED rail gate GPIO17
+                                  // (IRLML6402, active LOW) and LED_SENSE GPIO18.
+                                  {5, 20000, 8, true, 6, 7, 17, 18, 200},
                                   NO_AUDIO,
                                   NO_LEDS,
                                   ROTATE_180,
