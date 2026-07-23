@@ -1,4 +1,4 @@
-#include "UsbMsc.h"
+#include "FreeInkUsbMsc.h"
 
 #if FREEINK_CAP_USB_MSC
 

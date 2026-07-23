@@ -2,6 +2,12 @@
 
 // FreeInk SDK — SD sector access for USB Mass Storage.
 //
+// Named FreeInkUsbMsc.h rather than the obvious UsbMsc.h because Windows and
+// macOS resolve includes case-insensitively: a header called UsbMsc.h in this
+// directory shadows the Arduino core's USBMSC.h whenever this library's include
+// path is searched first, so `#include <USBMSC.h>` silently lands here and the
+// core's USBMSC class never gets declared.
+//
 // The hardware half of exposing the SD card to a host PC as a USB drive: raw
 // sector reads and writes against the esp-idf card handle, the write-back task
 // that keeps host transfers fast enough not to time out, and the USB PHY
