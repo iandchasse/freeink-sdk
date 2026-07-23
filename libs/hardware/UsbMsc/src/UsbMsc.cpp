@@ -3,8 +3,6 @@
 #if FREEINK_CAP_USB_MSC
 
 #include <SDCardManager.h>
-#include <USB.h>
-#include <USBMSC.h>
 #include <driver/sdmmc_types.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -13,15 +11,12 @@
 #include <soc/rtc_cntl_reg.h>
 #include <soc/soc.h>
 #include <soc/usb_serial_jtag_struct.h>
-#include <tusb.h>
 
 namespace freeink {
 namespace {
 
-// The USBMSC callbacks are plain function pointers with no user argument, so the
-// session state they need has to live at file scope. Only one USB device exists,
-// so a single session is all there can be.
-USBMSC* g_msc = nullptr;
+// One SD card, one USB device, so a single session is all there can be. File
+// scope rather than members because the write-back task needs to reach it.
 sdmmc_card_t* g_card = nullptr;
 
 uint8_t* g_writeBuf = nullptr;
@@ -41,7 +36,7 @@ void waitForPendingWrite() {
   g_writePending = false;
 }
 
-// Takes the error from the last commit and resets it, so one failed write is
+// Take the error from the last commit and reset it, so a failed write is
 // reported to the host exactly once.
 bool takeWriteError() {
   if (g_writeOk) return false;
@@ -57,49 +52,6 @@ void writeTask(void*) {
   }
 }
 
-// Sector size from the card's CSD; 0 means the card is not usable.
-uint32_t sectorSize() { return g_card ? g_card->csd.sector_size : 0; }
-
-int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
-  const uint32_t secSize = sectorSize();
-  if (!secSize) return -1;
-  const uint32_t sectors = bufsize / secSize;
-  if (sectors == 0) return 0;
-
-  waitForPendingWrite();
-  if (takeWriteError()) return -1;
-
-  return sdmmc_read_sectors(g_card, buffer, lba, sectors) == ESP_OK ? static_cast<int32_t>(bufsize) : -1;
-}
-
-int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
-  const uint32_t secSize = sectorSize();
-  if (!secSize) return -1;
-  const uint32_t sectors = bufsize / secSize;
-  if (sectors == 0) return 0;
-
-  waitForPendingWrite();
-  if (takeWriteError()) return -1;
-
-  // Buffer and acknowledge immediately where it fits; the task commits it. A
-  // transfer too large for the buffer commits inline instead.
-  if (g_writeBuf != nullptr && bufsize <= g_writeBufSize) {
-    memcpy(g_writeBuf, buffer, bufsize);
-    g_writeLba = lba;
-    g_writeSectors = sectors;
-    g_writePending = true;
-    xTaskNotifyGive(g_writeTask);
-    return static_cast<int32_t>(bufsize);
-  }
-  return sdmmc_write_sectors(g_card, buffer, lba, sectors) == ESP_OK ? static_cast<int32_t>(bufsize) : -1;
-}
-
-bool onStartStop(uint8_t, bool, bool) {
-  // The host ejecting the drive is its last chance to have data committed.
-  waitForPendingWrite();
-  return true;
-}
-
 }  // namespace
 
 bool UsbMsc::begin() { return begin(Config{}); }
@@ -108,9 +60,7 @@ bool UsbMsc::begin(const Config& config) {
   if (_active) return true;
 
   g_card = SdMan.sdmmcCard();
-  if (g_card == nullptr) return false;
-  const uint32_t secSize = sectorSize();
-  if (secSize == 0) return false;
+  if (g_card == nullptr || g_card->csd.sector_size == 0) return false;
 
   // DMA-capable: the SDMMC peripheral reads this buffer directly.
   if (g_writeBuf == nullptr) {
@@ -131,22 +81,46 @@ bool UsbMsc::begin(const Config& config) {
     }
   }
 
-  if (g_msc == nullptr) {
-    static USBMSC msc;
-    g_msc = &msc;
-  }
-  g_msc->vendorID(config.vendorId);
-  g_msc->productID(config.productId);
-  g_msc->productRevision(config.revision);
-  g_msc->onRead(onRead);
-  g_msc->onWrite(onWrite);
-  g_msc->onStartStop(onStartStop);
-  g_msc->mediaPresent(true);
-  g_msc->begin(g_card->csd.capacity, secSize);
-
-  USB.begin();
   _active = true;
   return true;
+}
+
+uint32_t UsbMsc::sectorSize() const { return g_card ? g_card->csd.sector_size : 0; }
+
+uint32_t UsbMsc::sectorCount() const { return g_card ? static_cast<uint32_t>(g_card->csd.capacity) : 0; }
+
+int32_t UsbMsc::readSectors(uint32_t lba, void* buffer, uint32_t bytes) {
+  const uint32_t secSize = sectorSize();
+  if (!secSize) return -1;
+  const uint32_t sectors = bytes / secSize;
+  if (sectors == 0) return 0;
+
+  waitForPendingWrite();
+  if (takeWriteError()) return -1;
+
+  return sdmmc_read_sectors(g_card, buffer, lba, sectors) == ESP_OK ? static_cast<int32_t>(bytes) : -1;
+}
+
+int32_t UsbMsc::writeSectors(uint32_t lba, const uint8_t* buffer, uint32_t bytes) {
+  const uint32_t secSize = sectorSize();
+  if (!secSize) return -1;
+  const uint32_t sectors = bytes / secSize;
+  if (sectors == 0) return 0;
+
+  waitForPendingWrite();
+  if (takeWriteError()) return -1;
+
+  // Buffer and acknowledge immediately where it fits; the task commits it. A
+  // transfer too large for the buffer commits inline instead.
+  if (g_writeBuf != nullptr && bytes <= g_writeBufSize) {
+    memcpy(g_writeBuf, buffer, bytes);
+    g_writeLba = lba;
+    g_writeSectors = sectors;
+    g_writePending = true;
+    xTaskNotifyGive(g_writeTask);
+    return static_cast<int32_t>(bytes);
+  }
+  return sdmmc_write_sectors(g_card, buffer, lba, sectors) == ESP_OK ? static_cast<int32_t>(bytes) : -1;
 }
 
 void UsbMsc::flush() { waitForPendingWrite(); }
@@ -154,13 +128,6 @@ void UsbMsc::flush() { waitForPendingWrite(); }
 void UsbMsc::end() {
   if (!_active) return;
   waitForPendingWrite();
-
-  // Soft-disconnect so the host unmounts cleanly rather than reporting surprise
-  // removal.
-  if (tud_inited()) {
-    tud_disconnect();
-    delay(100);
-  }
 
   // Release the PHY's control of the shared pins back to the GPIO matrix, then
   // drive D+/D- low briefly: a soft disconnect alone leaves some hosts still
@@ -204,6 +171,10 @@ void UsbMsc::forceSerialJtagPhy() {
 namespace freeink {
 bool UsbMsc::begin() { return false; }
 bool UsbMsc::begin(const Config&) { return false; }
+uint32_t UsbMsc::sectorCount() const { return 0; }
+uint32_t UsbMsc::sectorSize() const { return 0; }
+int32_t UsbMsc::readSectors(uint32_t, void*, uint32_t) { return -1; }
+int32_t UsbMsc::writeSectors(uint32_t, const uint8_t*, uint32_t) { return -1; }
 void UsbMsc::flush() {}
 void UsbMsc::end() {}
 void UsbMsc::forceSerialJtagPhy() {}
