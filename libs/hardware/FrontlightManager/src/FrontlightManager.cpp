@@ -12,9 +12,10 @@ uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
 // channel at the profile's PWM frequency; timer 1 carries the warm/cool pair at
 // the much lower blend frequency, so they cannot share a timer.
 //
-// Both are clocked from RTC8M rather than APB: RTC8M is independent of the CPU
-// clock, so the PWM frequency does not shift when dynamic frequency scaling
-// kicks in — which would show up as visible flicker.
+// Both are clocked from the internal RC fast oscillator rather than APB: it is
+// independent of the CPU clock, so the PWM frequency does not shift when dynamic
+// frequency scaling kicks in — which would show up as visible flicker. (esp-idf
+// renamed this source from RTC8M; LEDC_USE_RTC8M_CLK is now a deprecated alias.)
 constexpr ledc_mode_t kSpeed = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t kTimerBright = LEDC_TIMER_0;
 constexpr ledc_timer_t kTimerBlend = LEDC_TIMER_1;
@@ -93,7 +94,7 @@ void FrontlightManager::beginMultiChannel() {
   brightTimer.duty_resolution = static_cast<ledc_timer_bit_t>(fl.pwmResolutionBits);
   brightTimer.timer_num = kTimerBright;
   brightTimer.freq_hz = fl.pwmFrequency;
-  brightTimer.clk_cfg = LEDC_USE_RTC8M_CLK;
+  brightTimer.clk_cfg = LEDC_USE_RC_FAST_CLK;
   ledc_timer_config(&brightTimer);
 
   ledc_timer_config_t blendTimer = {};
@@ -101,7 +102,7 @@ void FrontlightManager::beginMultiChannel() {
   blendTimer.duty_resolution = static_cast<ledc_timer_bit_t>(fl.pwmResolutionBits);
   blendTimer.timer_num = kTimerBlend;
   blendTimer.freq_hz = fl.blendFrequency;
-  blendTimer.clk_cfg = LEDC_USE_RTC8M_CLK;
+  blendTimer.clk_cfg = LEDC_USE_RC_FAST_CLK;
   ledc_timer_config(&blendTimer);
 
   const struct {
