@@ -37,7 +37,6 @@ constexpr uint8_t CMD_WRITE_TEMP = 0x1A;
 constexpr uint8_t CMD_DEEP_SLEEP = 0x10;
 
 constexpr uint8_t DRIVER_OUTPUT_SCAN = 0x02;  // SM=1 interlaced, TB=0 (base)
-constexpr uint8_t SCAN_TB_FLIP = 0x01;        // OR into the scan byte for mirrorY
 
 }  // namespace
 
@@ -137,16 +136,12 @@ Ssd1677Driver::Ssd1677Driver(const Ssd1677Config& cfg)
       _h(BoardConfig::ACTIVE.displayHeight),
       _wb(BoardConfig::ACTIVE.displayWidth / 8),
       _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight),
-      _mirrorX(BoardConfig::ACTIVE.orientation.mirrorX),
 #if defined(FREEINK_DISPLAY_FLIPPED) || defined(FLIPPED)
-      // Legacy build-flag escape hatch: force the gate-scan flip on. It ORs with
-      // the profile rather than replacing it, so a board that already declares
-      // ROTATE_180 keeps its mirrorX too -- otherwise the flag would silently
-      // downgrade a full 180 mount to a vertical-only flip. Boards should express
-      // the mount in BoardProfile.orientation; this stays for older build envs.
-      _mirrorY(true) {}
+      // Legacy build-flag escape hatch: an upside-down mount, expressed as a
+      // define instead of BoardProfile.orientation. Maps to the full 180.
+      _rot180(true) {}
 #else
-      _mirrorY(BoardConfig::ACTIVE.orientation.mirrorY) {}
+      _rot180(BoardConfig::ACTIVE.orientation.mirrorX && BoardConfig::ACTIVE.orientation.mirrorY) {}
 #endif
 
 uint32_t Ssd1677Driver::spiHz() const {
@@ -175,12 +170,16 @@ void Ssd1677Driver::initController(EpdBus& bus) {
     bus.data(b);
   }
 
-  // Driver output control: display height + scan direction. mirrorY flips the
-  // gate scan order (TB bit) for an upside-down mount.
+  // Driver output control: display height + scan configuration. The scan byte is
+  // NEVER modified for an upside-down mount: on the SSD1677 the TB bit is
+  // documented "Option TB = 1 is reserved" (datasheet §8.1) — gate-scan reversal
+  // does not exist on this controller, and setting the bit anyway produces
+  // undefined scanning (observed on hardware as scrambled rows and unrefreshed
+  // regions). The 180° mount is handled entirely in the data plane; see writeRam.
   bus.cmd(CMD_DRIVER_OUTPUT_CONTROL);
   bus.data((_h - 1) % 256);
   bus.data((_h - 1) / 256);
-  bus.data(_mirrorY ? (_cfg.driverOutputScan | SCAN_TB_FLIP) : _cfg.driverOutputScan);
+  bus.data(_cfg.driverOutputScan);
 
   bus.cmd(CMD_BORDER_WAVEFORM);
   bus.data(_cfg.borderWaveformInit);
@@ -203,15 +202,17 @@ void Ssd1677Driver::initController(EpdBus& bus) {
 }
 
 void Ssd1677Driver::setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-  // Data-entry bit0 = X direction (1=increment, 0=decrement); bit1 = Y (0=dec).
-  // Default is X-increment, Y-decrement. mirrorX reverses the column direction so
-  // the controller fills RAM right-to-left, completing a horizontal flip (and,
-  // with mirrorY's gate-scan flip, a full 180°). Every RAM write routes through
-  // here, so this one branch mirrors the BW, grayscale-strip, and window paths.
-  const uint8_t dataEntry = _mirrorX ? 0x00 : 0x01;  // X dec : X inc (Y dec)
-  const uint16_t xLo = x, xHi = x + w - 1;
-  const uint16_t xStart = _mirrorX ? xHi : xLo;  // counter origin follows X dir
-  const uint16_t xEnd = _mirrorX ? xLo : xHi;
+  // Addressing is ALWAYS stock X-increment / Y-decrement — the transaction shape
+  // this panel has proven for every non-mirrored board. Do not be tempted to
+  // express a mirror here: the SSD1677's X window registers are pixel-granular
+  // (0..0x3BF) while the address counter steps once per data BYTE, and the
+  // datasheet does not define that interaction for X-decrement; on hardware it
+  // scrambles pixel order and leaves part of the window unwritten. The 180°
+  // mount is a data-plane transform instead (see writeRam) — the window itself
+  // is placed at mirrored coordinates by the callers that pass sub-frame rects.
+  const uint8_t dataEntry = 0x01;  // X increment, Y decrement
+  const uint16_t xStart = x;
+  const uint16_t xEnd = x + w - 1;
 
   // Gates are physically reversed on this panel.
   y = _h - y - h;
@@ -241,8 +242,8 @@ void Ssd1677Driver::setRamArea(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, 
 }
 
 namespace {
-// Bit-reversal table for the mirrorX RAM path. Reversing per byte is a lookup
-// rather than a shift loop because it runs over every byte of every RAM write.
+// Bit-reversal table for the 180-degree data-plane rotation. A lookup rather
+// than a shift loop because it runs over every byte of every RAM write.
 constexpr uint8_t kReverseByte[256] = {
     0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0, 0x08, 0x88, 0x48,
     0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8, 0x04, 0x84, 0x44, 0xC4, 0x24, 0xA4,
@@ -266,31 +267,40 @@ constexpr uint16_t kMirrorChunk = 256;
 
 void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size) {
   bus.cmd(ramCmd);
-  if (!_mirrorX) {
+  if (!_rot180) {
     bus.data(data, static_cast<uint16_t>(size));
     return;
   }
 
-  // mirrorX completes a horizontal flip that setRamArea only half performs. The
-  // X-decrement data-entry mode walks the RAM column counter right-to-left, which
-  // reverses the order of the BYTES in each row -- but this RAM is 1bpp, 8 pixels
-  // to a byte (MSB = leftmost), and the counter step doesn't touch the packing.
-  // Without reversing the bits inside each byte the image comes out mirrored in
-  // 8-pixel blocks, each block still running left-to-right. Reverse per byte here
-  // so the two halves compose into a true mirror.
+  // The 180° mount, done entirely in the data plane. The controller offers no
+  // help here — the TB gate-reversal bit is reserved on the SSD1677, and
+  // X-decrement addressing is undefined for byte writes against its
+  // pixel-granular window registers — so the flip must not involve addressing
+  // at all. Instead the buffer is streamed back-to-front with each byte
+  // bit-reversed. For a row-major 1bpp buffer that IS an exact 180: reversing
+  // the flat byte order reverses both the row order and the byte order within
+  // each row (index b = r·W + c maps to (H−1−r)·W + (W−1−c)), and the per-byte
+  // bit reversal mirrors the last 8 pixels. The controller sees a completely
+  // ordinary X-increment write.
   //
-  // Every RAM write (BW, RED, grayscale planes, windowed update, baseline resync)
-  // funnels through this method, so this one branch covers the whole driver.
+  // This is correct for any buffer whose rows are contiguous at the width the
+  // RAM window expects: the full frame, an extracted display window, and a
+  // grayscale strip alike (their own local 180 is what must land in the
+  // mirrored window position — see the callers for the coordinate half).
+  //
+  // Every RAM write (BW, RED, grayscale planes, windowed update, baseline
+  // resync) funnels through this method, so no path can be missed.
   uint8_t chunk[kMirrorChunk];
-  uint32_t offset = 0;
-  while (offset < size) {
-    const uint32_t remaining = size - offset;
+  uint32_t remaining = size;
+  while (remaining > 0) {
     const uint16_t n = remaining < kMirrorChunk ? static_cast<uint16_t>(remaining) : kMirrorChunk;
+    // Next n source bytes, walking backwards from the tail.
+    const uint8_t* src = data + remaining - 1;
     for (uint16_t i = 0; i < n; i++) {
-      chunk[i] = kReverseByte[data[offset + i]];
+      chunk[i] = kReverseByte[*src--];
     }
     bus.data(chunk, n);
-    offset += n;
+    remaining -= n;
   }
 }
 
@@ -501,7 +511,15 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
     memcpy(&windowBuffer[dstOffset], &fb[srcOffset], windowWidthBytes);
   }
 
-  setRamArea(bus, x, y, w, h);
+  // 180° mount: the extraction above is in logical coordinates; writeRam rotates
+  // the window's content, and the RAM window itself must sit at the mirrored
+  // position so the rotated content lands where the logical rect appears on the
+  // flipped panel. Alignment survives the transform: x, w and _w are all
+  // multiples of 8, so _w−x−w is too.
+  const uint16_t ramX = _rot180 ? static_cast<uint16_t>(_w - x - w) : x;
+  const uint16_t ramY = _rot180 ? static_cast<uint16_t>(_h - y - h) : y;
+
+  setRamArea(bus, ramX, ramY, w, h);
   writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
 
   if (prev != nullptr) {
@@ -518,7 +536,7 @@ void Ssd1677Driver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t*
   refresh(bus, RefreshMode::Fast, turnOff);
 
   if (prev == nullptr) {
-    setRamArea(bus, x, y, w, h);
+    setRamArea(bus, ramX, ramY, w, h);  // same mirrored window as the display write
     writeRam(bus, CMD_WRITE_RAM_BW, windowBuffer.data(), windowBufferSize);
     writeRam(bus, CMD_WRITE_RAM_RED, windowBuffer.data(), windowBufferSize);
   }
@@ -550,9 +568,11 @@ void Ssd1677Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const
   if (!rows || numRows == 0) return;
   const uint16_t len = static_cast<uint16_t>(static_cast<uint32_t>(numRows) * _wb);
   const uint8_t ramCmd = (plane == GrayPlane::Lsb) ? CMD_WRITE_RAM_BW : CMD_WRITE_RAM_RED;
-  setRamArea(bus, 0, yStart, _w, numRows);
-  bus.cmd(ramCmd);
-  bus.data(rows, len);
+  // 180° mount: the strip's own content is rotated by writeRam (full-width rows,
+  // so the strip-local reversal is exact), and the strip lands mirrored in Y.
+  const uint16_t ramY = _rot180 ? static_cast<uint16_t>(_h - yStart - numRows) : yStart;
+  setRamArea(bus, 0, ramY, _w, numRows);
+  writeRam(bus, ramCmd, rows, len);
 }
 
 void Ssd1677Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,

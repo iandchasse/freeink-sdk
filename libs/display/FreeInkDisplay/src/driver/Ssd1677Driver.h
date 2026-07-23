@@ -114,10 +114,16 @@ class Ssd1677Driver : public PanelDriver {
   uint16_t _wb;
   uint32_t _bufferSize;
 
-  // Panel mount transform from BoardProfile.orientation (mirrorX via RAM column
-  // addressing in setRamArea, mirrorY via the gate-scan direction). 180° = both.
-  bool _mirrorX = false;
-  bool _mirrorY = false;
+  // Upside-down panel mount (BoardProfile ROTATE_180). Implemented purely in the
+  // data plane: writeRam streams every buffer back-to-front with per-byte bit
+  // reversal, and the sub-frame paths (window, grayscale strip) place their RAM
+  // window at mirrored coordinates. Addressing and the gate scan stay stock —
+  // the SSD1677 offers no hardware alternative (TB=1 is documented reserved in
+  // §8.1, and X-decrement is undefined for byte writes against its
+  // pixel-granular window registers). Single-axis mirrors are unsupported on
+  // this driver for the same reasons; a board setting only one of mirrorX or
+  // mirrorY gets no transform.
+  bool _rot180 = false;
 
   bool _isScreenOn = false;
   bool _inGrayscaleMode = false;
