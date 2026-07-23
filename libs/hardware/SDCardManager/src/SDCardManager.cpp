@@ -4,6 +4,8 @@
 #include <driver/gpio.h>
 #include <SPI.h>
 
+#include <utility>
+
 #include "SdmmcBlockDevice.h"  // no-op unless FREEINK_SD_SDMMC
 
 SDCardManager SDCardManager::instance;
@@ -337,26 +339,33 @@ bool SDCardManager::removeDir(const char* path) {
     return false;
   }
 
-  auto file = dir.openNextFile();
+  // Collect every child in one pass, THEN delete — never delete while iterating.
+  // SdFat's openNextFile() walks the directory by a running index into the on-disk
+  // entries; remove()/rmdir() rewrites those entries, so deleting mid-iteration
+  // shifts the cursor and the walk silently skips siblings or stops early. (The old
+  // Arduino SD_MMC backend re-read the FAT each call and tolerated it, which is why
+  // this only broke after the SdFat/SDMMC switch.) Snapshotting the listing first
+  // decouples the walk from the mutation.
+  std::vector<std::pair<String, bool>> children;  // (name, isDirectory)
   char name[128];
-  while (file) {
-    String filePath = path;
-    if (!filePath.endsWith("/")) {
-      filePath += "/";
-    }
+  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
     file.getName(name, sizeof(name));
-    filePath += name;
+    children.emplace_back(String(name), file.isDirectory());
+    file.close();
+  }
+  dir.close();
 
-    if (file.isDirectory()) {
-      if (!removeDir(filePath.c_str())) {
-        return false;
-      }
-    } else {
-      if (!vol().remove(filePath.c_str())) {
-        return false;
-      }
+  for (const auto& child : children) {
+    String childPath = path;
+    if (!childPath.endsWith("/")) {
+      childPath += "/";
     }
-    file = dir.openNextFile();
+    childPath += child.first;
+
+    const bool ok = child.second ? removeDir(childPath.c_str()) : vol().remove(childPath.c_str());
+    if (!ok) {
+      return false;
+    }
   }
 
   return vol().rmdir(path);
