@@ -21,7 +21,13 @@
 #include <SdFat.h>
 #include <BoardConfig.h>
 
-struct sdmmc_card_t;  // esp-idf card handle (see sdmmcCard())
+// esp-idf declares sdmmc_card_t as a typedef of an ANONYMOUS struct, so it cannot
+// be forward-declared: `struct sdmmc_card_t;` declares a *different* type and
+// then collides with the real one ("conflicting declaration") in any translation
+// unit that also pulls in the esp-idf header. Include it unconditionally --
+// SPI boards get a declaration they never use, which is cheaper than a
+// configuration-dependent landmine.
+#include <driver/sdmmc_types.h>
 
 #if FREEINK_SD_SDMMC
 namespace freeink {

@@ -45,7 +45,12 @@ class UsbMsc {
   // or the build has no MSC support. begin() does NOT block: once it returns
   // true the host may start issuing transfers, and the caller is expected to
   // run its own idle loop.
-  bool begin(const Config& config = {});
+  //
+  // Two overloads rather than a `= {}` default argument: the toolchain (GCC 8.4)
+  // rejects brace-initialising a nested struct in a default argument at every
+  // language standard.
+  bool begin();
+  bool begin(const Config& config);
 
   // Wait for any buffered write to reach the card. Call before rebooting or
   // cutting power, or the last transfer the host believes it completed may not

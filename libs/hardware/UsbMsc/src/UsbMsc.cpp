@@ -102,10 +102,12 @@ bool onStartStop(uint8_t, bool, bool) {
 
 }  // namespace
 
+bool UsbMsc::begin() { return begin(Config{}); }
+
 bool UsbMsc::begin(const Config& config) {
   if (_active) return true;
 
-  g_card = SDCard.sdmmcCard();
+  g_card = SdMan.sdmmcCard();
   if (g_card == nullptr) return false;
   const uint32_t secSize = sectorSize();
   if (secSize == 0) return false;
@@ -200,6 +202,7 @@ void UsbMsc::forceSerialJtagPhy() {
 #else  // !FREEINK_CAP_USB_MSC
 
 namespace freeink {
+bool UsbMsc::begin() { return false; }
 bool UsbMsc::begin(const Config&) { return false; }
 void UsbMsc::flush() {}
 void UsbMsc::end() {}
