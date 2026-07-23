@@ -748,12 +748,28 @@ constexpr BoardProfile MURPHY_M3 = {
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board
 // level: S3 MCU, SDMMC SD, warm/cool PWM frontlight.
 //
-// Orientation: the panel is mounted upside down on this board, so the profile
-// ships ROTATE_180. The SSD1677 driver applies it in hardware — mirrorY via the
-// gate-scan direction (CMD 0x01 TB bit), mirrorX via reversed RAM column
-// addressing plus a per-byte bit reversal on the RAM write (1bpp packs 8 px per
-// byte, so column order alone only mirrors at byte granularity). Set NO_FLIP
-// here to fall back to the panel's native orientation.
+// Orientation: the panel IS mounted upside down, but this profile ships NO_FLIP
+// and the consumer compensates in its renderer. Hardware mirroring does not work
+// on this panel and should not be re-enabled without a scope on the bus.
+//
+// mirrorY (the gate-scan TB bit) is fine on its own. mirrorX is the problem: it
+// asks the controller to walk RAM columns right-to-left via X-decrement data
+// entry, and this panel does not honour that. Observed on hardware: the right
+// ~40% of columns never refresh at all, the remaining left portion renders with
+// scrambled pixel order on both axes, and the waveform flashes more while
+// clearing less. The de-link SDK hit the identical failure years earlier with
+// its own X-decrement attempt, which is why its FLIPPED path was abandoned and
+// never compiled in.
+//
+// The likely cause is a units mismatch that only bites in decrement mode: the X
+// range/counter registers here are written in PIXELS, while the address counter
+// advances one unit per BYTE (8 px) written. Incrementing from 0 fills the row
+// correctly regardless; decrementing from 799 does not.
+//
+// If someone wants hardware mirroring later, the approach that is known to work
+// on this controller is the one de-link's SDK used: leave the addressing in
+// increment mode and reverse the DATA instead — byte order within each row plus
+// bit order within each byte. Ssd1677Driver already does the bit half.
 //
 // Pin map verified against the de-link board's own SDK fork
 // (iandchasse/community-sdk-de-link) rather than inferred from X4.
@@ -783,7 +799,7 @@ constexpr BoardProfile DE_LINK = {Board::DeLink,
                                   {5, 20000, 8, true, 6, 7, 17, 18, 200},
                                   NO_AUDIO,
                                   NO_LEDS,
-                                  ROTATE_180,
+                                  NO_FLIP,  // see the orientation note above
                                   // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41, clocked at
                                   // 40 MHz (validated on de-link hardware; the esp-idf default is 20).
                                   {39, 40, 38, 48, 42, 41, 4, 40000},
