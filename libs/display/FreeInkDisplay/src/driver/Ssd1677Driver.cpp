@@ -266,8 +266,8 @@ constexpr uint16_t kMirrorChunk = 256;
 }  // namespace
 
 void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, uint32_t size) {
-  bus.cmd(ramCmd);
   if (!_rot180) {
+    bus.cmd(ramCmd);
     bus.data(data, static_cast<uint16_t>(size));
     return;
   }
@@ -290,6 +290,17 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
   //
   // Every RAM write (BW, RED, grayscale planes, windowed update, baseline
   // resync) funnels through this method, so no path can be missed.
+  //
+  // The whole write MUST stay inside ONE CS-low transaction. A RAM write is a
+  // streaming command: the controller takes bytes for as long as CS is asserted,
+  // and the command byte is sent once. Chunking through bus.data() instead would
+  // raise CS between every chunk (see EpdBus::data) — the image still broadly
+  // lands, because the address counter survives, but the write is no longer one
+  // coherent frame and the BW/RED planes end up subtly inconsistent, which the
+  // differential waveform then renders as grey residue and extra flicker. So
+  // open the transaction by hand and push the chunks raw.
+  bus.beginTxn();
+  bus.rawCmd(ramCmd);
   uint8_t chunk[kMirrorChunk];
   uint32_t remaining = size;
   while (remaining > 0) {
@@ -299,9 +310,10 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
     for (uint16_t i = 0; i < n; i++) {
       chunk[i] = kReverseByte[*src--];
     }
-    bus.data(chunk, n);
+    bus.rawWriteBytes(chunk, n);
     remaining -= n;
   }
+  bus.endTxn();
 }
 
 void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async) {
