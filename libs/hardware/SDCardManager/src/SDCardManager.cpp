@@ -361,3 +361,13 @@ bool SDCardManager::removeDir(const char* path) {
 
   return vol().rmdir(path);
 }
+
+sdmmc_card_t* SDCardManager::sdmmcCard() const {
+#if FREEINK_SD_SDMMC
+  return _dev ? _dev->card() : nullptr;
+#else
+  // SPI/SdFat boards address the card through SdFat's own SPI driver; there is
+  // no esp-idf card handle to hand out.
+  return nullptr;
+#endif
+}

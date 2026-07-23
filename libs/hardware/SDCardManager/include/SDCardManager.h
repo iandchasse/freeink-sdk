@@ -21,6 +21,8 @@
 #include <SdFat.h>
 #include <BoardConfig.h>
 
+struct sdmmc_card_t;  // esp-idf card handle (see sdmmcCard())
+
 #if FREEINK_SD_SDMMC
 namespace freeink {
 class SdmmcBlockDevice;  // native esp-idf SDMMC block device (src/SdmmcBlockDevice.h)
@@ -74,6 +76,16 @@ class SDCardManager {
   // layer; the SD manager itself stays device-agnostic. Default: none.
   using PowerHook = void (*)();
   void setPowerHook(PowerHook hook) { _powerHook = hook; }
+
+  // The raw esp-idf card handle on native-SDMMC boards, for peripherals that
+  // must address the same card by sector rather than through the filesystem --
+  // USB Mass Storage being the case that matters. Null before a successful
+  // begin(), and always null on SPI/SdFat boards (which have no such handle).
+  //
+  // Borrowed, not owned. A caller that writes sectors behind the filesystem's
+  // back is responsible for the coherency problem it creates: the volume must
+  // not be mounted for writing at the same time.
+  sdmmc_card_t* sdmmcCard() const;
 
  static SDCardManager& getInstance() { return instance; }
 

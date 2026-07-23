@@ -1,0 +1,16 @@
+{
+  "name": "UsbMsc",
+  "version": "1.0.0",
+  "description": "FreeInk USB Mass Storage: exposes the SD card to a host PC as a USB drive. Services host sector reads/writes against the esp-idf card handle with a background write-back task, and handles the USB PHY teardown needed to return the port to the serial/JTAG console. Requires native SDMMC and a USB-OTG capable target (FREEINK_CAP_USB_MSC).",
+  "keywords": "usb, msc, mass storage, sd, sdmmc",
+  "authors": [
+    {
+      "name": "FreeInk SDK Contributors"
+    }
+  ],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": [
+    "arduino"
+  ]
+}

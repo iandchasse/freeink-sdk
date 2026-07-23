@@ -39,6 +39,12 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   Sector_t sectorCount() override;
   bool syncDevice() override { return true; }
 
+  // The underlying esp-idf card handle, for hosts that need to expose the same
+  // card through another peripheral -- e.g. USB Mass Storage, which reads and
+  // writes sectors itself and cannot go through the filesystem. Null until
+  // begin() succeeds. Borrowed, not owned: the block device still closes it.
+  sdmmc_card_t* card() const { return _card; }
+
  private:
   sdmmc_card_t* _card = nullptr;
 };

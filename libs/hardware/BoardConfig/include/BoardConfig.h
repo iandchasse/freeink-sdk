@@ -223,6 +223,14 @@
 #define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK)
 #endif
 
+// USB Mass Storage: expose the SD card to a host PC as a USB drive. Needs the
+// esp-idf card handle (native SDMMC only -- the SPI/SdFat backend has none) and
+// a USB-OTG peripheral, which the S3 has and the C3's serial/JTAG-only USB does
+// not. The UsbMsc lib links no-op stubs when this is off.
+#ifndef FREEINK_CAP_USB_MSC
+#define FREEINK_CAP_USB_MSC (FREEINK_SD_SDMMC && FREEINK_MCU_S3)
+#endif
+
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
 // but expose logs differently: LilyGo T5 S3 is monitored over native USB CDC,
 // while Sticky bring-up is more reliable through the IDF/ROM console path.
