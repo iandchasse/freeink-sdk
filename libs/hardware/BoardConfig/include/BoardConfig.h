@@ -330,6 +330,11 @@ struct SdmmcPins {
   int8_t d2;
   int8_t d3;
   uint8_t busWidth;  // 0 = not an SDMMC board (use SdPins/SPI), 1 or 4 = SDMMC
+  // Bus clock in kHz. 0 = the esp-idf default (SDMMC_FREQ_DEFAULT, 20 MHz). Raise
+  // only on boards where the higher rate has been validated on hardware -- signal
+  // integrity at 40 MHz depends on trace length and pull-ups, so it is per-board
+  // truth, not a global default.
+  uint32_t freqKhz = 0;
 };
 
 // I2C fuel-gauge / charger wiring (e.g. BQ27220 + BQ25896 on LilyGo T5 S3). When
@@ -715,17 +720,23 @@ constexpr BoardProfile MURPHY_M3 = {
 // Reuses the SSD1677 driver (same controller/panel as X4); differs at the board
 // level: S3 MCU, SDMMC SD, warm/cool PWM frontlight.
 //
-// Orientation: this profile ships NO_FLIP (X4 orientation). A board that mounts
-// the panel rotated sets `ROTATE_180` (or a mirror) here, and the SSD1677 driver
-// applies it in hardware (mirrorX via RAM addressing, mirrorY via gate scan). Any
-// board injects its own mount transform the same way.
+// Orientation: the panel is mounted upside down on this board, so the profile
+// ships ROTATE_180. The SSD1677 driver applies it in hardware — mirrorY via the
+// gate-scan direction (CMD 0x01 TB bit), mirrorX via reversed RAM column
+// addressing plus a per-byte bit reversal on the RAM write (1bpp packs 8 px per
+// byte, so column order alone only mirrors at byte granularity). Set NO_FLIP
+// here to fall back to the panel's native orientation.
+//
+// Pin map verified against the de-link board's own SDK fork
+// (iandchasse/community-sdk-de-link) rather than inferred from X4.
 constexpr BoardProfile DE_LINK = {Board::DeLink,
                                   "de_link",
                                   InputStyle::XteinkAdcLadder,
                                   DisplayController::SSD1677,
                                   800,
                                   480,
-                                  {8, 10, 21, 4, 5, 6, PIN_UNASSIGNED},
+                                  // SCLK10 MOSI9 CS11 DC12 RST13 BUSY14; no panel power-enable rail.
+                                  {10, 9, 11, 12, 13, 14, PIN_UNASSIGNED},
                                   0,  // displaySpiHz: SSD1677 default (40 MHz)
                                   // SD on de-link is 4-bit SDMMC. SdFat can't drive SDIO, so SDCardManager
                                   // mounts an FsVolume on a native esp-idf SDMMC block device (FREEINK_SD_SDMMC);
@@ -733,17 +744,20 @@ constexpr BoardProfile DE_LINK = {Board::DeLink,
                                   {39, 38, 40, 41, PIN_UNASSIGNED, true, 0},
                                   {0, 1, 2, 3, 4, 5, 3, true},  // power button active-HIGH (INPUT_PULLDOWN) on de-link
                                   4,  // batteryAdc GPIO4
-                                  PIN_UNASSIGNED,
+                                  8,  // batteryChargeStatus: MCP73832 STAT GPIO8 (open-drain, LOW = charging)
                                   2.0f,
                                   PIN_UNASSIGNED,
                                   NO_TOUCH,
-                                  // Primary brightness PWM (GPIO5). Warm/cool/rail/fault pins (GPIO6/7/17/18)
-                                  // are not driven.
+                                  // Brightness PWM on GPIO5 (AP3012 SHDN), 20 kHz / 8-bit. The warm/cool
+                                  // mix (GPIO6/7), the LED power gate (GPIO17) and the fault sense line
+                                  // (GPIO18) are driven by FrontlightManager's de-link path.
                                   {5, 20000, 8, true},
                                   NO_AUDIO,
                                   NO_LEDS,
-                                  NO_FLIP,
-                                  {39, 40, 38, 48, 42, 41, 4},  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41
+                                  ROTATE_180,
+                                  // SDMMC 4-bit: CLK39 CMD40 D0=38 D1=48 D2=42 D3=41, clocked at
+                                  // 40 MHz (validated on de-link hardware; the esp-idf default is 20).
+                                  {39, 40, 38, 48, 42, 41, 4, 40000},
                                   NO_GAUGE};
 
 // --- LilyGo T5 S3 4.7" (ED047TC1 raw-parallel EPD) — ESP32-S3 -----------------

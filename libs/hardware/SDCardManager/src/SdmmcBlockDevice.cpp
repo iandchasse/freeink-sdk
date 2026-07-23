@@ -15,7 +15,8 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
 
   // Peripheral clock + bus width.
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.max_freq_khz = SDMMC_FREQ_DEFAULT;  // 20 MHz; raise per board if validated
+  // 20 MHz unless the board profile carries a validated higher rate (de-link: 40 MHz).
+  host.max_freq_khz = pins.freqKhz != 0 ? static_cast<int>(pins.freqKhz) : SDMMC_FREQ_DEFAULT;
   if (pins.busWidth == 1) {
     // Keep the default flags (function pointers, deinit-arg) but drop wide-bus.
     host.flags &= ~(SDMMC_HOST_FLAG_8BIT | SDMMC_HOST_FLAG_4BIT);
