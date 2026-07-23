@@ -335,14 +335,21 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
   // Every RAM write (BW, RED, grayscale planes, windowed update, baseline
   // resync) funnels through this method, so no path can be missed.
   //
-  // The whole write MUST stay inside ONE CS-low transaction. A RAM write is a
-  // streaming command: the controller takes bytes for as long as CS is asserted,
-  // and the command byte is sent once. Chunking through bus.data() instead would
-  // raise CS between every chunk (see EpdBus::data) — the image still broadly
-  // lands, because the address counter survives, but the write is no longer one
-  // coherent frame and the BW/RED planes end up subtly inconsistent, which the
-  // differential waveform then renders as grey residue and extra flicker. So
-  // open the transaction by hand and push the chunks raw.
+  // The chunks go out inside ONE opened transaction rather than through
+  // bus.data() per chunk, which would frame each with its own
+  // beginTransaction/CS/endTransaction (see EpdBus::data): ~190 bus arbitrations
+  // and CS edges for a 48KB frame instead of one.
+  //
+  // This is an efficiency measure, NOT a correctness fix. CS toggling mid-write
+  // is tolerated here — the address counter lives in the controller and survives
+  // it, and the proven unrotated path already splits its command and data across
+  // two separate CS frames (EpdBus::cmd then EpdBus::data). It was briefly
+  // suspected of causing grey/stuck pixels and flicker on FULL/HALF refreshes;
+  // it was not. That was the booster strength and the FULL/HALF waveform
+  // selection, fixed in the de-link board config.
+  //
+  // Safe to hold the bus this long only because the rotated path is per-board
+  // and no such board shares this SPI bus with its SD card.
   bus.beginTxn();
   bus.rawCmd(ramCmd);
   uint8_t chunk[kMirrorChunk];
