@@ -761,6 +761,9 @@ static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
     case BoardConfig::Board::Sticky: return ssd1677StickyConfig();
     case BoardConfig::Board::DeLink: return ssd1677DeLinkConfig();
+    // X4 Pro runs on the stock X4/GDEQ0426T82 config — same controller and panel
+    // class, confirmed painting on hardware. No custom LUT or drive voltages needed.
+    case BoardConfig::Board::XteinkX4Pro: return ssd1677DefaultConfig();
     // X4 layers the fast-DU shortcut on the default only when the build has
     // opted in (see ssd1677X4Config); stock 0xFC parity otherwise.
 #ifdef FREEINK_X4_FAST_DU_SHORTCUT
