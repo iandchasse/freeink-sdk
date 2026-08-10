@@ -57,12 +57,16 @@
 #ifndef FREEINK_DEVICE_STICKY
 #define FREEINK_DEVICE_STICKY 0
 #endif
+#ifndef FREEINK_DEVICE_PAPERMONO
+#define FREEINK_DEVICE_PAPERMONO 0
+#endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || \
-      FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY)
+      FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY ||            \
+      FREEINK_DEVICE_PAPERMONO)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
@@ -71,7 +75,7 @@
 #define FREEINK_MCU_C3 (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4)
 #define FREEINK_MCU_S3                                                                                    \
   (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||        \
-   FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
+   FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
@@ -151,16 +155,30 @@
 #else
 #define FREEINK_DRIVER_IT8951 0
 #endif
+#if FREEINK_DEVICE_PAPERMONO
+#define FREEINK_DRIVER_SSD1683 1
+#else
+#define FREEINK_DRIVER_SSD1683 0
+#endif
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
 #ifndef FREEINK_CAP_TOUCH
 #define FREEINK_CAP_TOUCH                                                                         \
   (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
-   FREEINK_DEVICE_X4PRO)
+   FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO)
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
-#define FREEINK_CAP_FRONTLIGHT \
-  (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO)
+#define FREEINK_CAP_FRONTLIGHT                                                                     \
+  (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_X4PRO || \
+   FREEINK_DEVICE_PAPERMONO)
+#endif
+// Warm/cool color-temperature frontlight: a second warm PWM channel on top of
+// the brightness one (FrontlightConfig::gpioWarm). Sub-capability of
+// FREEINK_CAP_FRONTLIGHT — gates the warmth UI/settings out of single-channel
+// builds (Paper Mono, de-link, Murphy, LilyGo). Within a multi-device build
+// the profile's gpioWarm stays the runtime truth (hasColorTemperature()).
+#ifndef FREEINK_CAP_WARMLIGHT
+#define FREEINK_CAP_WARMLIGHT (FREEINK_DEVICE_X4PRO)
 #endif
 // USB Mass Storage ("USB Transfer" mode): exposes the SD card to a host over
 // USB-MSC. de-link AUTO-enables it: its firmware owns the USBMSC LUN and runs
@@ -224,12 +242,12 @@
 // Sticky has a PDM mic but no output codec. The Microphone lib compiles its
 // i2s_pdm RX path only when this is set; otherwise it links stub bodies.
 #ifndef FREEINK_CAP_MIC
-#define FREEINK_CAP_MIC (FREEINK_DEVICE_STICKY)
+#define FREEINK_CAP_MIC (FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO)
 #endif
 // On-board I2C sensors. Each lib (Rtc / EnvironmentSensor / Imu) compiles its
 // I2C driver only when its flag is set; otherwise it links stub bodies.
 #ifndef FREEINK_CAP_RTC
-#define FREEINK_CAP_RTC (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO)
+#define FREEINK_CAP_RTC (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
@@ -241,10 +259,10 @@
 // pin; on for boards that wire one (Sticky GPIO48, Murphy GPIO46). Separate from
 // FREEINK_CAP_AUDIO — a buzzer is a tone device, not a WAV/codec output.
 #ifndef FREEINK_CAP_BUZZER
-#define FREEINK_CAP_BUZZER (FREEINK_DEVICE_STICKY || FREEINK_DEVICE_MURPHY)
+#define FREEINK_CAP_BUZZER (FREEINK_DEVICE_STICKY || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_PAPERMONO)
 #endif
 #ifndef FREEINK_CAP_LED
-#define FREEINK_CAP_LED (FREEINK_DEVICE_M5)
+#define FREEINK_CAP_LED (FREEINK_DEVICE_M5 || FREEINK_DEVICE_PAPERMONO)
 #endif
 #ifndef FREEINK_CAP_NET_TLS13
 #if defined(FREEINK_NET_WOLFSSL)
@@ -261,7 +279,7 @@
 // (The prebuilt Arduino-ESP32 libs disable BSS-in-PSRAM, so this is a runtime
 // heap allocation, not EXT_RAM_BSS_ATTR.)
 #ifndef FREEINK_FB_PSRAM
-#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER)
+#define FREEINK_FB_PSRAM (FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_PAPERMONO)
 #endif
 
 // SD transport. de-link (4-bit) and X4 Pro (1-bit) are wired for SDMMC; SdFat
@@ -270,7 +288,7 @@
 // must define USE_BLOCK_DEVICE_INTERFACE=1 for the SdFat FsVolume these mount on.
 // Override with -DFREEINK_SD_SDMMC=0/1.
 #ifndef FREEINK_SD_SDMMC
-#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO)
+#define FREEINK_SD_SDMMC (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -320,6 +338,7 @@ enum class Board : uint8_t {
   LilyGoT5S3,
   M5PaperV11,
   Sticky,
+  PaperMono,
 };
 
 // How the board reports button presses.
@@ -329,6 +348,7 @@ enum class InputStyle : uint8_t {
   DigitalConfirmBackHold,  // confirm held > N ms synthesizes BACK (M5 PaperColor)
   DigitalConfirmPowerHold, // confirm click, power hold on a shared GPIO
   DigitalFiveKey,          // 3 physical GPIO keys + synthesized events (Murphy M3)
+  DigitalTwoButton,        // short up/down; holds synthesize back/confirm/power
 };
 
 // Panel controller silicon. Drivers are selected from this at begin().
@@ -341,10 +361,11 @@ enum class InputStyle : uint8_t {
 // 0x71 FLG read, which SSD1677 lacks; VER byte2 LUT_VER tells UC8179 from
 // UC8279). NVS hw_calib/screenType is read for diagnostics only. See
 // XteinkDetect::applyXteinkDisplayController.
-enum class DisplayController : uint8_t { SSD1677, UC8253, ED2208, LgfxEpd, IT8951, UC8279, UC8179 };
+// SSD1683 drives the Paper Mono's 800x480 panel.
+enum class DisplayController : uint8_t { SSD1677, SSD1683, UC8253, ED2208, LgfxEpd, IT8951, UC8279, UC8179 };
 
 // Optional capacitive touch controller.
-enum class TouchController : uint8_t { None, Chsc6x, Gt911 };
+enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06 };
 
 // Optional audio output path. Murphy M3 ships an ES8388-compatible stereo
 // codec (I2S slave, control over the shared touch I2C bus) — the contract was
@@ -512,6 +533,14 @@ struct FrontlightConfig {
   // X4-Pro profile so a future dual-PWM path can pick it up. Kept LAST so de-link's
   // positional frontlight initializer (which ends at blendFrequency) stays valid.
   int8_t gpioWarm = PIN_UNASSIGNED;
+  // Paper Mono: the frontlight PWM is generated by the M5PM1 PMIC (its GPIO3
+  // routed to alt-function PWM0 drives an AW9967 boost LED driver), not by an
+  // ESP LEDC channel. `gpio` stays PIN_UNASSIGNED (ESP GPIO3 is a button
+  // there!); FrontlightManager talks to the PMIC over I2C instead. The AW9967
+  // is fed from the EPD rail, so the frontlight only lights while EPD power is
+  // on. pwmFrequency still applies (PM1 PWM_FREQ register); resolution is the
+  // PM1's fixed 12 bits.
+  bool viaPm1Pwm = false;
 };
 
 // Audio output description (AudioOutput::None disables it).
@@ -536,6 +565,10 @@ struct LedConfig {
   uint8_t count;
   LedColorOrder colorOrder;
   bool pmicRgbPower;  // true = enable M5PM1 RGB LED power rail before use
+  // Paper Mono: one discrete RGB LED with no addressable controller — red is
+  // the M5PM1's LED output (PWR_CFG bit 4), green/blue are M5IOE1 pins IO8/IO9.
+  // On/off per channel (no per-channel intensity); `data` stays PIN_UNASSIGNED.
+  bool paperMonoDiscrete = false;
 };
 
 // Microphone input path (MicInput::None disables it). PDM mics (e.g. the Sticky's
@@ -549,7 +582,7 @@ struct MicConfig {
   bool enableActiveHigh;
 };
 
-enum class RtcType : uint8_t { None, Pcf8563, Ds3231 };
+enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130 };
 enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658 };
 
 // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
@@ -583,6 +616,17 @@ struct DisplayOrientation {
 struct PowerConfig {
   int8_t latch0 = PIN_UNASSIGNED;
   int8_t latch1 = PIN_UNASSIGNED;
+};
+
+// Panel rows/columns the device's bezel physically overlaps, in the panel's
+// native portrait frame; firmware keeps content out of them. The default is
+// the value CrossPoint historically hardcoded for every board (tuned on the
+// X4 bezel) — override per profile as boards are measured.
+struct ViewableInsets {
+  uint8_t top = 9;
+  uint8_t right = 3;
+  uint8_t bottom = 3;
+  uint8_t left = 3;
 };
 
 struct BoardProfile {
@@ -626,6 +670,9 @@ struct BoardProfile {
   // matters (UC8279 800x480: VER byte2 LUT_VER, 0x02 vs 0x68 — selects which AA
   // waveform table the driver uploads). 0 = not probed / not applicable.
   uint8_t displayControllerVariant = 0;
+  // Bezel-covered edge insets. Defaulted so existing profiles need no change;
+  // a measured board overrides it.
+  ViewableInsets viewableInsets = {};
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -847,6 +894,61 @@ constexpr BoardProfile M5STACK_PAPER_COLOR = {Board::M5StackPaperColor,
                                               NO_FLIP,
                                               NO_SDMMC,
                                               NO_GAUGE};
+
+// --- M5Stack Paper Mono / PaperS3 — ESP32-S3, 800x480 SSD1683 --------------
+// EPD power/reset and the microSD rail are switched by the on-board M5IOE1;
+// their direct GPIO fields stay unassigned and the consumer board-support
+// library supplies the corresponding hooks (see M5Ioe1.h for the pin map).
+
+// Passive beeper switched by an NMOS from the 3V3_L2 core rail, gate on ESP
+// GPIO42 — a plain LEDC tone pin for the Buzzer lib, no codec on board.
+constexpr AudioConfig PAPER_MONO_AUDIO = {AudioOutput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED,
+                                          PIN_UNASSIGNED,    PIN_UNASSIGNED, true,           PIN_UNASSIGNED,
+                                          PIN_UNASSIGNED,    PIN_UNASSIGNED, 0,              42};
+
+// Frontlight: AW9967 boost LED driver whose CTRL input is the M5PM1's GPIO3
+// routed to its PWM0 engine (5 kHz, 12-bit) — no ESP pin involved. The AW9967
+// runs from the EPD rail, so it only lights while EPD power is on.
+constexpr FrontlightConfig PAPER_MONO_FRONTLIGHT = {PIN_UNASSIGNED, 5000, 12, true, PIN_UNASSIGNED, true};
+
+// One discrete RGB LED: red on the PM1's LED output, green/blue on IOE1
+// IO8/IO9. LedManager's paperMonoDiscrete path drives it; colorOrder unused.
+constexpr LedConfig PAPER_MONO_LEDS = {PIN_UNASSIGNED, 1, LedColorOrder::RGB, false, true};
+
+// PDM MEMS mic on CLK=GPIO45 / DATA=GPIO46. Its power rail is IOE1 IO12, not
+// an ESP GPIO — the consumer's board bring-up raises it (m5ioe1::PIN_MIC_POWER)
+// before capture; `enable` stays unassigned.
+constexpr MicConfig PAPER_MONO_MIC = {MicInput::Pdm, 45, 46, PIN_UNASSIGNED, true};
+
+constexpr BoardProfile PAPER_MONO = {
+    Board::PaperMono,
+    "m5stack_paper_mono",
+    InputStyle::DigitalTwoButton,
+    DisplayController::SSD1683,
+    800,
+    480,
+    {15, 14, 16, 17, PIN_UNASSIGNED, 18, PIN_UNASSIGNED},
+    20000000,
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 0},
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 2, 3, PIN_UNASSIGNED, false},
+    PIN_UNASSIGNED,
+    PIN_UNASSIGNED,
+    2.0f,
+    PIN_UNASSIGNED,
+    // FT6336 is register-compatible with the FT5x06 family. It reports a
+    // portrait 480x800 frame, so swap it into the panel-native 800x480 frame.
+    // Paper Mono's EPD source is rotated 180 degrees by the board profile;
+    // flip the post-swap Y axis so touch follows the displayed framebuffer.
+    {TouchController::Ft5x06, 47, 48, 4, PIN_UNASSIGNED, 0x38, 0, 799, 0, 479,
+     false, 0, true, false, PIN_UNASSIGNED, true, false, true},
+    PAPER_MONO_FRONTLIGHT,
+    PAPER_MONO_AUDIO,
+    PAPER_MONO_LEDS,
+    ROTATE_180,
+    {13, 12, 11, 10, 9, 8, 4},
+    NO_GAUGE,
+    PAPER_MONO_MIC,
+    {47, 48, 100000, 0x32, 0, 0, 0, RtcType::Rx8130, ImuType::None}};
 
 // --- Murphy M3 (CrowPanel 3.7") — UC8253, CHSC6x touch, PWM frontlight --------
 constexpr BoardProfile MURPHY_M3 = {
@@ -1226,12 +1328,15 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
                    FREEINK_DEVICE_LILYGO ? panelBytes(LILYGO_T5S3) : 0u),
               cmax(FREEINK_DEVICE_M5PAPER ? panelBytes(M5PAPER_V11) : 0u,
                    FREEINK_DEVICE_X4PRO ? panelBytes(XTEINK_X4_PRO) : 0u)),
-         FREEINK_DEVICE_STICKY ? panelBytes(STICKY) : 0u));
+         cmax(FREEINK_DEVICE_STICKY ? panelBytes(STICKY) : 0u,
+              FREEINK_DEVICE_PAPERMONO ? panelBytes(PAPER_MONO) : 0u)));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
 // is the boot default until the consumer calls selectDevice().
-#if FREEINK_DEVICE_M5
+#if FREEINK_DEVICE_PAPERMONO
+constexpr BoardProfile DEFAULT_DEVICE = PAPER_MONO;
+#elif FREEINK_DEVICE_M5
 constexpr BoardProfile DEFAULT_DEVICE = M5STACK_PAPER_COLOR;
 #elif FREEINK_DEVICE_MURPHY
 constexpr BoardProfile DEFAULT_DEVICE = MURPHY_M3;
@@ -1312,6 +1417,11 @@ inline bool selectDevice(Board which) {
       ACTIVE = XTEINK_X4_PRO;
       break;
 #endif
+#if FREEINK_DEVICE_PAPERMONO
+    case Board::PaperMono:
+      ACTIVE = PAPER_MONO;
+      return true;
+#endif
     default:
       return false;
   }
@@ -1329,9 +1439,12 @@ inline bool isDeLink() { return ACTIVE.board == Board::DeLink; }
 inline bool isM5PaperV11() { return ACTIVE.board == Board::M5PaperV11; }
 inline bool isSticky() { return ACTIVE.board == Board::Sticky; }
 inline bool isX4Pro() { return ACTIVE.board == Board::XteinkX4Pro; }
+inline bool isPaperMono() { return ACTIVE.board == Board::PaperMono; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
-inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED; }
+inline bool hasPwmFrontlight() {
+  return ACTIVE.frontlight.gpio != PIN_UNASSIGNED || ACTIVE.frontlight.viaPm1Pwm;
+}
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }
 
 // Safety guard: a power-latch pin must never coincide with a display or SDMMC

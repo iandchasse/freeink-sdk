@@ -35,7 +35,9 @@ constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
 // here the register command is sent SEPARATELY — blob byte0 is DATA, not the cmd.
 // Each LUT is 42 (0x2A) data bytes; only the first ~12 are non-zero. Level select
 // by (old=0x10/LSB, new=0x13/MSB): (0,0)=LUTKK black, (0,1)=LUTKW, (1,0)=LUTWK,
-// (1,1)=LUTWW white.
+// (1,1)=LUTWW white. This is the byte-exact stock set from the known-good 6662faf
+// build; the "white-push"/"reset-phase" experiments were chasing a symptom whose
+// real cause was the AA-CDI regression (see displayGray) — leave this as stock.
 constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separately
 struct GrayLut {
   uint8_t cmd;
@@ -139,8 +141,14 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 // reversal (the same sendPlaneFlipped the UC8279 sibling uses — mirror-Y).
 // Mirror-X is handled in hardware by the PSR SHL bit, so no per-byte work here.
 // White padding then fills the off-screen gates (_h.._tresH); 0xFF = white.
-void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb) {
-  bus.sendPlaneFlipped(ramCmd, fb, _h, _wb);  // cmd + rows bottom-to-top, one CS burst
+void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert) {
+  // cmd + rows bottom-to-top, one CS burst. The off-screen gate padding below
+  // stays white in both polarities (matching the full-flash seed).
+  if (invert) {
+    bus.sendPlaneFlippedInverted(ramCmd, fb, _h, _wb);
+  } else {
+    bus.sendPlaneFlipped(ramCmd, fb, _h, _wb);
+  }
   uint8_t whiteRow[128];
   const uint16_t wb = _wb <= sizeof(whiteRow) ? _wb : sizeof(whiteRow);
   memset(whiteRow, 0xFF, wb);
@@ -170,6 +178,14 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     memset(whiteRow, 0xFF, wb);
     bus.cmd(CMD_DTM1);
     for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
+  } else if (_darkBackground) {
+    // Inverted content: the KW differential idles unchanged pixels, so the
+    // light residue of every white->black transition parks in the black
+    // background and accumulates between full flashes. Rewrite the OLD plane
+    // as the complement of the target: every pixel classifies as changed and
+    // is re-driven toward its target — optically invisible on pixels already
+    // at their endpoint. displayFinish()'s DTM1 sync restores the baseline.
+    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   }
   // (Fast: OLD plane already holds the previous frame from the last displayFinish.)
 
@@ -290,10 +306,14 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     bus.cmd(l.cmd);
     bus.data(l.data, GRAY_LUT_LEN);
   }
-  // Vendor reference: the FIRST AA refresh after init drives the border (0x29);
-  // later AA refreshes hold it (0xA9) so the border doesn't flash on every page.
+  // The AA refresh CDI is a CONSTANT 0x29 (app1 vtable[0x118] returns 0x29 every
+  // refresh; the known-good 6662faf build used 0x29 unconditionally). The
+  // "first 0x29 / later 0xA9" variant from the display-cleanups audit REGRESSED
+  // this: 0xA9 (bit7 set) changes the border/VCOM handling on every AA page after
+  // the first, which accumulates as ghosting under fast paging and smears when a
+  // partial (menu) refresh follows — do NOT reintroduce it.
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_grayRefreshedOnce ? _cfg.cdiIdle : _cfg.cdiActive);  // first 0x29, later 0xA9
+  bus.data(_cfg.cdiActive);  // 0x29, always
   bus.data(CDI_INTERVAL);
   _grayRefreshedOnce = true;
 

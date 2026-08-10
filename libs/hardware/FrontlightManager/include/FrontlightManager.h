@@ -43,7 +43,10 @@ class FrontlightManager {
 
   bool present() const {
 #if FREEINK_CAP_FRONTLIGHT
-    return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED;
+    // A PMIC-driven frontlight (Paper Mono: PM1 PWM0 -> AW9967) has no ESP
+    // GPIO, so viaPm1Pwm counts as present alongside the LEDC-pin boards.
+    return BoardConfig::ACTIVE.frontlight.gpio != BoardConfig::PIN_UNASSIGNED ||
+           BoardConfig::ACTIVE.frontlight.viaPm1Pwm;
 #else
     return false;  // frontlight code not compiled in (FREEINK_CAP_FRONTLIGHT=0)
 #endif
@@ -51,15 +54,17 @@ class FrontlightManager {
   uint8_t brightness() const { return _brightness; }
   uint8_t colorTemperature() const { return _warmPercent; }
 
-  // True when this board drives the two-temperature boost-driver frontlight
-  // rather than a single dimmed channel. Hosts can use it to decide whether to
-  // offer a colour-temperature control at all.
+  // True when the board can vary colour temperature: de-link's two-temperature
+  // boost-driver frontlight (warmGpio + coolGpio) OR upstream's dual-PWM warm/cool
+  // pair (gpio + gpioWarm, e.g. X4-Pro). Hosts use it to decide whether to offer a
+  // colour-temperature control at all.
   static bool hasColorTemperature() {
 #if FREEINK_CAP_FRONTLIGHT
-    return BoardConfig::ACTIVE.frontlight.warmGpio != BoardConfig::PIN_UNASSIGNED &&
-           BoardConfig::ACTIVE.frontlight.coolGpio != BoardConfig::PIN_UNASSIGNED;
+    const auto& fl = BoardConfig::ACTIVE.frontlight;
+    return (fl.warmGpio != BoardConfig::PIN_UNASSIGNED && fl.coolGpio != BoardConfig::PIN_UNASSIGNED) ||
+           (fl.gpio != BoardConfig::PIN_UNASSIGNED && fl.gpioWarm != BoardConfig::PIN_UNASSIGNED);
 #else
-    return false;
+    return false;  // frontlight code not compiled in (FREEINK_CAP_FRONTLIGHT=0)
 #endif
   }
 

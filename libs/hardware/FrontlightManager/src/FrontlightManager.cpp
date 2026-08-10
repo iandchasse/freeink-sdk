@@ -5,6 +5,10 @@
 #include <driver/gpio.h>
 #include <driver/ledc.h>
 
+// Header-only PM1 PMIC access, used only by the viaPm1Pwm (Paper Mono) frontlight
+// path below. Kept for upstream parity; de-link's own path is the boost driver.
+#include <M5Pm1.h>
+
 namespace {
 uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
 
@@ -23,6 +27,28 @@ constexpr ledc_channel_t kChBright = LEDC_CHANNEL_0;
 constexpr ledc_channel_t kChWarm = LEDC_CHANNEL_1;
 constexpr ledc_channel_t kChCool = LEDC_CHANNEL_2;
 
+// --- Upstream single-channel / Paper Mono PM1 path (parity; unused on de-link) ---
+// Paper Mono: the PWM lives in the M5PM1 PMIC, not the ESP. PM1 GPIO3 routed to
+// alt-function PWM0 drives the AW9967 frontlight driver. Duty register is
+// 12-bit; the high byte's bit 4 is the channel-enable bit. Perception-weighted
+// like M5Unified's bring-up: duty = brightness^2 scaled into 12 bits.
+constexpr uint8_t PM1_PWM_ENABLE = 0x10;
+
+void pm1FrontlightAttach(uint32_t freqHz) {
+  freeink::m5pm1::beginBus();
+  // GPIO3 to push-pull, alt-function PWM0.
+  freeink::m5pm1::updateReg(freeink::m5pm1::REG_GPIO_DRV, 1u << 3, 0);
+  freeink::m5pm1::updateReg(freeink::m5pm1::REG_GPIO_FUNC0, 0xC0, 0xC0);
+  freeink::m5pm1::writeReg16(freeink::m5pm1::REG_PWM_FREQ_L, static_cast<uint16_t>(freqHz));
+}
+
+void pm1FrontlightWrite(uint32_t pct) {
+  const uint32_t duty = (pct * pct * 4095u) / 10000u;  // 0-100% -> 12-bit, gamma ~2
+  const uint8_t data[2] = {static_cast<uint8_t>(duty & 0xFF),
+                           static_cast<uint8_t>(((duty >> 8) & 0x0F) | (duty ? PM1_PWM_ENABLE : 0))};
+  freeink::m5pm1::writeBytes(freeink::m5pm1::REG_PWM0_DUTY_L, data, sizeof(data));
+}
+
 void writeDuty(ledc_channel_t ch, uint32_t duty) {
   ledc_set_duty(kSpeed, ch, duty);
   ledc_update_duty(kSpeed, ch);
@@ -40,6 +66,12 @@ void zeroAllChannels() {
 void FrontlightManager::begin() {
 #if FREEINK_CAP_FRONTLIGHT
   const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (fl.viaPm1Pwm) {
+    pm1FrontlightAttach(fl.pwmFrequency);
+    _begun = true;
+    setBrightness(0);
+    return;
+  }
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
 
   if (hasColorTemperature()) {
@@ -232,6 +264,16 @@ void FrontlightManager::updateMultiChannel() {
 void FrontlightManager::setBrightness(uint8_t percent) {
 #if FREEINK_CAP_FRONTLIGHT
   const auto& fl = BoardConfig::ACTIVE.frontlight;
+  // Paper Mono drives the frontlight through the PM1 PMIC (no ESP gpio), so it must
+  // route before the gpio guard below. Kept for upstream parity; inert on de-link.
+  if (fl.viaPm1Pwm) {
+    if (!_begun) return;
+    if (percent > 100) percent = 100;
+    _brightness = percent;
+    _lastBrightness = percent;
+    pm1FrontlightWrite(percent);
+    return;
+  }
   if (!_begun || fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
   if (percent > 100) percent = 100;
 

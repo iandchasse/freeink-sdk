@@ -1012,6 +1012,43 @@ void testInteractionOverflowFlag() {
   CHECK(!buffer.overflowed());
 }
 
+void testContentWidthTabBarLayout() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> interactions;
+  Frame<8> frame(draw, device, input, interactions);
+
+  TabItem tabs[2];
+  tabs[0].label = "One";
+  tabs[0].value = 10;
+  tabs[0].selected = true;
+  tabs[1].label = "Longer";
+  tabs[1].value = 20;
+  TabBarProps bar;
+  bar.tabs = tabs;
+  bar.count = 2;
+  bar.action = 60;
+  bar.layout = TabBarLayout::ContentWidth;
+  bar.leadingInset = 20;
+  bar.gap = 8;
+  bar.tabInset = Insets{2, 0, 4, 0};
+  bar.contentInset = Insets{2, 8, 2, 8};
+  tabBar(frame, Rect{0, 0, 480, 40}, bar);
+
+  CHECK_EQ(interactions.count(), 2u);
+  // Monospace labels are 18px and 36px wide. With 8px content padding,
+  // pills start at x=20 and x=62 instead of being centered in 240px slots.
+  CHECK_EQ(draw.ops[0].rect.x, 20);
+  CHECK_EQ(draw.ops[0].rect.width, 34);
+  CHECK_EQ(draw.ops[2].rect.x, 62);
+  CHECK_EQ(draw.ops[2].rect.width, 52);
+  InputSnapshot tap;
+  tap.touchReleased = true;
+  tap.touchX = 70;
+  tap.touchY = 20;
+  CHECK_EQ(interactions.route(tap).value, 20);
+}
 
 void testRoundedRaffSurfaces() {
   // Mirrors the retired RoundedRaffTheme: pill settings tabs with a bottom
@@ -2029,6 +2066,68 @@ void testKeyboardAltCaseFlip() {
   CHECK(keyboardAltOutputFor(en, QWERTY_KEY_BACKSPACE) == nullptr);
 }
 
+void testTouchTapQueue() {
+  TouchTapQueue<2> taps;
+  CHECK(taps.empty());
+  CHECK(taps.push(10, 20));
+  CHECK(taps.push(30, 40));
+  CHECK_EQ(taps.size(), 2u);
+
+  // Full queues retain current input and report that the oldest tap dropped.
+  CHECK(!taps.push(50, 60));
+  CHECK(taps.overflowed());
+  int16_t x = 0;
+  int16_t y = 0;
+  CHECK(taps.pop(x, y));
+  CHECK_EQ(x, 30);
+  CHECK_EQ(y, 40);
+  CHECK(taps.pop(x, y));
+  CHECK_EQ(x, 50);
+  CHECK_EQ(y, 60);
+  CHECK(!taps.pop(x, y));
+
+  taps.clear();
+  CHECK(taps.empty());
+  CHECK(!taps.overflowed());
+}
+
+void testKeyboardNavigatorAndActivation() {
+  const KeyboardLayout& layout = builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, false, false, true);
+  KeyboardNavigator nav;
+  CHECK_EQ(nav.logicalIndex(layout), 0);
+  CHECK_EQ(nav.selected(layout)->value, '1');
+
+  nav.moveCol(layout, -1);
+  CHECK_EQ(nav.col(), 9);  // wraps within the ten-key digit row
+  nav.moveRow(layout, 1);
+  CHECK_EQ(nav.row(), 1);
+  CHECK_EQ(nav.col(), 9);  // same-width row preserves the column
+  nav.moveRow(layout, 1);
+  CHECK_EQ(nav.row(), 2);
+  CHECK_EQ(nav.col(), 8);  // proportional mapping: ten columns -> nine
+  CHECK(nav.syncToValue(layout, QWERTY_KEY_SPACE));
+  CHECK_EQ(nav.selected(layout)->kind, KeyKind::Space);
+  CHECK(nav.logicalIndex(layout) >= 0);
+
+  KeyboardActivation activation = keyboardActivationFor(layout, 'q');
+  CHECK_EQ(activation.kind, KeyboardActivationKind::Text);
+  CHECK(std::strcmp(activation.text, "q") == 0);
+  activation = keyboardActivationFor(layout, 'q', /*longPress=*/true);
+  CHECK_EQ(activation.kind, KeyboardActivationKind::Text);
+  CHECK(std::strcmp(activation.text, "Q") == 0);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_SHIFT).kind, KeyboardActivationKind::Shift);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_MODE).kind, KeyboardActivationKind::Mode);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_BACKSPACE).kind, KeyboardActivationKind::Delete);
+  CHECK_EQ(keyboardActivationFor(layout, QWERTY_KEY_ENTER).kind, KeyboardActivationKind::Submit);
+  CHECK_EQ(keyboardActivationFor(layout, 32000).kind, KeyboardActivationKind::None);
+
+  const char utf8[] = "a\xc3\xb1z";
+  CHECK_EQ(utf8NextBoundary(utf8, 4, 0), 1u);
+  CHECK_EQ(utf8NextBoundary(utf8, 4, 1), 3u);
+  CHECK_EQ(utf8PreviousBoundary(utf8, 4, 3), 1u);
+  CHECK_EQ(utf8PreviousBoundary(utf8, 4, 4), 3u);
+}
+
 void testTouchHoldRouter() {
   InteractionBuffer<8> interactions;
   const auto rebuild = [&] {
@@ -2563,6 +2662,7 @@ int main() {
   testCrossInkReaderMenuList();
   testCrossInkReadingStatsSurfaces();
   testInteractionOverflowFlag();
+  testContentWidthTabBarLayout();
   testRoundedRaffSurfaces();
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
@@ -2585,6 +2685,8 @@ int main() {
   testNumberRowLayouts();
   testKeyboardEntryLongPressAlt();
   testKeyboardAltCaseFlip();
+  testTouchTapQueue();
+  testKeyboardNavigatorAndActivation();
   testTouchHoldRouter();
   testKeyboardBottomHitOverflow();
   testHeaderLeadingButton();
