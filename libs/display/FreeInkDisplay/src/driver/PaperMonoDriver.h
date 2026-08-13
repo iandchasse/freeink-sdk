@@ -6,8 +6,8 @@
 
 namespace freeink {
 
-// Paper Mono panel driver. The controller is an SSD1677 (the file name is
-// historical); every waveform it runs here is a host-authored 111-byte LUT.
+// Paper Mono panel driver. The controller is an SSD1677; every waveform it
+// runs here is a host-authored 111-byte LUT.
 //
 // Binary UI and reader Fast paints use the panel's internal, temperature-
 // selected, non-flashing OTP waveform. Balanced book paints are one target-
@@ -16,7 +16,7 @@ namespace freeink {
 // frame, then the white dose) that erases a little residue on every page turn
 // instead of letting ghosts accumulate until the corrective refresh. Changed
 // pixels and every target gray/black pixel run the full driven classes.
-struct Ssd1683GrayParams {
+struct PaperMonoGrayParams {
   // Retired endpoint-polish count, kept only so stored presets keep loading.
   // setGrayParams() ignores it: the driven classes are right-aligned and end
   // target-directed, and a 1+1 polish dither was measured to clean nothing.
@@ -35,7 +35,7 @@ struct Ssd1683GrayParams {
   uint8_t frameRate = 0;
 };
 
-class Ssd1683Driver final : public PanelDriver {
+class PaperMonoDriver final : public PanelDriver {
  public:
   uint32_t spiHz() const override;
   BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveHigh; }
@@ -82,7 +82,7 @@ class Ssd1683Driver final : public PanelDriver {
   // re-blacken the unchanged background every update. See the comment there.
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
 
-  void setGrayParams(const Ssd1683GrayParams& params);
+  void setGrayParams(const PaperMonoGrayParams& params);
   void abortGray() { abortPostRefresh(); }
   void resetGray();
 
@@ -108,13 +108,17 @@ class Ssd1683Driver final : public PanelDriver {
   void activateOtp(EpdBus& bus);
   void powerOffController(EpdBus& bus);
   void loadCustomLut(EpdBus& bus, const uint8_t lut[111]);
-  uint16_t makeTriLut(uint8_t out[111]) const;
+  // bgTopUp=false leaves LUT entry 0 completely idle (no background top-up)
+  // for overlay passes, where entry 0 also holds undriven black text.
+  uint16_t makeTriLut(uint8_t out[111], bool bgTopUp = true) const;
   uint16_t makePostCleanLut(uint8_t out[111]) const;
   bool runOtpUpdate(EpdBus& bus, const uint8_t* bwTarget, bool forceAll);
   // Encodes the source-to-target transition against the recorded glass state,
   // runs its required activations plus optional endpoint post-clean, and waits
-  // them out. Returns true when a waveform actually ran.
-  bool runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective);
+  // them out. Returns true when a waveform actually ran. overlayOnly restricts
+  // the drive set to changed pixels (the AA grays) for the follow-up pass after
+  // a separately displayed B/W base — see displayGray().
+  bool runUpdate(EpdBus& bus, const uint8_t* bwTarget, bool useGray, bool corrective, bool overlayOnly = false);
   void stashTarget(const uint8_t* fb, RefreshMode mode);
   bool commitPending(EpdBus& bus, bool useGray);
   void clearGrayStaging();
@@ -144,7 +148,7 @@ class Ssd1683Driver final : public PanelDriver {
   std::atomic<uint32_t> _abortGeneration{0};
   uint32_t _displayWorkGeneration = 0;
   TriParams _tri{};
-  Ssd1683GrayParams _grayParams{};
+  PaperMonoGrayParams _grayParams{};
 
   // All logical raster order; writePlane() applies the 180-degree mount
   // transform on the way out.
@@ -164,9 +168,9 @@ class Ssd1683Driver final : public PanelDriver {
   uint16_t _grayMsbRowsCovered = 0;
 };
 
-Ssd1683Driver& ssd1683Driver();
-void ssd1683SetGrayParams(const Ssd1683GrayParams& params);
-void ssd1683AbortGray();
-void ssd1683ResetGray();
+PaperMonoDriver& paperMonoDriver();
+void paperMonoSetGrayParams(const PaperMonoGrayParams& params);
+void paperMonoAbortGray();
+void paperMonoResetGray();
 
 }  // namespace freeink

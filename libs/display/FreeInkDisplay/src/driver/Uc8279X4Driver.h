@@ -16,8 +16,8 @@
 //
 // Same KW differential paradigm as the UC8179 sibling: DTM1 (0x10) = OLD plane,
 // DTM2 (0x13) = NEW plane, OTP waveforms for B/W (PSR REG=0 at refresh),
-// external 5x49 LUTs for AA grayscale (REG=1). BUSY_N: low while busy
-// (BusyPolarity::X3TwoPhase), same async split as the UC8179.
+// external 5x49 LUTs for AA grayscale (REG=1). BUSY_N is low while busy;
+// production waits one tick and then polls until it returns HIGH.
 
 #include "PanelDriver.h"
 
@@ -59,7 +59,7 @@ class Uc8279X4Driver : public PanelDriver {
   explicit Uc8279X4Driver(const Uc8279X4Config& cfg = uc8279X4DefaultConfig());
 
   uint32_t spiHz() const override;
-  BusyPolarity busyPolarity() const override { return BusyPolarity::X3TwoPhase; }
+  BusyPolarity busyPolarity() const override { return BusyPolarity::UcIdleHigh; }
   PanelGeometry geometry() const override;
 
   void begin(EpdBus& bus) override;
@@ -110,6 +110,13 @@ class Uc8279X4Driver : public PanelDriver {
   bool _darkBackground = false;
   bool _needFullClear = true;
   bool _oldPlaneValid = false;
+  // Set after every grayscale (AA) refresh. The AA overlay leaves gray edge
+  // charge the plain B/W fast diff can't scrub (the B/W baseline records those
+  // pixels as white), so it accumulates under rapid page turns → garble. Consumed
+  // by the next B/W displayStart to RE-DRIVE every pixel to its target (DTM1 =
+  // ~newframe), scrubbing the residue with a cheap DU (no GC flash) — the same
+  // trick as _darkBackground, applied once after AA.
+  bool _redriveAfterGray = false;
   // AA CDI select: first grayscale refresh after init sends cdiAaFirst, later
   // ones cdiAaLater (border hold), per the vendor reference.
   bool _grayRefreshedOnce = false;
