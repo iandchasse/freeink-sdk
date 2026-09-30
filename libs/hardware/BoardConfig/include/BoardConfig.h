@@ -198,10 +198,10 @@
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
 #ifndef FREEINK_CAP_TOUCH
-#define FREEINK_CAP_TOUCH                                                                               \
-  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
+#define FREEINK_CAP_TOUCH                                                                                    \
+  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY ||      \
    FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || \
-   FREEINK_DEVICE_EEGO_A4)
+   FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_SILKSCREEN)
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 // EEGO A4's frontlight is an I2C LED driver (viaI2cLed), not LEDC PWM — the
@@ -669,6 +669,26 @@ struct TouchConfig {
   // controller). false = active-LOW (drive LOW to power it, e.g. X4 Pro's GPIO2). The
   // reset path drives the ON level; the sleep path drives the OFF level.
   bool powerEnableActiveHigh = true;
+  // The panel may be fitted without a touch layer. When neither `controller` nor
+  // `fallbackController` answers, touch is switched off for the session
+  // (`controller` becomes None, so hasTouch() is false) and the result is kept in
+  // RTC memory, so deep-sleep wakes skip the probe; a cold boot probes again.
+  bool optional = false;
+  // Hardware reset before the first transaction: `reset` LOW for at least
+  // resetPulseMs, then HIGH for at least resetSettleMs. 0 = the controller's
+  // existing begin sequence. Honoured by the FT5x06 path.
+  uint8_t resetPulseMs = 0;
+  uint16_t resetSettleMs = 0;
+  // Second controller probed when `controller` does not answer, at fallbackAddr
+  // (a GT911 also tries i2cAddressAlt). None = no fallback.
+  TouchController fallbackController = TouchController::None;
+  uint8_t fallbackAddr = 0;
+  // Send the controller its lowest-power command at every deep-sleep entry
+  // (InputManager::prepareTouchForSleep): for panels on an always-on rail.
+  bool hibernateInSleep = false;
+  // The board keeps its physical navigation keys when touch is present, so the
+  // key-only UI (button hints, front-button remap) stays. See hasFrontButtons().
+  bool buttonsAlongsideTouch = false;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -811,6 +831,11 @@ struct SensorsConfig {
   // The RTC has no backup supply, so losing time is routine: firmware should
   // fetch the time again whenever the RTC reports it invalid, not only once.
   bool rtcResyncWhenInvalid = false;
+  // Bus care for pull-ups on an always-on rail (SharedI2c.h): the first begin of
+  // the bus in a boot clocks it free if a slave holds SDA LOW, and
+  // releaseSensorBusForSleep() ends it and leaves SDA/SCL released before deep
+  // sleep. A line held LOW costs 3.3 V / R_pull-up for as long as it stays LOW.
+  bool i2cBusRecovery = false;
 };
 
 // How the panel is mounted relative to the driver's native scan. Any board injects
@@ -1984,8 +2009,8 @@ static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
 // the LDO enable is tied to VIN, so there is no power latch (§3.5). The eight
 // keys are on two ADC ladders (IO1, IO4; §9.1). The front light (§7) is an
 // optional TPS923610 block driven only when the build sets FREEINK_CAP_FRONTLIGHT;
-// otherwise IO42 (ADIM) and IO40 (COLOR_SEL) stay parked LOW. Touch (§8) is
-// optional and not described here yet: IO11 (TP_RST) is held LOW in sleep.
+// otherwise IO42 (ADIM) and IO40 (COLOR_SEL) stay parked LOW. Touch (§8) is an
+// optional tail on J4, probed at boot; the keys stay in use when it is fitted.
 //
 // Software over-voltage trip on the front light's LED rail (LED_SW), in mV. 23 V
 // clears the bonded ~15 V panel light on J3 and an external J6 string of up to
@@ -2020,7 +2045,46 @@ constexpr BoardProfile SILKSCREEN = {
     PIN_UNASSIGNED,  // batteryChargeStatus: USB_STAT IO9 is an analog ladder, not a digital /STAT (§3.7)
     2.0f,            // batteryDividerMultiplier: R12/R10 1M/1M
     PIN_UNASSIGNED,  // usbDetect: no GPIO senses VBUS (§4)
-    NO_TOUCH,
+    // Touch (§8): optional -T01C/-FT01C tail on J4, controller VDD on the unswitched 3V3
+    // (R42). The GDEQ0426T82-FT01C drawing names an FT6336U at 0x38, driven through the
+    // FT5x06 path (INT-gated polling, G_MODE set at begin). SDA 38 / SCL 39 are the shared
+    // sensor bus, so the touch runs at the sensor-bus clock. INT IO41 has no board
+    // pull-up, so the FT path uses INPUT_PULLUP while awake. RST IO11: >= 5 ms LOW, then
+    // >= 300 ms before the first transaction. A GT911 at 0x5D (0x14 via i2cAddressAlt) is
+    // the fallback, reset through its INT strap sequence. The orientation (swapXY, flipY,
+    // raw 0-799 / 0-479 after the swap) is an UNVERIFIED guess carried over from the
+    // first port; map the corners at bring-up. Asleep in deep sleep (hibernateInSleep),
+    // and the eight keys stay the primary input when touch is fitted.
+    // {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,synthConfirm,altAddr,irqActiveLow,
+    //  coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh,optional,resetPulseMs,
+    //  resetSettleMs,fallbackController,fallbackAddr,hibernateInSleep,buttonsAlongsideTouch}
+    {TouchController::Ft5x06,
+     38,
+     39,
+     41,
+     11,
+     0x38,
+     0,
+     799,
+     0,
+     479,
+     false,
+     0x14,
+     true,
+     false,
+     PIN_UNASSIGNED,
+     true,
+     false,
+     true,
+     false,
+     true,
+     true,
+     5,
+     300,
+     TouchController::Gt911,
+     0x5D,
+     true,
+     true},
     // Front light (§7, §13.1): TPS923610 ADIM on IO42 is both enable and analog dimming.
     // 25 kHz carrier (TI: 10-200 kHz) at 10 bits: Arduino-ESP32 3.x clocks LEDC from the
     // 40 MHz XTAL, and 40 MHz / 25 kHz = 1600 >= 2^10 (11 bits would need 2048).
@@ -2039,11 +2103,14 @@ constexpr BoardProfile SILKSCREEN = {
     NO_GAUGE,
     NO_MIC,
     // DS3231MZ RTC (U13) at 0x68 on the shared I2C bus SDA 38 / SCL 39, 2.2k external
-    // pull-ups (§10). 100 kHz until 400 kHz is measured on the board. EN32KHZ cleared;
-    // the alternate U14 RV-8263-C7 (PCF85063-compatible) is probed at 0x51. No backup
-    // cell, so time is fetched again whenever the RTC reports it lost.
+    // pull-ups (§10). 100 kHz until 400 kHz is measured on the board; the touch
+    // controller runs at the same clock. EN32KHZ cleared; the alternate U14 RV-8263-C7
+    // (PCF85063-compatible) is probed at 0x51. No backup cell, so time is fetched again
+    // whenever the RTC reports it lost. The pull-ups are on the always-on 3V3 and J6
+    // exposes the bus, so a stuck bus is freed at boot and the bus is released before
+    // deep sleep (1.5 mA per line held LOW).
     {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None, false, false, false, true, RtcType::Pcf85063, 0x51,
-     true},
+     true, true},
     1.0f,  // uiScale: button-navigated
     // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5). Sleep at
     // 3.4 V on P+, above the ~3.3 V "0%" point; the DW01A 2.4 V trip is a last resort.
@@ -2053,12 +2120,13 @@ constexpr BoardProfile SILKSCREEN = {
     false,  // batteryChargeStatusActiveHigh: unused (no digital STAT)
     NO_I2C_FRONTLIGHT,
     // parkedPins {pin, boot, sleep}. EPD CS has no pull-up: HIGH before any SCLK edge
-    // and through sleep (§6.1). ADIM and COLOR_SEL LOW (§7, §13.1). Touch reset LOW in
-    // sleep, since J4 VDD is unswitched (§8).
+    // and through sleep (§6.1). ADIM and COLOR_SEL LOW (§7, §13.1). Touch reset HIGH at
+    // boot and through sleep: J4 VDD is unswitched (§8), and an FT6336U's ~3 kΩ RSTN
+    // pull-up would draw ~1.1 mA from a LOW pin and reset the chip out of hibernate.
     {{14, PinPark::High, PinPark::High},
      {42, PinPark::Low, PinPark::Low},
      {40, PinPark::Low, PinPark::Low},
-     {11, PinPark::None, PinPark::Low}},
+     {11, PinPark::High, PinPark::High}},
     // adcLadders: windows in calibrated mV (11 dB), centred in the chord gaps (§9.1).
     // LEFT starts at 1090 so LEFT+OK (<= ~1089 mV) stays rejected; LEFT+BACK aliases
     // to LEFT and UP(1)+UP(2) to UP. The UP(2)/released split is provisional until
@@ -2291,6 +2359,9 @@ inline bool isOnePage() { return ACTIVE.board == Board::OnePage; }
 inline bool isWsEpaper397() { return ACTIVE.board == Board::WsEpaper397; }
 inline bool isSilkscreen() { return ACTIVE.board == Board::Silkscreen; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
+// Physical navigation keys: every board without touch, and touch boards that keep
+// their keys (TouchConfig::buttonsAlongsideTouch).
+inline bool hasFrontButtons() { return !hasTouch() || ACTIVE.touch.buttonsAlongsideTouch; }
 inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED || ACTIVE.frontlight.viaPm1Pwm; }
 inline bool hasI2cFrontlight() { return ACTIVE.i2cFrontlight.controller != I2cFrontlightController::None; }

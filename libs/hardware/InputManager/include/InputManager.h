@@ -113,6 +113,19 @@ class InputManager {
 
   // True if this board has a touch controller configured.
   bool hasTouch() const;
+
+  // Deep-sleep entry for a touch panel on an always-on rail
+  // (TouchConfig::hibernateInSleep; NotApplicable elsewhere). A FocalTech
+  // controller gets hibernate (0xA5 = 0x03); when one found at boot does not
+  // ACK (its Monitor mode closes the serial port), it is reset
+  // (TouchConfig::resetPulseMs) and the command repeated once. With no
+  // controller found, one best-effort hibernate goes to the primary address in
+  // case a tail is fitted but did not answer the probe. A GT911 found at boot
+  // gets its sleep command with INT held LOW through sleep. Call from the
+  // sleeping task before the I2C bus is released.
+  enum class TouchSleepResult : uint8_t { NotApplicable, Asleep, NoAnswer };
+  TouchSleepResult prepareTouchForSleep();
+
   // True only while a GT911 controller is present. Other touch controllers
   // retain their existing single-contact contract.
   bool supportsMultiTouch() const;
@@ -325,6 +338,10 @@ class InputManager {
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
   // BoardConfig::ACTIVE.touch.controller (CHSC6x, GT911, or FT5x06/FT6336).
   void beginTouch();
+  void beginTouchController();  // begin ACTIVE.touch.controller; sets touchDataEnabled
+  bool pulseTouchReset();       // TouchConfig::resetPulseMs sequence; false when not configured
+  bool focaltechHibernate(uint8_t addr);
+  bool gt911Sleep();
   uint8_t serviceTouch();  // runs the machine; returns synthesized button mask
   void updateTouchFromIrq(unsigned long now,
                           int irqRaw);  // CHSC6x I2C poll + touch-bit gate
@@ -392,6 +409,10 @@ class InputManager {
 
   bool touchDataEnabled = false;         // I2C up, controller present
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
+  // prepareTouchForSleep() target: the controller the probe found, or the
+  // declared primary when none answered.
+  BoardConfig::TouchController touchSleepController = BoardConfig::TouchController::None;
+  uint8_t touchSleepAddr = 0;
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll
   unsigned long touchReleaseAt = 0;

@@ -6,6 +6,7 @@
 
 #if FREEINK_CAP_RTC
 
+#include <SharedI2c.h>
 #include <Wire.h>
 #include <soc/soc_caps.h>
 
@@ -63,7 +64,7 @@ void ensureWire() {
 #endif
   if (g_wireReady[bus]) return;
   auto& wire = sensorWire();
-  wire.begin(s.i2cSda, s.i2cScl, s.i2cHz);
+  freeink::i2c::beginBus(wire, s.i2cSda, s.i2cScl, s.i2cHz);
   g_wireReady[bus] = true;
 }
 

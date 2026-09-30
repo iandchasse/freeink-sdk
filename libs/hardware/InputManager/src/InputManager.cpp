@@ -7,8 +7,10 @@
 #include "MultiTouchGestureMath.h"
 
 #if FREEINK_CAP_TOUCH
+#include <SharedI2c.h>
 #include <Wire.h>
 #include <driver/gpio.h>
+#include <esp_system.h>
 #if FREEINK_DEVICE_MURPHY_M4
 #include <driver/i2c_master.h>
 #include <esp_rom_sys.h>
@@ -58,6 +60,38 @@ uint8_t powerPinMode() {
   if (BoardConfig::ACTIVE.input.powerExternalPull) return INPUT;
   return BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP;
 }
+
+#if FREEINK_CAP_TOUCH
+// Optional-panel probe result (TouchConfig::optional), kept in RTC memory so a
+// deep-sleep wake skips the reset and probe of a panel that is not fitted, and
+// starts with the controller that answered last time. RTC data survives only
+// deep sleep; the reset-reason check and the magic word reject anything else.
+enum class TouchProbe : uint8_t { Unknown, Primary, Fallback, Absent };
+constexpr uint32_t TOUCH_PROBE_MAGIC = 0x54434850;  // "TCHP"
+RTC_DATA_ATTR uint32_t touchProbeMagic = 0;
+RTC_DATA_ATTR uint8_t touchProbeResult = 0;
+
+TouchProbe cachedTouchProbe() {
+  if (esp_reset_reason() != ESP_RST_DEEPSLEEP || touchProbeMagic != TOUCH_PROBE_MAGIC) return TouchProbe::Unknown;
+  if (touchProbeResult > static_cast<uint8_t>(TouchProbe::Absent)) return TouchProbe::Unknown;
+  return static_cast<TouchProbe>(touchProbeResult);
+}
+
+void storeTouchProbe(const TouchProbe result) {
+  touchProbeResult = static_cast<uint8_t>(result);
+  touchProbeMagic = TOUCH_PROBE_MAGIC;
+}
+
+// FocalTech hibernate command (FT5x06 / FT6x36 register map).
+constexpr uint8_t FT_REG_POWER_MODE = 0xA5;
+constexpr uint8_t FT_POWER_HIBERNATE = 0x03;
+// GT911 sleep (datasheet §8.1): INT LOW for at least 5 ms, command 0x05 to
+// 0x8040, then at least 58 ms before INT may change; INT stays LOW in sleep.
+constexpr uint16_t GT911_REG_COMMAND = 0x8040;
+constexpr uint8_t GT911_CMD_SLEEP = 0x05;
+constexpr uint32_t GT911_SLEEP_INT_LOW_MS = 5;
+constexpr uint32_t GT911_SLEEP_SETTLE_MS = 58;
+#endif
 
 #if defined(TOUCH_PROBE_DEBUG)
 void touchDebugPrintf(const char* format, ...) {
@@ -1313,10 +1347,69 @@ bool InputManager::wasHomeKeyLongPressed() const { return touchHomeKeyLongEvent;
 
 void InputManager::beginTouch() {
 #if FREEINK_CAP_TOUCH
-  const auto& t = BoardConfig::ACTIVE.touch;
+  auto& t = BoardConfig::ACTIVE.touch;
   if (t.controller == BoardConfig::TouchController::None) {
     return;
   }
+  const BoardConfig::TouchController primary = t.controller;
+  const uint8_t primaryAddr = t.i2cAddress;
+  touchSleepController = primary;
+  touchSleepAddr = primaryAddr;
+  if (!t.optional && t.fallbackController == BoardConfig::TouchController::None) {
+    beginTouchController();
+    return;
+  }
+
+  // A GT911 left asleep holds INT LOW through deep sleep; release the pad before
+  // any reset or address-strap sequence drives it.
+  if (t.hibernateInSleep && t.irq >= 0) gpio_hold_dis(static_cast<gpio_num_t>(t.irq));
+
+  const TouchProbe cached = t.optional ? cachedTouchProbe() : TouchProbe::Unknown;
+  bool found = false;
+  bool onFallback = false;
+  if (cached != TouchProbe::Absent) {
+    auto tryController = [&](const BoardConfig::TouchController controller, const uint8_t addr) {
+      if (controller == BoardConfig::TouchController::None || addr == 0) return false;
+      t.controller = controller;
+      t.i2cAddress = addr;
+      beginTouchController();
+      return touchDataEnabled;
+    };
+    // Start with the controller that answered before this deep sleep.
+    const bool fallbackFirst = cached == TouchProbe::Fallback;
+    if (fallbackFirst && tryController(t.fallbackController, t.fallbackAddr)) {
+      found = onFallback = true;
+    } else if (tryController(primary, primaryAddr)) {
+      found = true;
+    } else if (!fallbackFirst && tryController(t.fallbackController, t.fallbackAddr)) {
+      found = onFallback = true;
+    }
+  }
+
+  if (found) {
+    touchSleepController = t.controller;
+    touchSleepAddr = t.i2cAddress;
+  } else {
+    touchDataEnabled = false;
+    t.controller = primary;
+    t.i2cAddress = primaryAddr;
+    // An optional panel that did not answer is no touch panel for this session,
+    // so BoardConfig::hasTouch() and hasTouch() agree.
+    if (t.optional) t.controller = BoardConfig::TouchController::None;
+  }
+  if (t.optional) {
+    storeTouchProbe(!found ? TouchProbe::Absent : onFallback ? TouchProbe::Fallback : TouchProbe::Primary);
+  }
+#ifdef TOUCH_PROBE_DEBUG
+  touchDebugPrintf("[touch] probe: cached=%u found=%d fallback=%d addr=0x%02X\n", static_cast<unsigned>(cached), found,
+                   onFallback, touchSleepAddr);
+#endif
+#endif
+}
+
+void InputManager::beginTouchController() {
+#if FREEINK_CAP_TOUCH
+  const auto& t = BoardConfig::ACTIVE.touch;
   if (t.controller == BoardConfig::TouchController::Gt911) {
     beginGt911();
     return;
@@ -1337,10 +1430,35 @@ void InputManager::beginTouch() {
   // this controller, so detection polls I2C and gates on the frame's touch bit
   // instead (see decodeChsc6xFrame / updateTouchFromIrq).
   if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
-    Wire.begin(t.sda, t.scl, 100000);
+    freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
     Wire.setTimeOut(4);
     touchDataEnabled = true;
   }
+#endif
+}
+
+InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
+#if FREEINK_CAP_TOUCH
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (!t.hibernateInSleep || t.sda < 0 || t.scl < 0) return TouchSleepResult::NotApplicable;
+  const bool gt911 = touchSleepController == BoardConfig::TouchController::Gt911;
+  const bool focaltech = touchSleepController == BoardConfig::TouchController::Ft5x06 ||
+                         touchSleepController == BoardConfig::TouchController::Ft6336u;
+  // A GT911 only when the probe found one: holding INT LOW against another
+  // controller would wake it (FocalTech) or fight its INT output.
+  if (gt911 ? !touchDataEnabled : (!focaltech || touchSleepAddr == 0)) return TouchSleepResult::NotApplicable;
+  // A session that skipped the probe (panel cached as absent) has not started
+  // the bus; beginBus() is a no-op on a running one.
+  freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
+  Wire.setTimeOut(10);
+  if (gt911) return gt911Sleep() ? TouchSleepResult::Asleep : TouchSleepResult::NoAnswer;
+  bool asleep = focaltechHibernate(touchSleepAddr);
+  // Only a controller found at boot is worth the reset and settle time: with
+  // none found, the single write above is the whole (cheap) attempt.
+  if (!asleep && touchDataEnabled && pulseTouchReset()) asleep = focaltechHibernate(touchSleepAddr);
+  return asleep ? TouchSleepResult::Asleep : TouchSleepResult::NoAnswer;
+#else
+  return TouchSleepResult::NotApplicable;
 #endif
 }
 
@@ -1491,6 +1609,54 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
   return static_cast<uint32_t>(raw - rawMin) * outMax / (rawMax - rawMin);
 }
 
+// --- Reset and sleep commands ----------------------------------------------
+
+bool InputManager::pulseTouchReset() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.reset < 0 || t.resetPulseMs == 0) return false;
+  gpio_hold_dis(static_cast<gpio_num_t>(t.reset));
+  pinMode(t.reset, OUTPUT);
+  digitalWrite(t.reset, LOW);
+  // delay() can return up to one tick early, so each wait gets one more ms.
+  delay(t.resetPulseMs + 1U);
+  digitalWrite(t.reset, HIGH);
+  delay(t.resetSettleMs + 1U);
+  return true;
+}
+
+bool InputManager::focaltechHibernate(const uint8_t addr) {
+  Wire.beginTransmission(addr);
+  Wire.write(FT_REG_POWER_MODE);
+  Wire.write(FT_POWER_HIBERNATE);
+  return Wire.endTransmission() == 0;
+}
+
+bool InputManager::gt911Sleep() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (gt911Addr == 0 || t.irq < 0) return false;
+  const auto irq = static_cast<gpio_num_t>(t.irq);
+  gpio_hold_dis(irq);
+  gpio_set_level(irq, 0);
+  pinMode(t.irq, OUTPUT);
+  digitalWrite(t.irq, LOW);
+  delay(GT911_SLEEP_INT_LOW_MS + 1U);
+  Wire.beginTransmission(gt911Addr);
+  Wire.write(static_cast<uint8_t>(GT911_REG_COMMAND >> 8));
+  Wire.write(static_cast<uint8_t>(GT911_REG_COMMAND & 0xFF));
+  Wire.write(GT911_CMD_SLEEP);
+  if (Wire.endTransmission() != 0) {
+    // Still awake: a held LOW would fight its INT output, so leave the pad to
+    // the sleep-entry isolation.
+    pinMode(t.irq, INPUT);
+    return false;
+  }
+  delay(GT911_SLEEP_SETTLE_MS + 1U);
+  // A floating or HIGH INT wakes a sleeping GT911. The digital-pad hold lasts
+  // through deep sleep (PowerManager enables gpio_deep_sleep_hold_en).
+  gpio_hold_en(irq);
+  return true;
+}
+
 // --- FT5x06 / FT6336 (M5Stack Paper Mono) ----------------------------------
 
 bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
@@ -1525,12 +1691,15 @@ void InputManager::beginFt5x06() {
   freeink::papermono::enableTouch();
 #endif
 
-  // The bus is shared with M5PM1/M5IOE1/RX8130, whose standing profile is
-  // 100 kHz. FT6336 accepts that rate even though M5GFX uses 400 kHz for its
-  // controller-specific transactions.
-  Wire.begin(t.sda, t.scl, 100000);
+  // On a shared sensor bus this runs at the bus's profile clock (Paper Mono:
+  // M5PM1/M5IOE1/RX8130 at 100 kHz, which the FT6336 accepts even though M5GFX
+  // uses 400 kHz for its controller-specific transactions); otherwise 100 kHz.
+  freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
   Wire.setTimeOut(10);
   if (t.irq >= 0) pinMode(t.irq, INPUT_PULLUP);
+  // After a hardware reset and its settle time the controller answers at once,
+  // so a few attempts are enough.
+  const bool wasReset = pulseTouchReset();
 
   // Match M5GFX Touch_FT5x06::_check_init(): enter working mode, read the
   // chip/firmware/vendor window, then select polling/level interrupt mode.
@@ -1543,7 +1712,8 @@ void InputManager::beginFt5x06() {
   // check reads as "absent" on a perfectly working controller.
   uint8_t id[6] = {};
   bool wrMode = false, rdId = false, wrIrq = false;
-  for (int attempt = 0; attempt < 12 && !rdId; ++attempt) {
+  const int attempts = wasReset ? 3 : 12;
+  for (int attempt = 0; attempt < attempts && !rdId; ++attempt) {
     if (attempt) delay(50);
     wrMode = ft5x06WriteReg(0x00, 0x00);
     rdId = wrMode && ft5x06ReadReg(0xA3, id, sizeof(id));
@@ -1726,7 +1896,7 @@ void InputManager::beginGslx680() {
     delay(50);
   }
 
-  Wire.begin(t.sda, t.scl, 400000);
+  freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 400000));
   Wire.setTimeOut(10);
 
   const uint8_t z4[4] = {0, 0, 0, 0};
@@ -1891,7 +2061,7 @@ void InputManager::beginGt911() {
   }
 
   if (t.sda >= 0 && t.scl >= 0) {
-    Wire.begin(t.sda, t.scl, 400000);
+    freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 400000));
     Wire.setTimeOut(10);
   }
 
@@ -2048,7 +2218,7 @@ void InputManager::beginFt6336u() {
 
   if (t.sda >= 0 && t.scl >= 0) {
 #if !FREEINK_DEVICE_MURPHY_M4
-    Wire.begin(t.sda, t.scl, 400000);
+    freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 400000));
     Wire.setTimeOut(10);
 #endif
   }

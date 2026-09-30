@@ -4,6 +4,7 @@
 
 #if FREEINK_CAP_IMU
 
+#include <SharedI2c.h>
 #include <Wire.h>
 #include <soc/soc_caps.h>
 
@@ -76,7 +77,7 @@ void ensureWire() {
   if (g_wireReady[bus]) return;
   if (s.i2cSda < 0 || s.i2cScl < 0) return;  // no sensor bus on this board
   auto& wire = sensorWire();
-  wire.begin(s.i2cSda, s.i2cScl, s.i2cHz);
+  freeink::i2c::beginBus(wire, s.i2cSda, s.i2cScl, s.i2cHz);
   g_wireReady[bus] = true;
 }
 
