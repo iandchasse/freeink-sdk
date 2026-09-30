@@ -139,7 +139,7 @@ so the SD manager itself stays device-agnostic.
 | **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
-| **Silkscreen** | ESP32-S3 | SSD1677 | 800×480 B/W (GDEQ0426T82) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip), optional FT6336U touch tail probed at boot (keys kept, GT911 fallback), native 4-bit SDMMC behind a gated card rail, DS3231MZ or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
+| **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot) | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip), optional FT6336U touch tail probed at boot (keys kept, GT911 fallback), native 4-bit SDMMC behind a gated card rail, DS3231MZ or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -191,6 +191,20 @@ Resolution order:
 `detectXteinkDisplayController(verBytes, flg)` exposes the raw probe bytes and a
 verdict for bring-up logging; `applyXteinkDisplayController()` is the one-call
 convenience most consumers want. Both are no-ops on non-Xteink builds.
+
+The same probe serves **Silkscreen**, whose 4.26" panel is a Good Display
+GDEQ0426T82 (SSD1677) or a custom panel with a UC8279D (same 800×480 geometry
+and scan). Its profile's `DisplayProbeConfig` (`FREEINK_CAP_DISPLAY_PROBE_POLICY`)
+shapes the probe: every UltraChip answer selects the UC8279 driver whatever its
+LUT_VER (UC8179 is not linked; the raw LUT_VER becomes the variant, so an
+unknown one gets the driver's default tables), the probe runs at every cold boot
+(about 66 ms on an SSD1677, which is recognized only by elimination), a
+conclusive verdict is kept in RTC memory for deep-sleep wakes only (never NVS,
+so a swapped panel is always found), and `-DSILKSCREEN_DISPLAY_CONTROLLER=ssd1677`
+or `=uc8279` forces the controller and skips the probe. `displayControllerSource()`
+reports whether this boot probed, reused the cached verdict or was forced. An
+UltraChip `BUSY_N` gets the internal pull-up while awake (`DisplayPins::busyPullUp`)
+where an SSD1677 `BUSY` gets the pull-down, and neither is held into deep sleep.
 
 Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
 Chip-specific code in a consumer's *own* layer (deep-sleep wakeup, panic
@@ -337,7 +351,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_X4CLASSIC` | Xteink X4 Classic / X4C (S3, SSD1677/UC8179/UC8279 auto-detect, buttons-only — no touch/frontlight, + SDMMC) |
 | `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |
 | `-DFREEINK_DEVICE_PAPERS3` | M5Stack PaperS3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX + GT911 touch) |
-| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677 + ADC-ladder keys + optional touch + 4-bit SDMMC; the env sets `FREEINK_CAP_FRONTLIGHT`/`FREEINK_CAP_WARMLIGHT` when a light is fitted) |
+| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677/UC8279 auto-detect + ADC-ladder keys + optional touch + 4-bit SDMMC; the env sets `FREEINK_CAP_FRONTLIGHT`/`FREEINK_CAP_WARMLIGHT` when a light is fitted) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
@@ -365,6 +379,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_CHARGE_LADDER` | the analog charge-status ladder (`BoardConfig::hasChargeStatusLadder()`, `BatteryMonitor::pollChargeStatus()`) | on for Silkscreen |
 | `FREEINK_CAP_POWER_POLICY` | the `PowerConfig` policy fields, read through `BoardConfig::powerPolicy()` (all zero without it) | on for Silkscreen |
 | `FREEINK_CAP_I2C_RECOVERY` | `SensorsConfig::i2cBusRecovery` (stuck-bus recovery, sleep release in `SharedI2c.h`) | on for Silkscreen |
+| `FREEINK_CAP_DISPLAY_PROBE_POLICY` | the `DisplayProbeConfig` probe policy and `DisplayPins::busyPullUp`, read through `BoardConfig::displayProbePolicy()` / `displayBusyPullUp()` (the X4-family defaults without it), `displayControllerSource()`, and the UltraChip deep sleep in `PowerManager::sleepPanelWithoutDriver()` | on for Silkscreen |
 
 **Other flags:**
 
@@ -829,9 +844,9 @@ automatically as a dependency of `SDCardManager`.
    today's behaviour, so every existing positional initializer compiles unchanged
    and every other board behaves as before. Generic code reads the field; it never
    keys off the device. The fields below were added this way (for Silkscreen) and
-   are available to any board; a board that sets the ladder, power-policy or
-   bus-recovery fields also needs the matching `FREEINK_CAP_*` flag (on by default
-   for its device).
+   are available to any board; a board that sets the ladder, power-policy,
+   bus-recovery or display-probe fields also needs the matching `FREEINK_CAP_*`
+   flag (on by default for its device).
 
    A few generic changes from the same work apply to every board, as fixes:
    the EPD bus presets CS HIGH before SPI starts and RESET HIGH before its output
@@ -849,6 +864,8 @@ Leave a field out and the board keeps the old behaviour.
 | Struct | Field (default) | Effect when set |
 |---|---|---|
 | `DisplayPins` | `busyPullDown` (false) | Internal pull-down on an active-high `BUSY` with no external pull, awake only; `powerDownRailsForSleep()` removes it before deep sleep. |
+| `DisplayPins` | `busyPullUp` (false) | The same for an UltraChip `BUSY_N` (the UC81xx X4 drivers' `UcIdleHigh` wait, which has no timeout): internal pull-up while awake, so a missing panel reads idle; removed before deep sleep. A board whose probe picks SSD1677 or UltraChip sets both. Needs `FREEINK_CAP_DISPLAY_PROBE_POLICY`. |
+| `BoardProfile` | `displayProbe` (the X4-family rule) | `DisplayProbeConfig` for `applyXteinkDisplayController()`: `forced` (the build set `displayController`, no probe), `ultraChipController` (UC8279: every UltraChip answer, raw LUT_VER kept as the variant), `cacheAcrossDeepSleep` (reuse a conclusive verdict from RTC memory on a deep-sleep wake only), `x4ClassPanel` (the consumer applies its X4 panel policies whichever controller is found). Needs `FREEINK_CAP_DISPLAY_PROBE_POLICY`. |
 | `SdmmcPins` | `maxFreqKhz` (0 = 20 MHz), `internalPullups` (true) | Clock cap; set `internalPullups` false when the bus pull-ups sit on a gated card rail. |
 | `SdmmcPins` | `parkLowWhenOff` (false), `powerOffMs` (20), `powerOnSettleMs` (20) | Real power cycle around the mount: bus LOW with pulls off before the gate goes off, off for `powerOffMs`, settle after power-on. The bus is also parked at boot, on a failed mount, on shutdown and held LOW through deep sleep. |
 | `InputPins` | `powerExternalPull` (false) | The power button has its own pull: read it as plain `INPUT` and arm the wake with both internal pulls off (digital and RTC). |
@@ -869,7 +886,7 @@ Leave a field out and the board keeps the old behaviour.
 | `PowerConfig` | `lowBatteryCutoffMv` (0), `cutoffRadioAllowanceMv` (0) | `BatteryMonitor::isBelowCutoff(known, mv, radioOn)`: 3 consecutive once-a-second readings at or below the cutoff (less the allowance while the radio is on), never on external power or with no cell. |
 | `PowerConfig` | `releaseWaitMaxMs` (0 = unbounded) | A power button still held after this long at sleep entry: sleep until its release instead of spinning, and `PowerManager::takeReleaseWake()` tells the next boot to sleep again at once. |
 | `PowerConfig` | `earlyWakeDecision` (false) | The consumer decides sleep-or-boot right after the wake-hold check; `InputManager::begin(false)` defers the touch probe to `startTouch()`. |
-| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (an SSD1677 on an always-on rail: reset, then `0x10`/`0x03` bit-banged) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
+| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (a panel on an always-on rail: reset, then SSD1677 `0x10`/`0x03` or, with `FREEINK_CAP_DISPLAY_PROBE_POLICY`, UltraChip DSLP `0x07`/`0xA5` bit-banged, by the controller `ACTIVE` names) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
 | `PowerConfig` | `firmwareUpdateMinMv`, `awakeCeilingMin`, `radioOffWhenIdle` (0/0/false) | Data for the consumer: battery floor for firmware writes, awake ceiling on battery with no input or client traffic, and screens whose work has ended stop spinning the loop and drop the radio. |
 | `PowerConfig` | `wakeNoInputTimeoutS`, `storageErrorSleepS`, `awakeInputCapMin` (0/0/0) | Data for the consumer, on battery: sleep again after a power-button wake with no input, leave a dead-end storage-error screen, and an awake cap that only input (not client traffic) extends. |
 
@@ -900,7 +917,7 @@ the flag.)
 | Accessor | Reports |
 |---|---|
 | `BatteryMonitor::chargeLadderDiagnostics()` | the decoded and published charge state, the debounce candidate and run counters, the lost/disproved flags, the P+ cross-check window, the last oversampled pin mV and the sample count, from cached state (no ADC read) |
-| `FreeInkDisplay::busDiagnostics()` (`EpdBus::diagnostics()`) | the last BUSY wait (ms, tag, timed out) and wait/timeout counts; the last refresh a driver reported through `EpdBus::noteRefresh()` (the SSD1677 driver does): the mode it actually ran after any FAST→HALF/FULL promotion, the update-sequence byte, async/turn-off/custom-LUT, and activation-to-completion time |
+| `FreeInkDisplay::busDiagnostics()` (`EpdBus::diagnostics()`) | the last BUSY wait (ms, tag, timed out) and wait/timeout counts; the last refresh a driver reported through `EpdBus::noteRefresh()` (the SSD1677 and UC8279 X4 drivers do): the mode it actually ran after any FAST→HALF/FULL promotion, the update-sequence byte (SSD1677 `0x22`; UC8279 its `TSSET` byte, `0x1E` GC or `0x5A` DU, and its CDI for the gray waveform), async/turn-off/custom-LUT, and activation-to-completion time |
 | `SDCardManager::cardInfo()` | native SDMMC: card type (SDSC/SDHC/SDXC/MMC), CSD capacity, bus width, host cap, card max and real clock, CID name/MID/OID/revision/serial/date, power cycles the last mount used and its last error (SPI: mounted and type only) |
 | `FrontlightManager::monitorDiagnostics()` | LED-rail monitor trips (count, LED mV, limit, time) and the last reading (pin and LED mV), kept after the light is switched off, which clears `fault()` |
 | `InputManager::touchDiagnostics()` | whether touch is active and the address the controller answered at, the last raw contact before any mapping (FT5x06, FT6336U, GT911), the boot probe (cached, found, fallback) and the FocalTech ID window it read (`0xA3`-`0xA8`), reset pulses, the long-press threshold, and `prepareTouchForSleep()`'s result and reset-retry for this boot and for the last sleep entry before this wake that did something (a ghost wake's re-sleep, which runs before `startTouch()` and does nothing, keeps the record) |

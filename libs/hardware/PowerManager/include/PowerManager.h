@@ -48,18 +48,21 @@ class PowerManager {
   // normal init path. Display RESET is held LOW when its rail is cut (avoids
   // back-powering an unpowered controller) and HIGH when its rail remains on
   // (keeps deep-sleep state stable). NOTE: cutting the touch rail forfeits
-  // touch-to-wake. Also applies the profile's parkedPins sleep levels, takes an
-  // awake-only BUSY pull-down off (DisplayPins::busyPullDown), and holds a
-  // parkLowWhenOff SDMMC bus LOW.
+  // touch-to-wake. Also applies the profile's parkedPins sleep levels, takes the
+  // awake-only BUSY pulls off (DisplayPins::busyPullDown, busyPullUp), and holds
+  // a parkLowWhenOff SDMMC bus LOW.
   static void powerDownRailsForSleep();
 
   // Put an SSD1677 panel on an always-on rail into deep sleep without its driver,
   // for a sleep entry that must not run the display code (a reset loop): pulse
   // RESET (analog and clock off, the power-on state), wait for BUSY (bounded),
   // then send deep sleep 0x10 / 0x03 bit-banged on the display pins, leaving CS
-  // HIGH and SCLK/MOSI/DC LOW. Returns false, doing nothing, unless the profile
-  // declares an SSD1677 with RESET, CS, SCLK, MOSI and DC and no display rail
-  // switch (a switched rail is simply cut).
+  // HIGH and SCLK/MOSI/DC LOW. With FREEINK_CAP_DISPLAY_PROBE_POLICY, an
+  // UltraChip controller (UC8279/UC8179, as ACTIVE names it once the probe has
+  // run) gets its own: BUSY_N waited HIGH, then DSLP 0x07 / 0xA5. Returns false,
+  // doing nothing, unless the profile declares one of those controllers with
+  // RESET, CS, SCLK, MOSI and DC and no display rail switch (a switched rail is
+  // simply cut).
   static bool sleepPanelWithoutDriver();
 
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not

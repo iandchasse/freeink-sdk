@@ -147,10 +147,11 @@ void PowerManager::powerDownRailsForSleep() {
   const uint8_t resetSleepLevel = b.display.powerEnable >= 0 ? LOW : HIGH;
   holdRailOff(b.display.rst, resetSleepLevel);
   holdRailOff(b.display.powerEnable, LOW);
-  // The BUSY pull-down (DisplayPins::busyPullDown) is for the awake panel only.
-  // A controller that drives BUSY HIGH through its deep sleep (SSD1677) would
-  // sink into it all night, so BUSY sleeps as an input with no pulls, never held.
-  if (b.display.busyPullDown && b.display.busy >= 0) {
+  // The BUSY pulls (DisplayPins::busyPullDown, busyPullUp) are for the awake panel
+  // only. A controller that drives BUSY HIGH through its deep sleep (SSD1677)
+  // would sink into a pull-down all night, and one that drives BUSY_N LOW into a
+  // pull-up, so BUSY sleeps as an input with no pulls, never held.
+  if ((b.display.busyPullDown || BoardConfig::displayBusyPullUp()) && b.display.busy >= 0) {
     const auto busy = static_cast<gpio_num_t>(b.display.busy);
     gpio_hold_dis(busy);
     gpio_pulldown_dis(busy);
@@ -219,12 +220,19 @@ void driveLevel(const int8_t pin, const uint8_t level) {
 
 bool PowerManager::sleepPanelWithoutDriver() {
   const BoardConfig::DisplayPins& d = BoardConfig::ACTIVE.display;
-  if (BoardConfig::ACTIVE.displayController != BoardConfig::DisplayController::SSD1677 || d.powerEnable >= 0 ||
-      d.rst < 0 || d.cs < 0 || d.sclk < 0 || d.mosi < 0 || d.dc < 0) {
+  const BoardConfig::DisplayController controller = BoardConfig::ACTIVE.displayController;
+  // An UltraChip panel that a DisplayProbeConfig board's probe picked takes its own
+  // deep-sleep command; BUSY_N is LOW while busy.
+  const bool ultraChip = FREEINK_CAP_DISPLAY_PROBE_POLICY && (controller == BoardConfig::DisplayController::UC8279 ||
+                                                              controller == BoardConfig::DisplayController::UC8179);
+  if ((controller != BoardConfig::DisplayController::SSD1677 && !ultraChip) || d.powerEnable >= 0 || d.rst < 0 ||
+      d.cs < 0 || d.sclk < 0 || d.mosi < 0 || d.dc < 0) {
     return false;
   }
   constexpr uint8_t SSD1677_DEEP_SLEEP = 0x10;
   constexpr uint8_t SSD1677_DEEP_SLEEP_MODE_2 = 0x03;
+  constexpr uint8_t UC81XX_DEEP_SLEEP = 0x07;        // DSLP
+  constexpr uint8_t UC81XX_DEEP_SLEEP_CHECK = 0xA5;  // its check code
   constexpr uint32_t RESET_LOW_MS = 10;
   constexpr uint32_t RESET_SETTLE_MS = 10;
   constexpr uint32_t BUSY_WAIT_MAX_MS = 100;
@@ -240,9 +248,14 @@ bool PowerManager::sleepPanelWithoutDriver() {
   digitalWrite(d.rst, HIGH);
   delay(RESET_SETTLE_MS + 1);
   if (d.busy >= 0) {
-    pinMode(d.busy, d.busyPullDown ? INPUT_PULLDOWN : INPUT);
     const uint32_t start = millis();
-    while (digitalRead(d.busy) == HIGH && millis() - start < BUSY_WAIT_MAX_MS) delay(1);
+    if (ultraChip) {
+      pinMode(d.busy, BoardConfig::displayBusyPullUp() ? INPUT_PULLUP : INPUT);
+      while (digitalRead(d.busy) == LOW && millis() - start < BUSY_WAIT_MAX_MS) delay(1);
+    } else {
+      pinMode(d.busy, d.busyPullDown ? INPUT_PULLDOWN : INPUT);
+      while (digitalRead(d.busy) == HIGH && millis() - start < BUSY_WAIT_MAX_MS) delay(1);
+    }
   }
   const auto cs = static_cast<gpio_num_t>(d.cs);
   const auto dc = static_cast<gpio_num_t>(d.dc);
@@ -250,9 +263,9 @@ bool PowerManager::sleepPanelWithoutDriver() {
   const auto mosi = static_cast<gpio_num_t>(d.mosi);
   gpio_set_level(cs, 0);
   gpio_set_level(dc, 0);
-  bitBangByte(sclk, mosi, SSD1677_DEEP_SLEEP);
+  bitBangByte(sclk, mosi, ultraChip ? UC81XX_DEEP_SLEEP : SSD1677_DEEP_SLEEP);
   gpio_set_level(dc, 1);
-  bitBangByte(sclk, mosi, SSD1677_DEEP_SLEEP_MODE_2);
+  bitBangByte(sclk, mosi, ultraChip ? UC81XX_DEEP_SLEEP_CHECK : SSD1677_DEEP_SLEEP_MODE_2);
   gpio_set_level(cs, 1);
   gpio_set_level(mosi, 0);
   gpio_set_level(dc, 0);

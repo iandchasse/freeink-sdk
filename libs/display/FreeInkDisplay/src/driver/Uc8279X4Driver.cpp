@@ -313,7 +313,13 @@ void Uc8279X4Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
     transitionGrayscaleBase(bus, fb, turnOff);
     return;
   }
+#if FREEINK_DIAGNOSTICS
+  _diagInDisplay = true;
+#endif
   displayStart(bus, fb, prev, mode, turnOff);
+#if FREEINK_DIAGNOSTICS
+  _diagInDisplay = false;
+#endif
   displayFinish(bus, fb);
 }
 
@@ -424,6 +430,11 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   if (paintDestination) {
     streamPlane(bus, CMD_DTM1, fb, true);
     streamPlane(bus, CMD_DTM2, fb);
+#if FREEINK_DIAGNOSTICS
+    _diagMode = RefreshMode::Fast;
+    _diagAsync = false;
+    _diagTurnOff = false;
+#endif
     startBwRefresh(bus, true);
     bus.waitRefreshComplete(" 8279x4_BW_TARGET_DRF");
     bus.cmd(CMD_PARTIAL_OUT);
@@ -448,6 +459,12 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   // post-AA gray residue for this frame.
   _redriveAfterGray = false;
 
+#if FREEINK_DIAGNOSTICS
+  // The waveform that runs: a Fast request without a valid OLD plane is a Full.
+  _diagMode = fast ? RefreshMode::Fast : scrub ? RefreshMode::Half : RefreshMode::Full;
+  _diagAsync = !_diagInDisplay;
+  _diagTurnOff = turnOff;
+#endif
   startBwRefresh(bus, fast);
   _pendingPartial = fast;
   _pendingTurnOff = turnOff;
@@ -499,6 +516,11 @@ void Uc8279X4Driver::startBwRefresh(EpdBus& bus, bool fast) {
   bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG cleared -> OTP (0x13)
   bus.data(_cfg.psr1);
   bus.cmd(CMD_DISPLAY_REFRESH);
+#if FREEINK_DIAGNOSTICS
+  // The TSSET byte stands in for SSD1677's update-sequence byte: 0x1E GC, 0x5A DU.
+  EpdBus::noteRefresh(static_cast<uint8_t>(_diagMode), fast ? _cfg.tssetFast : _cfg.tsset, _diagAsync, _diagTurnOff,
+                      false);
+#endif
   // Confirm the waveform started (BUSY dropped) before returning, so
   // displayFinish() only rides out the completion edge.
   {
@@ -682,7 +704,14 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
   bus.data(_cfg.psr1);
 
   bus.cmd(CMD_DISPLAY_REFRESH);
+#if FREEINK_DIAGNOSTICS
+  // The gray waveform (sequence byte: its CDI). waitRefreshComplete() is this
+  // BUSY polarity's waitBusy() that also closes the refresh record.
+  EpdBus::noteRefresh(static_cast<uint8_t>(RefreshMode::Fast), _cfg.cdiAa, false, turnOff, true);
+  bus.waitRefreshComplete((_directGrayPass ? " 8279x4_DIRECT_GRAY_DRF" : " 8279x4_gray"));
+#else
   bus.waitBusy((_directGrayPass ? " 8279x4_DIRECT_GRAY_DRF" : " 8279x4_gray"));
+#endif
   // Vendor production behavior: the UC8279 AA path leaves analog power enabled
   // between page refreshes (the UC8179 sibling does the same — its gray_aa sends
   // no POF). Honor only an explicit turnOff.
@@ -803,7 +832,13 @@ void Uc8279X4Driver::runGrayscalePrecondition(EpdBus& bus) {
 
   powerOnIfNeeded(bus, " 8279x4_gray_pre_PON");
   bus.cmd(CMD_DISPLAY_REFRESH);
+#if FREEINK_DIAGNOSTICS
+  // The non-flashing B/W base transition, reported as the FAST it replaces.
+  EpdBus::noteRefresh(static_cast<uint8_t>(RefreshMode::Fast), _cfg.tssetFast, false, false, false);
+  bus.waitRefreshComplete(" 8279x4_gray_pre_DRF");
+#else
   bus.waitBusy(" 8279x4_gray_pre_DRF");
+#endif
   bus.cmd(CMD_PARTIAL_OUT);
 }
 

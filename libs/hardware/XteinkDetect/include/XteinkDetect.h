@@ -66,7 +66,8 @@ X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5] = nullptr, uint8_
 // VER/FLG fingerprint. Unlike detectX3DisplayController (which hard-codes the
 // X3 C3 pinout), this reads the pins from BoardConfig::ACTIVE,
 // so it works on any Xteink profile — including the S3 X4 Pro, where the X3 I2C
-// probe would be unsafe. Bit-bangs a half-duplex 4-wire SPI after a reset pulse
+// probe would be unsafe — and on Silkscreen, whose 4.26" panel is an SSD1677 or a
+// UC8279D. Bit-bangs a half-duplex 4-wire SPI after a reset pulse
 // and leaves the pins released; safe to call before FreeInkDisplay::begin().
 enum class DisplayControllerVerdict : uint8_t { PrimaryAssumed, Uc81xxConfirmed, Inconclusive };
 
@@ -110,7 +111,25 @@ const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag();
 // controller in place when the probe doesn't confirm an UltraChip part. Returns
 // true iff the controller was promoted. Call before FreeInkDisplay::begin(). In
 // builds without a probe-capable profile this is a no-op returning false.
+//
+// A profile's DisplayProbeConfig (BoardConfig.h, FREEINK_CAP_DISPLAY_PROBE_POLICY)
+// adjusts this: `forced` skips the probe and keeps the profile's controller;
+// `ultraChipController` UC8279 promotes every UltraChip answer to UC8279,
+// keeping its LUT_VER as the variant; `cacheAcrossDeepSleep` reuses the last
+// conclusive verdict from RTC memory on a deep-sleep wake (never NVS), and the
+// probe diagnostics then carry that probe's VER/FLG.
 bool applyXteinkDisplayController();
+
+// How applyXteinkDisplayController() chose this boot's controller, on a profile
+// with a DisplayProbeConfig policy. Defined only with
+// FREEINK_CAP_DISPLAY_PROBE_POLICY (BoardConfig.h), on for Silkscreen.
+enum class DisplayControllerSource : uint8_t {
+  NotResolved,  // applyXteinkDisplayController() has not run
+  Probed,       // the display-bus probe ran this boot
+  Cached,       // a deep-sleep wake reused the last probe's verdict from RTC memory
+  Forced,       // the build set the controller (DisplayProbeConfig::forced): no probe
+};
+DisplayControllerSource displayControllerSource();
 
 // Convenience: run detectXteinkIsX3(), set BoardConfig::ACTIVE to the matching
 // profile via selectDevice(), and return whether an X3 was detected (so the

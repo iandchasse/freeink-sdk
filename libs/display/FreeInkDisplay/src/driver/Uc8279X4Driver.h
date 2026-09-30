@@ -166,6 +166,13 @@ class Uc8279X4Driver : public PanelDriver {
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
   bool _pendingPartial = false;
+#if defined(FREEINK_DIAGNOSTICS) && FREEINK_DIAGNOSTICS
+  // What startBwRefresh() reports to EpdBus::noteRefresh() for its activation.
+  RefreshMode _diagMode = RefreshMode::Full;
+  bool _diagAsync = false;
+  bool _diagTurnOff = false;
+  bool _diagInDisplay = false;  // inside display(): the refresh is waited out inline
+#endif
 };
 
 PanelDriver& uc8279X4Driver();

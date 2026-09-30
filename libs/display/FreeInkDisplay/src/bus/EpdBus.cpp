@@ -161,6 +161,8 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     pinMode(pins.busy, INPUT_PULLUP);
   } else if (busy == BusyPolarity::ActiveHigh && pins.busyPullDown) {
     pinMode(pins.busy, INPUT_PULLDOWN);  // no external pull: a missing panel reads not-busy
+  } else if (busy == BusyPolarity::UcIdleHigh && BoardConfig::displayBusyPullUp()) {
+    pinMode(pins.busy, INPUT_PULLUP);  // the same for BUSY_N, whose wait has no timeout
   } else {
     pinMode(pins.busy, INPUT);
   }

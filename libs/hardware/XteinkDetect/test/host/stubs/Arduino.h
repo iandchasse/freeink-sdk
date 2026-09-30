@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <initializer_list>
 constexpr int HIGH=1, LOW=0, INPUT=1, OUTPUT=3, INPUT_PULLUP=5;
+#define RTC_DATA_ATTR
 void pinMode(int,int);
 void digitalWrite(int,int);
 int digitalRead(int);

@@ -134,7 +134,8 @@
 //     PLL/booster/VCOM bring-up.
 //   * UC8279 (800x480) — a second UltraChip variant of the X4 Pro panel
 //     (LUT_VER 0x02/0x68); its own driver (different PSR/PLL init, 1-byte CDI,
-//     gate offset, inverted AA planes).
+//     gate offset, inverted AA planes). Silkscreen's custom 4.26" panel carries
+//     a UC8279D at the same geometry and runs on this driver too.
 // Which controller a given unit runs is resolved at boot by the display-bus
 // probe (0x70 VER readback; NVS hw_calib/screenType is diagnostics-only) and the
 // matching driver is selected before display begin(). Link each driver wherever
@@ -146,9 +147,12 @@
 #endif
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC
 #define FREEINK_DRIVER_UC8179 1
-#define FREEINK_DRIVER_UC8279_X4 1
 #else
 #define FREEINK_DRIVER_UC8179 0
+#endif
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_SILKSCREEN
+#define FREEINK_DRIVER_UC8279_X4 1
+#else
 #define FREEINK_DRIVER_UC8279_X4 0
 #endif
 // M5 PaperColor has two interchangeable display backends: the fast hand-rolled
@@ -335,6 +339,9 @@
 //   CHARGE_LADDER: the analog charge-status ladder (BoardProfile::chargeLadder)
 //   POWER_POLICY:  the PowerConfig policy fields read through powerPolicy()
 //   I2C_RECOVERY:  SensorsConfig::i2cBusRecovery (stuck-bus recovery, sleep release)
+//   DISPLAY_PROBE_POLICY: BoardProfile::displayProbe and DisplayPins::busyPullUp
+//                  (the display-controller probe policy, and the BUSY_N pull-up and
+//                  driver-free deep sleep of an UltraChip panel the probe picked)
 #ifndef FREEINK_CAP_ADC_LADDERS
 #define FREEINK_CAP_ADC_LADDERS (FREEINK_DEVICE_SILKSCREEN)
 #endif
@@ -346,6 +353,9 @@
 #endif
 #ifndef FREEINK_CAP_I2C_RECOVERY
 #define FREEINK_CAP_I2C_RECOVERY (FREEINK_DEVICE_SILKSCREEN)
+#endif
+#ifndef FREEINK_CAP_DISPLAY_PROBE_POLICY
+#define FREEINK_CAP_DISPLAY_PROBE_POLICY (FREEINK_DEVICE_SILKSCREEN)
 #endif
 // Bring-up diagnostics: the managers also record what they observe (BUSY waits
 // and the refresh mode a driver ran, SD mount attempts, charge-ladder samples,
@@ -499,6 +509,12 @@ struct DisplayPins {
   // a missing or unplugged panel reads not-busy instead of floating. Defaulted so
   // existing initializers stay valid and keep a bare INPUT.
   bool busyPullDown = false;
+  // The same for an UltraChip panel's active-low BUSY_N (the UC81xx X4 drivers'
+  // BusyPolarity::UcIdleHigh): an internal pull-up while awake, so a missing panel
+  // reads idle and the UC wait, which has no timeout, ends. A board whose probe
+  // picks SSD1677 or an UltraChip part at runtime sets both, and the bus applies
+  // the one matching the driver. Read through BoardConfig::displayBusyPullUp().
+  bool busyPullUp = false;
 };
 
 struct SdPins {
@@ -955,6 +971,26 @@ struct ViewableInsets {
   uint8_t left = 3;
 };
 
+// Display-controller probe policy (XteinkDetect's applyXteinkDisplayController()),
+// read through BoardConfig::displayProbePolicy(): without
+// FREEINK_CAP_DISPLAY_PROBE_POLICY that returns these defaults, which are the
+// X4-family rule.
+struct DisplayProbeConfig {
+  // The build set displayController: nothing is probed or cached.
+  bool forced = false;
+  // What an UltraChip probe answer selects. UC8179 (default): LUT_VER
+  // 0x02/0x03/0x67/0x68/0x69 selects UC8279 and anything else UC8179. UC8279:
+  // every UltraChip answer, whatever its LUT_VER, which is kept as
+  // displayControllerVariant (a board that links no UC8179 driver).
+  DisplayController ultraChipController = DisplayController::UC8179;
+  // Keep the verdict in RTC memory and reuse it on a deep-sleep wake instead of
+  // probing again. Any other reset probes; an inconclusive verdict is not kept.
+  bool cacheAcrossDeepSleep = false;
+  // The panel is Xteink X4-class glass (4.26" 800x480) on whichever controller
+  // the probe finds, so the consumer applies its X4 panel policies to it.
+  bool x4ClassPanel = false;
+};
+
 struct BoardProfile {
   Board board;
   const char* name;
@@ -1015,6 +1051,8 @@ struct BoardProfile {
   AdcLadderConfig adcLadders = {};
   // Analog charge-status ladder (pin PIN_UNASSIGNED = none).
   ChargeStatusLadder chargeLadder = {};
+  // Display-controller probe policy. The defaults are the X4-family rule.
+  DisplayProbeConfig displayProbe = {};
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -2078,15 +2116,18 @@ constexpr BoardProfile ONEPAGE = {
 static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
               "OnePage framebuffer must be 48,000 bytes (800/8 x 480)");
 
-// --- Silkscreen — ESP32-S3-WROOM-1-N16R8, SSD1677 800x480 (GDEQ0426T82) --------
+// --- Silkscreen — ESP32-S3-WROOM-1-N16R8, 4.26" 800x480, SSD1677 or UC8279D ----
 // Open-hardware reader base board, successor of de-link. Pin map and electrical
 // rules: silkscreen-pcb docs/HARDWARE.md §13 (GPIO map) and §13.1 (firmware
-// contract). Panel VDDIO/VCI sit on the always-on 3V3 with no switch (§6.1), and
-// the LDO enable is tied to VIN, so there is no power latch (§3.5). The eight
-// keys are on two ADC ladders (IO1, IO4; §9.1). The front light (§7) is an
-// optional TPS923610 block driven only when the build sets FREEINK_CAP_FRONTLIGHT;
-// otherwise IO42 (ADIM) and IO40 (COLOR_SEL) stay parked LOW. Touch (§8) is an
-// optional tail on J4, probed at boot; the keys stay in use when it is fitted.
+// contract). The panel is a Good Display GDEQ0426T82 (SSD1677) or the custom
+// panel (UC8279D, same geometry and scan), told apart at every cold boot by the
+// display-bus probe (displayProbe below). Panel VDDIO/VCI sit on the always-on
+// 3V3 with no switch (§6.1), and the LDO enable is tied to VIN, so there is no
+// power latch (§3.5). The eight keys are on two ADC ladders (IO1, IO4; §9.1).
+// The front light (§7) is an optional TPS923610 block driven only when the build
+// sets FREEINK_CAP_FRONTLIGHT; otherwise IO42 (ADIM) and IO40 (COLOR_SEL) stay
+// parked LOW. Touch (§8) is an optional tail on J4, probed at boot; the keys stay
+// in use when it is fitted.
 //
 // Software over-voltage trip on the front light's LED rail (LED_SW), in mV. 23 V
 // clears the bonded ~15 V panel light on J3 and an external J6 string of up to
@@ -2097,17 +2138,35 @@ static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
 #endif
 static_assert(SILKSCREEN_FRONTLIGHT_TRIP_MV < 24250,
               "Silkscreen front-light trip must stay below the TPS923610 minimum OVP (24.25 V)");
+// Panel controller override for a unit whose probe misbehaves:
+// -DSILKSCREEN_DISPLAY_CONTROLLER=ssd1677 or =uc8279 runs that controller and
+// skips the probe. UC8179 is not linked into this build, so it cannot be named.
+namespace silkscreen_display {
+constexpr DisplayController ssd1677 = DisplayController::SSD1677;
+constexpr DisplayController uc8279 = DisplayController::UC8279;
+constexpr DisplayController SSD1677 = ssd1677;
+constexpr DisplayController UC8279 = uc8279;
+#ifdef SILKSCREEN_DISPLAY_CONTROLLER
+constexpr bool FORCED = true;
+constexpr DisplayController CONTROLLER = SILKSCREEN_DISPLAY_CONTROLLER;
+#else
+constexpr bool FORCED = false;
+constexpr DisplayController CONTROLLER = ssd1677;  // until the probe finds an UltraChip part
+#endif
+}  // namespace silkscreen_display
 constexpr BoardProfile SILKSCREEN = {
     Board::Silkscreen,
     "silkscreen",
-    InputStyle::AdcLadders,      // two key ladders (adcLadders below) + IO18 power button
-    DisplayController::SSD1677,  // default GDEQ0426T82 config, same panel as X4
+    InputStyle::AdcLadders,          // two key ladders (adcLadders below) + IO18 power button
+    silkscreen_display::CONTROLLER,  // SSD1677 (X4 GDEQ0426T82 config) until the probe finds a UC8279
     800,
     480,
     // Display SPI (4-wire, BS=GND, no MISO): SCLK 13, MOSI 12, CS 14, DC 21, RST 47,
-    // BUSY 48. No panel power switch (§6.1). BUSY has no external pull, so use the
-    // internal pull-down (a missing panel reads not-busy).
-    {13, 12, 14, 21, 47, 48, PIN_UNASSIGNED, true},
+    // BUSY 48. No panel power switch (§6.1). BUSY has no external pull, so while
+    // awake an SSD1677's active-high BUSY gets the internal pull-down and a UC8279's
+    // active-low BUSY_N the pull-up: a missing panel reads not-busy either way. The
+    // probe reads the controller back half-duplex on SDI (IO12, R29).
+    {13, 12, 14, 21, 47, 48, PIN_UNASSIGNED, true, true},
     20000000,  // displaySpiHz: 20 MHz, below the SSD1677 40 MHz default until bench-checked
     // SD: SPI pins unused (4-bit SDMMC below). IO10 SD_ACTIVATE gates SD_VDD through
     // Q7 and is active-LOW: LOW = card powered (§5).
@@ -2206,9 +2265,9 @@ constexpr BoardProfile SILKSCREEN = {
     //  firmwareUpdateMinMv, awakeCeilingMin, radioOffWhenIdle, wakeNoInputTimeoutS,
     //  storageErrorSleepS, awakeInputCapMin}
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400, 5000, true, 3, 100, 3600, 15, true, 180, 60, 60},
-    0,      // displayControllerVariant: SSD1677, not probed
-    {},     // viewableInsets: X4 default until the bezel is measured
-    false,  // batteryChargeStatusActiveHigh: unused (no digital STAT)
+    0,             // displayControllerVariant: a UC8279's LUT_VER, filled by the boot probe
+    {0, 0, 0, 0},  // viewableInsets: every measured case window is the active area + 0.5-0.7 mm
+    false,         // batteryChargeStatusActiveHigh: unused (no digital STAT)
     NO_I2C_FRONTLIGHT,
     // parkedPins {pin, boot, sleep}. EPD CS has no pull-up: HIGH before any SCLK edge
     // and through sleep (§6.1). SCLK, MOSI and DC LOW until SPI takes them and through
@@ -2261,7 +2320,13 @@ constexpr BoardProfile SILKSCREEN = {
      8,
      70,
      16,
-     30}};
+     30},
+    // displayProbe: probe at every cold boot (~66 ms; the verdict is not stored in
+    // NVS, so a swapped panel is always found), reuse it on a deep-sleep wake, and
+    // take any UltraChip answer as a UC8279 (the custom panel's UC8279D). Both
+    // panels are X4-class glass. {forced, ultraChipController, cacheAcrossDeepSleep,
+    // x4ClassPanel}
+    {silkscreen_display::FORCED, DisplayController::UC8279, true, true}};
 
 static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
@@ -2679,5 +2744,40 @@ inline const PowerConfig& powerPolicy() { return ACTIVE.power; }
 #else
 constexpr PowerConfig powerPolicy() { return PowerConfig{}; }
 #endif
+// Read BoardProfile::displayProbe and DisplayPins::busyPullUp through these:
+// without FREEINK_CAP_DISPLAY_PROBE_POLICY they are the defaults, so the policy
+// folds away at compile time.
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+inline const DisplayProbeConfig& displayProbePolicy() { return ACTIVE.displayProbe; }
+inline bool displayBusyPullUp() { return ACTIVE.display.busyPullUp; }
+#else
+constexpr DisplayProbeConfig displayProbePolicy() { return DisplayProbeConfig{}; }
+constexpr bool displayBusyPullUp() { return false; }
+#endif
+static_assert(!FREEINK_DEVICE_SILKSCREEN || FREEINK_DRIVER_UC8279_X4,
+              "Silkscreen's probe maps every UltraChip answer to the UC8279 driver, which must be linked");
+
+// Part names, for logs and diagnostics screens.
+inline const char* controllerPartName(const DisplayController controller) {
+  switch (controller) {
+    case DisplayController::SSD1677:
+      return "SSD1677";
+    case DisplayController::UC8253:
+      return "UC8253";
+    case DisplayController::ED2208:
+      return "ED2208";
+    case DisplayController::LgfxEpd:
+      return "LovyanGFX EPD";
+    case DisplayController::IT8951:
+      return "IT8951";
+    case DisplayController::UC8279:
+      return "UC8279";
+    case DisplayController::UC8179:
+      return "UC8179";
+    case DisplayController::UC8279C:
+      return "UC8279C";
+  }
+  return "?";
+}
 
 }  // namespace BoardConfig

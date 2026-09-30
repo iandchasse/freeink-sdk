@@ -9,16 +9,24 @@
 
 #include "nvs.h"
 
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+#include <esp_system.h>  // esp_reset_reason(): the verdict cache holds across deep sleep only
+#endif
+
 // Two independent capabilities live in this file:
 //   * FREEINK_XTEINK_C3 — the X3-vs-X4 I2C fingerprint on SDA=20 / SCL=0. Only
 //     safe on the Xteink C3 pinout (on an S3 those pins are USB D+ / boot
 //     strap), so it compiles only for the C3 profiles.
 //   * FREEINK_XTEINK_DISPLAY_PROBE — the board-agnostic UC81xx display-controller
 //     fingerprint. It reads whatever pins the ACTIVE profile carries, so it is
-//     safe on the S3 X4 Pro too.
+//     safe on the S3 X4 Pro too, and on Silkscreen (the same half-duplex read on
+//     SDI, IO12).
 #define FREEINK_XTEINK_C3 (FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
-#define FREEINK_XTEINK_DISPLAY_PROBE \
-  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC)
+#define FREEINK_XTEINK_DISPLAY_PROBE                                                             \
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
+   FREEINK_DEVICE_SILKSCREEN)
+static_assert(!FREEINK_CAP_DISPLAY_PROBE_POLICY || FREEINK_XTEINK_DISPLAY_PROBE,
+              "FREEINK_CAP_DISPLAY_PROBE_POLICY needs a profile the display probe serves");
 
 namespace freeink {
 
@@ -410,9 +418,113 @@ bool probeSaysUltraChip(uint8_t verOut[5]) {
   return v == DisplayControllerVerdict::Uc81xxConfirmed;
 }
 
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+// DisplayProbeConfig::cacheAcrossDeepSleep: the last conclusive probe, reused on
+// a deep-sleep wake. RTC data survives deep sleep only; the reset-reason check
+// and the magic word reject anything else, so every other boot probes again.
+// Never NVS: a panel swapped between boots must not meet a stale verdict.
+constexpr uint32_t CONTROLLER_CACHE_MAGIC = 0x45504443;  // "EPDC"
+struct ControllerCache {
+  uint32_t magic;
+  uint8_t controller;  // BoardConfig::DisplayController
+  uint8_t variant;     // displayControllerVariant
+  uint8_t verdict;     // DisplayControllerVerdict
+  uint8_t flg;
+  uint8_t ver[5];
+};
+RTC_DATA_ATTR ControllerCache controllerCache = {};
+DisplayControllerSource controllerSource = DisplayControllerSource::NotResolved;
+
+// After a probe, once ACTIVE holds its result: note how the controller was chosen
+// and keep a conclusive verdict for the next deep-sleep wake. An inconclusive one
+// clears the cache, so that wake probes again.
+void rememberProbedController() {
+  controllerSource = DisplayControllerSource::Probed;
+  if (!BoardConfig::displayProbePolicy().cacheAcrossDeepSleep) return;
+  if (!g_probeDiag.valid || g_probeDiag.verdict == static_cast<uint8_t>(DisplayControllerVerdict::Inconclusive)) {
+    controllerCache.magic = 0;
+    return;
+  }
+  controllerCache.controller = static_cast<uint8_t>(BoardConfig::ACTIVE.displayController);
+  controllerCache.variant = BoardConfig::ACTIVE.displayControllerVariant;
+  controllerCache.verdict = g_probeDiag.verdict;
+  controllerCache.flg = g_probeDiag.flg;
+  memcpy(controllerCache.ver, g_probeDiag.ver, sizeof(controllerCache.ver));
+  controllerCache.magic = CONTROLLER_CACHE_MAGIC;
+}
+
+// Every exit of applyXteinkDisplayController() after the probe.
+struct RememberProbeOnExit {
+  ~RememberProbeOnExit() { rememberProbedController(); }
+};
+
+// On a deep-sleep wake, take the controller the last probe found instead of
+// probing (no reset pulse, no bus traffic). Only a controller this profile's
+// probe can choose is accepted. The probe diagnostics carry that probe's IDs.
+bool restoreCachedController() {
+  const auto& policy = BoardConfig::displayProbePolicy();
+  if (!policy.cacheAcrossDeepSleep || esp_reset_reason() != ESP_RST_DEEPSLEEP ||
+      controllerCache.magic != CONTROLLER_CACHE_MAGIC) {
+    return false;
+  }
+  const auto cached = static_cast<BoardConfig::DisplayController>(controllerCache.controller);
+  const auto profileDefault = BoardConfig::ACTIVE.displayController;
+  if (cached != profileDefault && cached != policy.ultraChipController) return false;
+  BoardConfig::ACTIVE.displayController = cached;
+  BoardConfig::ACTIVE.displayControllerVariant = controllerCache.variant;
+  g_probeDiag = {};
+  g_probeDiag.valid = true;
+  g_probeDiag.verBytesRead = sizeof(controllerCache.ver);
+  memcpy(g_probeDiag.ver, controllerCache.ver, sizeof(controllerCache.ver));
+  g_probeDiag.flg = controllerCache.flg;
+  g_probeDiag.verdict = controllerCache.verdict;
+  g_probeDiag.promoted = cached != profileDefault;
+  controllerSource = DisplayControllerSource::Cached;
+  if (Serial) {
+    Serial.printf(
+        "[%lu] [XTDET] deep-sleep wake: %s kept from the last probe (VER=%02X %02X %02X %02X %02X FLG=%02X)\n",
+        millis(), BoardConfig::controllerPartName(cached), g_probeDiag.ver[0], g_probeDiag.ver[1], g_probeDiag.ver[2],
+        g_probeDiag.ver[3], g_probeDiag.ver[4], g_probeDiag.flg);
+  }
+  return true;
+}
+
+// DisplayProbeConfig::ultraChipController == UC8279: every UltraChip answer is a
+// UC8279. The variant keeps the raw LUT_VER, which picks the driver's tables:
+// 0x02/0x03 the QY AA bank, 0x67 OTP only (no grayscale), anything else the
+// default (0x68 ZHX) bank.
+void promoteToUc8279(const uint8_t lutVer) {
+  BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
+  BoardConfig::ACTIVE.displayControllerVariant = lutVer;
+  if (!Serial) return;
+  const bool known = lutVer == 0x02 || lutVer == 0x03 || lutVer == 0x67 || lutVer == 0x68 || lutVer == 0x69;
+  Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8279 (profile policy), LUT_VER=%02X%s\n", millis(), lutVer,
+                !known           ? ", not a known UC8279 id: default tables (0x68 AA bank)"
+                : lutVer == 0x67 ? ", OTP-only"
+                                 : "");
+}
+#endif  // FREEINK_CAP_DISPLAY_PROBE_POLICY
+
 }  // namespace
 
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+DisplayControllerSource displayControllerSource() { return controllerSource; }
+#endif
+
 bool applyXteinkDisplayController() {
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+  // DisplayProbeConfig::forced: the build chose the controller; leave the bus alone.
+  if (BoardConfig::displayProbePolicy().forced) {
+    controllerSource = DisplayControllerSource::Forced;
+    if (Serial) {
+      Serial.printf("[%lu] [XTDET] controller forced by the build: %s (not probed)\n", millis(),
+                    BoardConfig::controllerPartName(BoardConfig::ACTIVE.displayController));
+    }
+    return false;
+  }
+  if (restoreCachedController()) return g_probeDiag.promoted;
+  RememberProbeOnExit rememberProbe;
+#endif
   // Decide from the live display-bus probe — the ground truth. The OEM NVS
   // hw_calib/screenType is read only for diagnostics: it's unreliable in the
   // field (a full-flash from another unit overwrites it, so it can name the wrong
@@ -512,6 +624,12 @@ bool applyXteinkDisplayController() {
       // so far has carried (observed VER=00 00 01 FF FF).
       const uint8_t lutVer = ver[2];
       g_probeDiag.promoted = true;
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+      if (BoardConfig::displayProbePolicy().ultraChipController == BoardConfig::DisplayController::UC8279) {
+        promoteToUc8279(lutVer);
+        return true;
+      }
+#endif
       if (lutVer == 0x02 || lutVer == 0x03 || lutVer == 0x67 || lutVer == 0x68 || lutVer == 0x69) {
         BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
         BoardConfig::ACTIVE.displayControllerVariant = lutVer;
