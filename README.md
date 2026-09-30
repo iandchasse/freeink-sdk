@@ -906,6 +906,12 @@ the flag.)
 | `InputManager::touchDiagnostics()` | whether touch is active, the last raw contact before any mapping (FT5x06, FT6336U, GT911), the boot probe (cached, found, fallback), reset pulses, and `prepareTouchForSleep()`'s result and reset-retry for this boot and for the sleep entry this boot woke from |
 | `PowerManager::peekAbnormalResets()` / `peekAbortedSleepInfo()` / `bootResetRecord()` | the RTC records without consuming them, and what this boot's `countAbnormalResets()` and `takeAbortedSleepInfo()` returned, kept after the consumer has cleared or taken them |
 
+One control, also only with the flag, for a clock trial on the bench:
+
+| Control | Does |
+|---|---|
+| `FreeInkDisplay::setSpiClockTrial(hz)` / `spiClockHz()` | runs the panel's SPI transactions at `hz` from the next one on, in RAM only (waits out a pending refresh first); `0`, or the next `begin()` (every wake), puts back the driver's clock |
+
 Header-only helpers, available in every build (not emitted unless called):
 
 | Helper | Does |

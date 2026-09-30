@@ -312,6 +312,11 @@ class FreeInkDisplay {
   // (lastRefreshMode, in RefreshMode order) and its activation-to-completion
   // time. The SSD1677 driver reports refreshes.
   EpdBusDiagnostics busDiagnostics() const { return EpdBus::diagnostics(); }
+  // SPI clock trial: the panel's transactions run at `hz` from the next one
+  // on; 0 puts back the driver's clock, which begin() (every wake) also does.
+  // Waits out a pending refresh first. RAM only.
+  void setSpiClockTrial(uint32_t hz);
+  uint32_t spiClockHz() const { return _bus.spiHz(); }
 #endif
 
   // Access to frame buffer

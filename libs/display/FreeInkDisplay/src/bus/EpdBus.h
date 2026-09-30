@@ -148,6 +148,12 @@ class EpdBus {
   // it. `mode` is a freeink::RefreshMode value.
   static void noteRefresh(uint8_t mode, uint8_t sequence, bool async, bool turnOff, bool customLut);
   static EpdBusDiagnostics diagnostics();
+  // Clock trial: the transactions that follow run at `spiHz` until the next
+  // call or begin(). Only between transactions.
+  void setSpiHz(uint32_t spiHz) {
+    _spiHz = spiHz;
+    _spi = SPISettings(spiHz, MSBFIRST, SPI_MODE0);
+  }
 #endif
 
  private:

@@ -1044,6 +1044,14 @@ void FreeInkDisplay::deepSleep() {
   if (_driver) _driver->deepSleep(_bus);
 }
 
+#if FREEINK_DIAGNOSTICS
+void FreeInkDisplay::setSpiClockTrial(const uint32_t hz) {
+  if (_driver == nullptr || _driver->usesExternalBus()) return;
+  syncPendingAsync();
+  _bus.setSpiHz(hz != 0 ? hz : _driver->spiHz());
+}
+#endif
+
 // ============================================================================
 // Desktop/test helper
 // ============================================================================
