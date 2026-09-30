@@ -78,14 +78,17 @@
 #ifndef FREEINK_DEVICE_WS397
 #define FREEINK_DEVICE_WS397 0
 #endif
+#ifndef FREEINK_DEVICE_SILKSCREEN
+#define FREEINK_DEVICE_SILKSCREEN 0
+#endif
 
 // --- 2) Coherence: exactly one MCU family, at least one device ---------------
 #if !(FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_M5 || \
       FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER ||               \
       FREEINK_DEVICE_STICKY || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 ||         \
-      FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397)
+      FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_SILKSCREEN)
 #error \
-    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397) in your build env — see platformio.sample.ini."
+    "FreeInk: no device selected. Pass at least one -DFREEINK_DEVICE_<NAME> (X4, X3, X4PRO, X4CLASSIC, M5, MURPHY, DELINK, LILYGO, M5PAPER, STICKY, PAPERMONO, PAPERS3, MURPHY_M4, EEGO_A4, ONEPAGE, WS397, SILKSCREEN) in your build env — see platformio.sample.ini."
 #endif
 // Each device belongs to one MCU family; a binary targets exactly one. X3/X4 are
 // ESP32-C3; M5 PaperColor/Murphy/de-link/LilyGo are ESP32-S3; M5Paper v1.1 is the
@@ -96,7 +99,8 @@
 #define FREEINK_MCU_S3                                                                                    \
   (FREEINK_DEVICE_M5 || FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_LILYGO ||        \
    FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO ||  \
-   FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_WS397)
+   FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_WS397 || \
+   FREEINK_DEVICE_SILKSCREEN)
 #define FREEINK_MCU_ESP32 (FREEINK_DEVICE_M5PAPER)
 #if (FREEINK_MCU_C3 + FREEINK_MCU_C61 + FREEINK_MCU_S3 + FREEINK_MCU_ESP32) != 1
 #error \
@@ -110,8 +114,9 @@
 // X4 Pro is a distinct ESP32-S3 device (NOT the C3 X4): its 800x480 panel may
 // use SSD1677, UC8179, or UC8279, recovered from OEM firmware and hardware
 // references — see docs/xteink-x4pro-support.md.
-#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
-    FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397
+#if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO ||            \
+    FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || \
+    FREEINK_DEVICE_SILKSCREEN
 #define FREEINK_DRIVER_SSD1677 1
 #else
 #define FREEINK_DRIVER_SSD1677 0
@@ -296,7 +301,7 @@
 #define FREEINK_CAP_RTC                                                                             \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
    FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_EEGO_A4 || \
-   FREEINK_DEVICE_WS397)
+   FREEINK_DEVICE_WS397 || FREEINK_DEVICE_SILKSCREEN)
 #endif
 #ifndef FREEINK_CAP_TEMP_HUMIDITY
 #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
@@ -342,7 +347,7 @@
 #ifndef FREEINK_SD_SDMMC
 #define FREEINK_SD_SDMMC                                                                            \
   (FREEINK_DEVICE_DELINK || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || \
-   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397)
+   FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_WS397 || FREEINK_DEVICE_SILKSCREEN)
 #endif
 
 // Serial log transport hint for consumer firmware. Boards can share the same MCU
@@ -400,6 +405,7 @@ enum class Board : uint8_t {
   EegoA4,     // EEGO Reader A4: ESP32-S3, UC8279C 768x552 SPI panel, GSLX680 touch, PCF8563 RTC
   OnePage,    // OnePage: ESP32-C61, SSD1677 800x480 SPI panel, 4-key ADC ladder + 3 side keys
   WsEpaper397,  // Waveshare ESP32-S3-ePaper-3.97: SSD1677 800x480, 3 keys + BOOT, AXP2101 PMIC
+  Silkscreen,   // Silkscreen open-hardware reader: ESP32-S3, SSD1677 800x480, 4-bit SDMMC, DS3231 RTC
 };
 
 // How the board reports button presses.
@@ -1828,6 +1834,55 @@ constexpr BoardProfile ONEPAGE = {
 static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
               "OnePage framebuffer must be 48,000 bytes (800/8 x 480)");
 
+// --- Silkscreen — ESP32-S3-WROOM-1-N16R8, SSD1677 800x480 (GDEQ0426T82) --------
+// Open-hardware reader base board, successor of de-link. Pin map and electrical
+// rules: silkscreen-pcb docs/HARDWARE.md §13 (GPIO map) and §13.1 (firmware
+// contract). Panel VDDIO/VCI sit on the always-on 3V3 with no switch (§6.1), and
+// the LDO enable is tied to VIN, so there is no power latch (§3.5). The eight
+// keys are on two ADC ladders (IO1, IO4; §9.1), which no InputStyle decodes yet,
+// so only the power button is read. Touch (§8) and the front light (§7) are
+// optional parts and are not described here yet.
+constexpr BoardProfile SILKSCREEN = {
+    Board::Silkscreen,
+    "silkscreen",
+    InputStyle::DigitalButtons,  // power button only; ladder keys not decoded yet
+    DisplayController::SSD1677,  // default GDEQ0426T82 config, same panel as X4
+    800,
+    480,
+    // Display SPI (4-wire, BS=GND, no MISO): SCLK 13, MOSI 12, CS 14, DC 21, RST 47,
+    // BUSY 48. No panel power switch (§6.1).
+    {13, 12, 14, 21, 47, 48, PIN_UNASSIGNED},
+    20000000,  // displaySpiHz: 20 MHz, below the SSD1677 40 MHz default until bench-checked
+    // SD: SPI pins unused (4-bit SDMMC below). IO10 SD_ACTIVATE gates SD_VDD through
+    // Q7 and is active-LOW: LOW = card powered (§5).
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
+    // {back, confirm, left, right, up, down, power, powerActiveHigh}
+    // PWR_BUTTON IO18: SW10 to 3V3 through R62, R76 100k pull-down, pressed ~3.0 V (§9.2).
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 18, true},
+    8,               // batteryAdc: BAT_MONIT IO8 = P+/2 (ADC1_CH7, §3.6)
+    PIN_UNASSIGNED,  // batteryChargeStatus: USB_STAT IO9 is an analog ladder, not a digital /STAT (§3.7)
+    2.0f,            // batteryDividerMultiplier: R12/R10 1M/1M
+    PIN_UNASSIGNED,  // usbDetect: no GPIO senses VBUS (§4)
+    NO_TOUCH,
+    NO_FRONTLIGHT,
+    NO_AUDIO,
+    NO_LEDS,
+    NO_FLIP,
+    // 4-bit SDMMC: CLK 7, CMD 15, D0 6, D1 5, D2 17, D3 16 (§5)
+    {7, 15, 6, 5, 17, 16, 4},
+    NO_GAUGE,
+    NO_MIC,
+    // DS3231MZ RTC (U13) at 0x68 on the shared I2C bus SDA 38 / SCL 39, 2.2k external
+    // pull-ups (§10). 100 kHz until 400 kHz is measured on the board.
+    {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None},
+    1.0f,  // uiScale: button-navigated
+    {},    // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5)
+    0,     // displayControllerVariant: SSD1677, not probed
+    {}};   // viewableInsets: X4 default until the bezel is measured
+
+static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
+              "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
+
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
 // this so one binary holds whichever panel is runtime-selected; a single-device
@@ -1852,12 +1907,15 @@ constexpr uint32_t MAX_FRAMEBUFFER_BYTES = cmax(
                         FREEINK_DEVICE_MURPHY_M4 ? panelBytes(MURPHY_M4) : 0u),
                    cmax(cmax(FREEINK_DEVICE_EEGO_A4 ? panelBytes(EEGO_A4) : 0u,
                              FREEINK_DEVICE_ONEPAGE ? panelBytes(ONEPAGE) : 0u),
-                        FREEINK_DEVICE_WS397 ? panelBytes(WS_EPAPER_397) : 0u)))));
+                        cmax(FREEINK_DEVICE_WS397 ? panelBytes(WS_EPAPER_397) : 0u,
+                             FREEINK_DEVICE_SILKSCREEN ? panelBytes(SILKSCREEN) : 0u))))));
 
 // Compile-time default device — the profile ACTIVE starts as. With a single
 // device in the build this is the only device; with several same-MCU devices it
 // is the boot default until the consumer calls selectDevice().
-#if FREEINK_DEVICE_WS397
+#if FREEINK_DEVICE_SILKSCREEN
+constexpr BoardProfile DEFAULT_DEVICE = SILKSCREEN;
+#elif FREEINK_DEVICE_WS397
 constexpr BoardProfile DEFAULT_DEVICE = WS_EPAPER_397;
 #elif FREEINK_DEVICE_ONEPAGE
 constexpr BoardProfile DEFAULT_DEVICE = ONEPAGE;
@@ -1987,6 +2045,11 @@ inline bool selectDevice(Board which) {
       ACTIVE = WS_EPAPER_397;
       break;
 #endif
+#if FREEINK_DEVICE_SILKSCREEN
+    case Board::Silkscreen:
+      ACTIVE = SILKSCREEN;
+      break;
+#endif
     default:
       return false;
   }
@@ -2010,6 +2073,7 @@ inline bool isPaperMono() { return ACTIVE.board == Board::PaperMono; }
 inline bool isEegoA4() { return ACTIVE.board == Board::EegoA4; }
 inline bool isOnePage() { return ACTIVE.board == Board::OnePage; }
 inline bool isWsEpaper397() { return ACTIVE.board == Board::WsEpaper397; }
+inline bool isSilkscreen() { return ACTIVE.board == Board::Silkscreen; }
 inline bool hasTouch() { return ACTIVE.touch.controller != TouchController::None; }
 inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED || ACTIVE.frontlight.viaPm1Pwm; }
