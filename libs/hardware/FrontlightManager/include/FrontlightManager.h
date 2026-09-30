@@ -20,9 +20,24 @@
 // drives an enable pulse and only then hands the pin to the LEDC carrier. A colour
 // change while lit goes dark first. An optional LED-rail monitor switches the light
 // off and latches fault() on over-voltage.
+//
+// Load probe (FrontlightConfig::loadProbeMs, FREEINK_CAP_FRONTLIGHT_PROBE), for a
+// light that may not be fitted: every enable (a switch-on, or a colour change while
+// lit) reads the monitor every 1 ms for loadProbeMs after the enable pulse. A
+// reading above the trip there means the selected string has no load: the light
+// goes dark at once. With a colour select the other string is tried in the same
+// call; if it lights, the first is recorded missing and never selected again until
+// a cold boot, and if it does not (or there is none), load() reads Absent and
+// fault() latches as for a trip. The record (load(), stringMissing()) is kept in
+// RTC memory across deep sleep and software restarts. The consumer enables such a
+// light only when the user asks, or at boot once restoreAllowed() agrees. After
+// any trip the colour select moves only once the LED rail has fallen to railSafeV,
+// so the charge left on the boost output cannot discharge through a string on the
+// other side.
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <FrontlightLoad.h>
 #if FREEINK_CAP_FRONTLIGHT
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -82,11 +97,42 @@ class FrontlightManager {
   void prepareForSleep();
 
   // True once the LED-rail monitor (FrontlightConfig::monitorAdc) has switched the
-  // light off for over-voltage. While set, the light stays dark at any brightness.
-  // Switching the light off (brightness 0) or clearFault() re-arms it; the next
-  // non-zero brightness then runs the full enable sequence.
+  // light off for over-voltage, or a switch-on found no light (load() == Absent).
+  // While set, the light stays dark at any brightness. Switching the light off
+  // (brightness 0) or clearFault() re-arms it; the next non-zero brightness then
+  // runs the full enable sequence.
   bool fault() const { return _fault; }
   void clearFault() { _fault = false; }
+
+  // What the load probe found (see the top of this file). Unknown, and no string
+  // missing, without FREEINK_CAP_FRONTLIGHT_PROBE or before any probe since a
+  // cold boot.
+  freeink::frontlight::Load load() const {
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+    return _loadRecord.load;
+#else
+    return freeink::frontlight::Load::Unknown;
+#endif
+  }
+  // A single-colour light: `warm`'s string tripped the probe while the other lit.
+  // Colour requests for it light the other string.
+  bool stringMissing(bool warm) const {
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+    return _loadRecord.string(warm) == freeink::frontlight::StringState::Missing;
+#else
+    (void)warm;
+    return false;
+#endif
+  }
+  // A consumer restoring its saved "on" at boot (Restore Light on Wake) asks this
+  // first: false while the record says no light answered the last switch-on.
+  bool restoreAllowed() const {
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+    return freeink::frontlight::restoreAllowed(_loadRecord);
+#else
+    return true;
+#endif
+  }
 
 #if FREEINK_DIAGNOSTICS
   // LED-rail monitor record (all zero without FREEINK_CAP_FRONTLIGHT). Unlike
@@ -105,6 +151,29 @@ class FrontlightManager {
     uint32_t skippedSamples = 0;   // ticks that could not take the ADC in time
   };
   MonitorDiagnostics monitorDiagnostics() const;
+
+  // Load-probe record (all zero without FREEINK_CAP_FRONTLIGHT_PROBE). Probe trips
+  // are counted here, not in MonitorDiagnostics::trips, which stays the in-use
+  // trips. mV values are on the LED rail.
+  struct ProbeDiagnostics {
+    // load() and both strings, as they are now
+    freeink::frontlight::LoadRecord record;
+    uint32_t probes = 0;           // strings probed at a switch-on since boot
+    uint32_t trips = 0;            // of those, the ones that read above the trip
+    uint32_t secondTries = 0;      // the other string tried after a trip
+    uint32_t absent = 0;           // switch-ons that ended with no light
+    bool lastWarm = false;         // the string of the last probe
+    bool lastTripped = false;      // it read above the trip
+    uint32_t lastTripAfterUs = 0;  // carrier start to that reading
+    uint32_t lastPeakLedMv = 0;    // highest reading in the last probe window
+    uint32_t lastSamples = 0;      // readings in the last probe window
+    uint32_t lastMs = 0;           // millis() of the last probe
+    uint32_t railWaits = 0;        // colour-select moves that waited for the rail after a trip
+    uint32_t lastRailWaitMs = 0;   // how long the last one waited
+    uint32_t lastRailMv = 0;       // the rail when it ended
+    uint32_t railTimeouts = 0;     // waits that ran out
+  };
+  ProbeDiagnostics probeDiagnostics() const;
 #endif
 
   bool present() const {
@@ -142,6 +211,16 @@ class FrontlightManager {
   uint8_t brightness() const { return _brightness; }
   uint8_t brightnessLevel() const { return _brightnessLevel; }
   uint8_t colorTemperature() const { return _warmPercent; }
+  // On a colour-select light: the string the select picks now (the lit one, or
+  // where it rests while dark), which differs from colorTemperature() when a
+  // string is missing.
+  bool warmSelected() const {
+#if FREEINK_CAP_FRONTLIGHT
+    return _warmSelected;
+#else
+    return false;
+#endif
+  }
 
  private:
 #if FREEINK_CAP_FRONTLIGHT
@@ -158,6 +237,23 @@ class FrontlightManager {
   void stopMonitor();
   void checkMonitor();
   static void monitorTick(void* self);
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+  // Load probe (see the top of this file). Callers hold _gateLock.
+  bool probeLoad(bool warm);
+  void markRailCharged();
+  bool railSafeNow();
+  bool waitRailSafe();
+  void restoreRecord();
+  void saveRecord() const;
+  freeink::frontlight::LoadRecord _loadRecord;
+  bool _probeLit = false;        // the last lightUp() lit (and passed its probe)
+  bool _railBlocked = false;     // the last lightUp() could not move the colour select
+  bool _railCharged = false;     // a trip left the boost output charged
+  int64_t _railChargedAtUs = 0;  // esp_timer time of that trip
+#if FREEINK_DIAGNOSTICS
+  ProbeDiagnostics _probeDiag;  // written under _gateLock
+#endif
+#endif
   bool _gatedLit = false;      // PWM pin is on its LEDC carrier (gated path)
   bool _warmSelected = false;  // colour select is at the warm level
   int64_t _darkSinceUs = 0;    // esp_timer time the light last went dark; 0 = since boot

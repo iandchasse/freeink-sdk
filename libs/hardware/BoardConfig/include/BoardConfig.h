@@ -342,6 +342,9 @@
 //   DISPLAY_PROBE_POLICY: BoardProfile::displayProbe and DisplayPins::busyPullUp
 //                  (the display-controller probe policy, and the BUSY_N pull-up and
 //                  driver-free deep sleep of an UltraChip panel the probe picked)
+//   FRONTLIGHT_PROBE: FrontlightConfig::loadProbeMs / railSafeV (the switch-on
+//                  load probe, its record kept across deep sleep, and the wait for
+//                  the LED rail before the colour select moves after a trip)
 #ifndef FREEINK_CAP_ADC_LADDERS
 #define FREEINK_CAP_ADC_LADDERS (FREEINK_DEVICE_SILKSCREEN)
 #endif
@@ -356,6 +359,12 @@
 #endif
 #ifndef FREEINK_CAP_DISPLAY_PROBE_POLICY
 #define FREEINK_CAP_DISPLAY_PROBE_POLICY (FREEINK_DEVICE_SILKSCREEN)
+#endif
+#ifndef FREEINK_CAP_FRONTLIGHT_PROBE
+#define FREEINK_CAP_FRONTLIGHT_PROBE (FREEINK_DEVICE_SILKSCREEN && FREEINK_CAP_FRONTLIGHT)
+#endif
+#if FREEINK_CAP_FRONTLIGHT_PROBE && !FREEINK_CAP_FRONTLIGHT
+#error "FREEINK_CAP_FRONTLIGHT_PROBE needs FREEINK_CAP_FRONTLIGHT"
 #endif
 // Bring-up diagnostics: the managers also record what they observe (BUSY waits
 // and the refresh mode a driver ran, SD mount attempts, charge-ladder samples,
@@ -793,6 +802,18 @@ struct FrontlightConfig {
   int8_t monitorAdc = PIN_UNASSIGNED;
   uint16_t monitorScaleX1000 = 0;
   uint16_t monitorTripMv = 0;
+  // Load probe (needs the monitor and FREEINK_CAP_FRONTLIGHT_PROBE): after every
+  // enable pulse the monitor is read every 1 ms for this many ms before its
+  // 100 ms ticks start. A reading above monitorTripMv in that window means the
+  // selected string has no load: the light goes dark at once and
+  // FrontlightManager::load() / stringMissing() record it, apart from a trip in
+  // use. With a colour select, the other string is then tried. 0 = no probe.
+  uint8_t loadProbeMs = 0;
+  // After a trip leaves the boost output charged near its over-voltage level,
+  // the colour select moves only once the LED rail reads this many volts or
+  // less (waited for at most 4 s), so that charge does not discharge through a
+  // string on the other side. 0 = no wait.
+  uint8_t railSafeV = 0;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven
@@ -2126,13 +2147,16 @@ static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
 // power latch (§3.5). The eight keys are on two ADC ladders (IO1, IO4; §9.1).
 // The front light (§7) is an optional TPS923610 block driven only when the build
 // sets FREEINK_CAP_FRONTLIGHT; otherwise IO42 (ADIM) and IO40 (COLOR_SEL) stay
-// parked LOW. Touch (§8) is an optional tail on J4, probed at boot; the keys stay
-// in use when it is fitted.
+// parked LOW. Only a switch-on the user asks for (or Restore Light on Wake) runs
+// the boost, and each one probes for a load, since a board may have no light.
+// Touch (§8) is an optional tail on J4, probed at boot; the keys stay in use when
+// it is fitted.
 //
 // Software over-voltage trip on the front light's LED rail (LED_SW), in mV. 23 V
 // clears the bonded ~15 V panel light on J3 and an external J6 string of up to
 // 22 V Vf, and stays below the TPS923610's minimum OVP threshold (24.25 V,
-// SNVSCN8 §6.5) so the software trip acts before the driver's own OVP.
+// SNVSCN8 §6.5), so an open string, which the driver takes to its OVP, reads
+// above it.
 #ifndef SILKSCREEN_FRONTLIGHT_TRIP_MV
 #define SILKSCREEN_FRONTLIGHT_TRIP_MV 23000
 #endif
@@ -2226,7 +2250,13 @@ constexpr BoardProfile SILKSCREEN = {
     // COLOR_SEL IO40 HIGH = warm (Q5), LOW = cool through the U12 inverter. Enable: dark
     // >= 3 ms, IO42 HIGH 150 us (>= 100 us), then the carrier. LED_MONIT IO2 = LED_SW x
     // 120k / 1.12M, so V_LED_SW = mV x 9.333.
-    {42, 25000, 10, true, PIN_UNASSIGNED, false, 40, true, 150, 3, 2, 9333, SILKSCREEN_FRONTLIGHT_TRIP_MV},
+    // Load probe, 60 ms after each enable: with no string on the selected side, LED_SW
+    // reaches U10's OVP (24.25-25.5 V) within a few ms, and LED_MONIT (10.7 ms RC)
+    // crosses the 23 V trip 25-30 ms later, usually before U10's first retry (a 1 V
+    // sag through R39/R41 takes about 50 ms). After a trip, COLOR_SEL moves only once
+    // LED_SW is at 15 V or less, the bonded string's forward voltage at 13 mA: C9 left
+    // near the OVP level would otherwise discharge through the other string (§13.1).
+    {42, 25000, 10, true, PIN_UNASSIGNED, false, 40, true, 150, 3, 2, 9333, SILKSCREEN_FRONTLIGHT_TRIP_MV, 60, 15},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
@@ -2332,6 +2362,11 @@ static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
 static_assert(40000000u / SILKSCREEN.frontlight.pwmFrequency >= (1u << SILKSCREEN.frontlight.pwmResolutionBits),
               "Silkscreen front-light LEDC resolution is not reachable from the 40 MHz XTAL at this frequency");
+// A switch-on may find no light fitted (§13.1), so a build with the light needs the probe.
+static_assert(!FREEINK_DEVICE_SILKSCREEN || !FREEINK_CAP_FRONTLIGHT || FREEINK_CAP_FRONTLIGHT_PROBE,
+              "Silkscreen with the front light needs FREEINK_CAP_FRONTLIGHT_PROBE: the boost may be enabled unloaded");
+static_assert(SILKSCREEN.frontlight.railSafeV * 1000u < SILKSCREEN.frontlight.monitorTripMv,
+              "Silkscreen front-light rail-safe level must sit below the trip level");
 static_assert(SILKSCREEN.input.power >= 0 && SILKSCREEN.input.power <= 21,
               "Silkscreen wakes only by ext1 on the power button, which must be an RTC GPIO (0-21, §13.1)");
 // J4 touch VDD is unswitched (§8): a fitted tail must get its sleep command, which
