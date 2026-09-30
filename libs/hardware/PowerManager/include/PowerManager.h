@@ -31,8 +31,10 @@ class PowerManager {
   static void armWakeOnPins(uint64_t gpioMask, bool wakeLow = true);
 
   // Poll the power-button GPIO (raw read, with the matching pull) until released,
-  // so deep sleep isn't immediately cancelled by a still-held press.
-  static void waitForPowerButtonRelease();
+  // so deep sleep isn't immediately cancelled by a still-held press. Gives up
+  // after PowerConfig::releaseWaitMaxMs when that is set; returns false if the
+  // button was still pressed then.
+  static bool waitForPowerButtonRelease();
 
   // Drive every assigned peripheral power-rail enable in the active board
   // profile (display / SD / touch / mic) to its OFF level and latch it with
@@ -46,7 +48,9 @@ class PowerManager {
   // normal init path. Display RESET is held LOW when its rail is cut (avoids
   // back-powering an unpowered controller) and HIGH when its rail remains on
   // (keeps deep-sleep state stable). NOTE: cutting the touch rail forfeits
-  // touch-to-wake.
+  // touch-to-wake. Also applies the profile's parkedPins sleep levels, takes an
+  // awake-only BUSY pull-down off (DisplayPins::busyPullDown), and holds a
+  // parkLowWhenOff SDMMC bus LOW.
   static void powerDownRailsForSleep();
 
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not
@@ -54,7 +58,26 @@ class PowerManager {
   [[noreturn]] static void deepSleep();
 
   // Convenience: wait for release, arm the power-button wakeup, then deep sleep.
+  // With PowerConfig::releaseWaitMaxMs set, a button still pressed after that
+  // long arms the wake on its release instead (the only wake source, so a stuck
+  // key costs a sleeping chip, not a spinning one); takeReleaseWake() then tells
+  // the next boot to sleep again at once.
   [[noreturn]] static void deepSleepUntilPowerButton();
+
+  // True once, on the boot that follows a release wake (see
+  // deepSleepUntilPowerButton()). The consumer calls it first thing and, when
+  // true, sleeps again before starting any peripheral: the button went up, it
+  // did not ask for a wake. Clears the record.
+  static bool takeReleaseWake();
+
+  // Consecutive abnormal resets, kept in RTC memory across resets: a panic, a
+  // watchdog or CPU lockup, a brown-out, or a deep-sleep entry that aborted
+  // (abortedSleep, from takeAbortedSleepInfo()). Any other reset starts the count
+  // again. Call once per boot, early; returns the count including this boot. A
+  // consumer compares it with PowerConfig::abnormalResetLimit.
+  static uint8_t countAbnormalResets(bool abortedSleep);
+  // Forget the count, once a boot has proven healthy or before sleeping on it.
+  static void clearAbnormalResets();
 
   // esp_deep_sleep_start() is documented as not returning, but deepSleep()
   // calls esp_restart() if it ever does (instead of a busy-loop -- see that

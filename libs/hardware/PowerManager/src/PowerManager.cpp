@@ -33,10 +33,32 @@ struct AbortedSleepRecord {
   int wakeupCause;
   int wakePinLevel;
 };
+
+// Set just before a sleep that wakes on the power button's release
+// (PowerConfig::releaseWaitMaxMs); read and cleared by takeReleaseWake().
+constexpr uint32_t RELEASE_WAKE_MAGIC = 0x52454c57;  // 'RELW'
+// Guards the consecutive abnormal-reset count (countAbnormalResets()).
+constexpr uint32_t ABNORMAL_RESETS_MAGIC = 0x41425253;  // 'ABRS'
+
+// The power pin as a deep-sleep wake input: the pull opposite its active level,
+// or both pulls off in the digital and the RTC domain when the board biases the
+// pin itself (the RTC pad is what ext1 samples).
+void preparePowerPinForSleep(const int8_t pin) {
+  pinMode(pin, powerPinMode());
+#if SOC_RTCIO_INPUT_OUTPUT_SUPPORTED
+  if (BoardConfig::ACTIVE.input.powerExternalPull && rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(pin))) {
+    rtc_gpio_pullup_dis(static_cast<gpio_num_t>(pin));
+    rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(pin));
+  }
+#endif
+}
 }  // namespace
 
 RTC_NOINIT_ATTR uint32_t abortedSleepMagic;
 RTC_NOINIT_ATTR AbortedSleepRecord abortedSleepRecord;
+RTC_NOINIT_ATTR uint32_t releaseWakeMagic;
+RTC_NOINIT_ATTR uint32_t abnormalResetsMagic;
+RTC_NOINIT_ATTR uint32_t abnormalResets;
 
 void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
@@ -63,32 +85,27 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 bool PowerManager::armPowerButtonWakeup() {
   const int8_t pin = powerPin();
   if (pin < 0) return false;
-  const bool activeHigh = powerActiveHigh();
-
   // Hold the idle level with the opposite pull so the line is defined in sleep,
-  // unless the board's own pull already defines it: then keep both pulls off in
-  // the digital and the RTC domain (the RTC pad is what ext1 samples).
-  pinMode(pin, powerPinMode());
-#if SOC_RTCIO_INPUT_OUTPUT_SUPPORTED
-  if (BoardConfig::ACTIVE.input.powerExternalPull && rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(pin))) {
-    rtc_gpio_pullup_dis(static_cast<gpio_num_t>(pin));
-    rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(pin));
-  }
-#endif
-  armWakeOnPins(1ULL << pin, /*wakeLow=*/!activeHigh);
+  // unless the board's own pull already defines it.
+  preparePowerPinForSleep(pin);
+  armWakeOnPins(1ULL << pin, /*wakeLow=*/!powerActiveHigh());
   return true;
 }
 
-void PowerManager::waitForPowerButtonRelease() {
+bool PowerManager::waitForPowerButtonRelease() {
   const int8_t pin = powerPin();
-  if (pin < 0) return;
+  if (pin < 0) return true;
   const bool activeHigh = powerActiveHigh();
 
   pinMode(pin, powerPinMode());
   const int pressedLevel = activeHigh ? HIGH : LOW;
+  const uint16_t maxMs = BoardConfig::ACTIVE.power.releaseWaitMaxMs;
+  const uint32_t start = millis();
   while (digitalRead(pin) == pressedLevel) {
+    if (maxMs != 0 && millis() - start >= maxMs) return false;
     delay(50);
   }
+  return true;
 }
 
 namespace {
@@ -126,6 +143,27 @@ void PowerManager::powerDownRailsForSleep() {
   const uint8_t resetSleepLevel = b.display.powerEnable >= 0 ? LOW : HIGH;
   holdRailOff(b.display.rst, resetSleepLevel);
   holdRailOff(b.display.powerEnable, LOW);
+  // The BUSY pull-down (DisplayPins::busyPullDown) is for the awake panel only.
+  // A controller that drives BUSY HIGH through its deep sleep (SSD1677) would
+  // sink into it all night, so BUSY sleeps as an input with no pulls, never held.
+  if (b.display.busyPullDown && b.display.busy >= 0) {
+    const auto busy = static_cast<gpio_num_t>(b.display.busy);
+    gpio_hold_dis(busy);
+    gpio_pulldown_dis(busy);
+    gpio_pullup_dis(busy);
+    gpio_set_direction(busy, GPIO_MODE_INPUT);
+  }
+  // SdmmcPins::parkLowWhenOff: the bus goes LOW with pulls off before the card is
+  // gated off, and stays held LOW through sleep. An unheld RTC pad is undefined in
+  // deep sleep, and a bus line that floats HIGH back-feeds the gated card through
+  // its pull-ups. The gate itself is re-held just below; holdPowerRails() releases
+  // the bus at boot.
+  if (b.sdmmc.parkLowWhenOff && b.sdmmc.busWidth != 0) {
+    BoardConfig::parkSdmmcBus();
+    for (const int8_t pin : {b.sdmmc.clk, b.sdmmc.cmd, b.sdmmc.d0, b.sdmmc.d1, b.sdmmc.d2, b.sdmmc.d3}) {
+      if (pin >= 0) gpio_hold_en(static_cast<gpio_num_t>(pin));
+    }
+  }
   // SD enable OFF = the inactive level: LOW for active-high enables, HIGH for the
   // active-low ones (e.g. X4 Pro's GPIO5, which powers the card while held LOW).
   holdRailOff(b.sd.powerEnable, b.sd.powerActiveHigh ? LOW : HIGH);
@@ -135,8 +173,22 @@ void PowerManager::powerDownRailsForSleep() {
   // Board-declared sleep levels (BoardConfig::ParkedPin), e.g. an EPD CS with no
   // pull-up held HIGH, or a touch reset held LOW on an unswitched rail.
   for (const BoardConfig::ParkedPin& p : b.parkedPins) {
-    if (p.sleep == BoardConfig::PinPark::Low) holdRailOff(p.pin, LOW);
-    if (p.sleep == BoardConfig::PinPark::High) holdRailOff(p.pin, HIGH);
+    if (p.pin < 0) continue;
+    switch (p.sleep) {
+      case BoardConfig::PinPark::Low:
+        holdRailOff(p.pin, LOW);
+        break;
+      case BoardConfig::PinPark::High:
+        holdRailOff(p.pin, HIGH);
+        break;
+      case BoardConfig::PinPark::InputNoPull:
+        gpio_hold_dis(static_cast<gpio_num_t>(p.pin));
+        pinMode(p.pin, INPUT);
+        gpio_hold_en(static_cast<gpio_num_t>(p.pin));
+        break;
+      case BoardConfig::PinPark::None:
+        break;
+    }
   }
 }
 
@@ -163,9 +215,51 @@ void PowerManager::deepSleep() {
 }
 
 void PowerManager::deepSleepUntilPowerButton() {
-  waitForPowerButtonRelease();
+  const int8_t pin = powerPin();
+  if (!waitForPowerButtonRelease() && pin >= 0) {
+    // Still pressed after PowerConfig::releaseWaitMaxMs (a stuck key, a press in
+    // a bag): sleep until the release rather than spin here, and let that wake go
+    // straight back to sleep (takeReleaseWake()).
+    preparePowerPinForSleep(pin);
+    armWakeOnPins(1ULL << pin, /*wakeLow=*/powerActiveHigh());
+    releaseWakeMagic = RELEASE_WAKE_MAGIC;
+    deepSleep();
+  }
+  releaseWakeMagic = 0;
   armPowerButtonWakeup();
   deepSleep();
+}
+
+bool PowerManager::takeReleaseWake() {
+  const bool releaseWake = releaseWakeMagic == RELEASE_WAKE_MAGIC && esp_reset_reason() == ESP_RST_DEEPSLEEP;
+  releaseWakeMagic = 0;
+  return releaseWake;
+}
+
+uint8_t PowerManager::countAbnormalResets(const bool abortedSleep) {
+  bool abnormal = abortedSleep;
+  switch (esp_reset_reason()) {
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+    case ESP_RST_CPU_LOCKUP:
+    case ESP_RST_BROWNOUT:
+      abnormal = true;
+      break;
+    default:
+      break;
+  }
+  // RTC_NOINIT memory is garbage after a power-on: the magic word rejects it.
+  if (!abnormal || abnormalResetsMagic != ABNORMAL_RESETS_MAGIC) abnormalResets = 0;
+  if (abnormal && abnormalResets < UINT8_MAX) ++abnormalResets;
+  abnormalResetsMagic = ABNORMAL_RESETS_MAGIC;
+  return static_cast<uint8_t>(abnormalResets);
+}
+
+void PowerManager::clearAbnormalResets() {
+  abnormalResets = 0;
+  abnormalResetsMagic = ABNORMAL_RESETS_MAGIC;
 }
 
 PowerManager::AbortedSleepInfo PowerManager::takeAbortedSleepInfo() {

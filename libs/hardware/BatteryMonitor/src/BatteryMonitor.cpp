@@ -616,7 +616,7 @@ uint16_t BatteryMonitor::readMillivoltsAveraged(const uint8_t samples) const {
 #endif
 }
 
-bool BatteryMonitor::isBelowCutoff(bool* known, uint16_t* millivolts) const {
+bool BatteryMonitor::isBelowCutoff(bool* known, uint16_t* millivolts, const bool radioOn) const {
   static bool s_sampled = false;
   static uint32_t s_lastSampleMs = 0;
   static uint8_t s_belowCount = 0;
@@ -674,7 +674,9 @@ bool BatteryMonitor::isBelowCutoff(bool* known, uint16_t* millivolts) const {
   }
   s_lastKnown = true;
   if (known) *known = true;
-  if (mv <= cutoffMv) {
+  const uint16_t allowanceMv = radioOn ? BoardConfig::ACTIVE.power.cutoffRadioAllowanceMv : 0;
+  const uint16_t thresholdMv = cutoffMv > allowanceMv ? cutoffMv - allowanceMv : 0;
+  if (mv <= thresholdMv) {
     if (s_belowCount < UINT8_MAX) ++s_belowCount;
   } else {
     s_belowCount = 0;

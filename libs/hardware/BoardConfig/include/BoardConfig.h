@@ -866,6 +866,35 @@ struct PowerConfig {
   // board to sleep while it runs on the cell. 0 = no cutoff. See
   // BatteryMonitor::isBelowCutoff().
   uint16_t lowBatteryCutoffMv = 0;
+  // Longest wait at deep-sleep entry for the power button to be released
+  // (PowerManager::deepSleepUntilPowerButton()). A button still pressed after
+  // this long (a stuck key, a press in a bag) sleeps until its release instead,
+  // and that wake goes straight back to sleep (PowerManager::takeReleaseWake()).
+  // 0 = wait for the release however long it takes.
+  uint16_t releaseWaitMaxMs = 0;
+  // The consumer decides sleep-or-boot on a power-button wake right after the
+  // hold check, before storage, settings, touch, display or radio start.
+  bool earlyWakeDecision = false;
+  // Consecutive abnormal resets (panic, watchdog, brown-out, aborted sleep entry)
+  // after which the consumer goes straight back to sleep without starting
+  // storage, display or radio (PowerManager::countAbnormalResets()). 0 = off.
+  uint8_t abnormalResetLimit = 0;
+  // How far the lowBatteryCutoffMv reading may sag while the radio is on: the
+  // cutoff then compares against lowBatteryCutoffMv minus this (the divider
+  // reads the cell behind its protection FETs, which drop I x R under load).
+  uint16_t cutoffRadioAllowanceMv = 0;
+  // Lowest battery reading (mV, same divider as the cutoff) at which firmware
+  // may write a new image (OTA, SD flash) while running on the cell. 0 = no
+  // check.
+  uint16_t firmwareUpdateMinMv = 0;
+  // On battery, the longest the consumer stays awake with no input and no
+  // network client traffic, including screens that hold auto-sleep off and the
+  // "never" timeout. Minutes, 0 = no ceiling.
+  uint8_t awakeCeilingMin = 0;
+  // Network screens switch the radio off as soon as their work has ended (an
+  // update check with no update, or a failed one), instead of when the user
+  // leaves them.
+  bool radioOffWhenIdle = false;
 };
 
 // Panel rows/columns the device's bezel physically overlaps, in the panel's
@@ -2112,18 +2141,35 @@ constexpr BoardProfile SILKSCREEN = {
     {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None, false, false, false, true, RtcType::Pcf85063, 0x51,
      true, true},
     1.0f,  // uiScale: button-navigated
-    // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5). Sleep at
-    // 3.4 V on P+, above the ~3.3 V "0%" point; the DW01A 2.4 V trip is a last resort.
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400},
+    // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5), so "off" is
+    // deep sleep and every awake minute comes out of the cell.
+    // - Sleep at 3.4 V on P+, above the ~3.3 V "0%" point; the DW01A 2.4 V trip is a last
+    //   resort. With the radio on, allow 100 mV: P+ sits 0.24-0.35 Ω behind the cell
+    //   (§3.6), 25-105 mV at a 100-300 mA Wi-Fi average.
+    // - A power button still held 5 s into sleep entry wakes on its release instead of
+    //   spinning (R62/R76 draw 30 µA while held, §9.2).
+    // - Sleep-or-boot is decided before SD, touch and the panel start. After 3 abnormal
+    //   resets in a row, sleep at once.
+    // - Firmware writes need 3.6 V on battery. 15 min without input or client traffic
+    //   on battery ends any screen, and network screens drop the radio when done.
+    // {latch0, latch1, chargeEnable, chargeEnableActiveHigh, lowBatteryCutoffMv,
+    //  releaseWaitMaxMs, earlyWakeDecision, abnormalResetLimit, cutoffRadioAllowanceMv,
+    //  firmwareUpdateMinMv, awakeCeilingMin, radioOffWhenIdle}
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400, 5000, true, 3, 100, 3600, 15, true},
     0,      // displayControllerVariant: SSD1677, not probed
     {},     // viewableInsets: X4 default until the bezel is measured
     false,  // batteryChargeStatusActiveHigh: unused (no digital STAT)
     NO_I2C_FRONTLIGHT,
     // parkedPins {pin, boot, sleep}. EPD CS has no pull-up: HIGH before any SCLK edge
-    // and through sleep (§6.1). ADIM and COLOR_SEL LOW (§7, §13.1). Touch reset HIGH at
-    // boot and through sleep: J4 VDD is unswitched (§8), and an FT6336U's ~3 kΩ RSTN
-    // pull-up would draw ~1.1 mA from a LOW pin and reset the chip out of hibernate.
+    // and through sleep (§6.1). SCLK, MOSI and DC LOW until SPI takes them and through
+    // sleep: the SSD1677 stays powered (§6.1), and an unheld RTC pad is undefined in deep
+    // sleep. ADIM and COLOR_SEL LOW (§7, §13.1). Touch reset HIGH at boot and through
+    // sleep: J4 VDD is unswitched (§8), and an FT6336U's ~3 kΩ RSTN pull-up would draw
+    // ~1.1 mA from a LOW pin and reset the chip out of hibernate.
     {{14, PinPark::High, PinPark::High},
+     {13, PinPark::Low, PinPark::Low},
+     {12, PinPark::Low, PinPark::Low},
+     {21, PinPark::Low, PinPark::Low},
      {42, PinPark::Low, PinPark::Low},
      {40, PinPark::Low, PinPark::Low},
      {11, PinPark::High, PinPark::High}},
@@ -2166,6 +2212,8 @@ static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
 static_assert(40000000u / SILKSCREEN.frontlight.pwmFrequency >= (1u << SILKSCREEN.frontlight.pwmResolutionBits),
               "Silkscreen front-light LEDC resolution is not reachable from the 40 MHz XTAL at this frequency");
+static_assert(SILKSCREEN.input.power >= 0 && SILKSCREEN.input.power <= 21,
+              "Silkscreen wakes only by ext1 on the power button, which must be an RTC GPIO (0-21, §13.1)");
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
@@ -2413,7 +2461,8 @@ inline uint32_t sdmmcParkedAtMs = 0;
 // level. With the bus pull-ups on the gated card rail, any HIGH bus line would
 // back-feed the card. Records when the card went off; calling it again while
 // parked re-drives the levels and keeps that time. The caller keeps the bus LOW
-// for at least 20 ms before relying on the card being reset.
+// for at least 20 ms before relying on the card being reset. Releases the bus
+// holds that PowerManager::powerDownRailsForSleep() set for deep sleep.
 inline void parkSdmmcBus() {
   const SdmmcPins& s = ACTIVE.sdmmc;
   for (const int8_t pin : {s.clk, s.cmd, s.d0, s.d1, s.d2, s.d3}) {

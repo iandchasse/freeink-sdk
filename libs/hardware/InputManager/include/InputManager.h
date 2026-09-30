@@ -21,7 +21,12 @@
 class InputManager {
  public:
   InputManager();
-  void begin();
+  // Configures the keys and, unless startTouch is false, probes and starts the
+  // touch panel. begin(false) leaves the panel to startTouch(), for a consumer
+  // that decides sleep-or-boot before any touch or I2C traffic.
+  void begin(bool startTouch = true);
+  // Probe and start the touch panel after begin(false). No-op once started.
+  void startTouch();
   uint8_t getState();
 
   // Call regularly from the main loop to update button and touch edge state.
@@ -121,7 +126,10 @@ class InputManager {
   // (TouchConfig::resetPulseMs) and the command repeated once. With no
   // controller found, one best-effort hibernate goes to the primary address in
   // case a tail is fitted but did not answer the probe. A GT911 found at boot
-  // gets its sleep command with INT held LOW through sleep. Call from the
+  // gets its sleep command with INT held LOW through sleep. Before
+  // startTouch() has run, nothing is sent after a deep-sleep wake (the
+  // controller is as the last sleep entry left it); after any other reset the
+  // primary FocalTech address gets the one best-effort write. Call from the
   // sleeping task before the I2C bus is released.
   enum class TouchSleepResult : uint8_t { NotApplicable, Asleep, NoAnswer };
   TouchSleepResult prepareTouchForSleep();
@@ -408,6 +416,7 @@ class InputManager {
   bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false;         // I2C up, controller present
+  bool touchStarted = false;             // beginTouch() has run this boot
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   // prepareTouchForSleep() target: the controller the probe found, or the
   // declared primary when none answered.

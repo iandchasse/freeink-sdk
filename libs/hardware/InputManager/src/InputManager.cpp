@@ -135,13 +135,13 @@ InputManager::InputManager()
       twoButtonPressStart(0),
       twoButtonLongPressActive(false) {}
 
-void InputManager::begin() {
+void InputManager::begin(const bool startTouch) {
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
     pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
     freeink::adc::setAttenuation(ADC_11db);
-    beginTouch();
+    if (startTouch) beginTouch();
     return;
   }
 
@@ -152,7 +152,7 @@ void InputManager::begin() {
     }
     freeink::adc::setAttenuation(ADC_11db);
     if (BoardConfig::ACTIVE.input.power >= 0) pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
-    beginTouch();
+    if (startTouch) beginTouch();
     return;
   }
 
@@ -166,7 +166,7 @@ void InputManager::begin() {
     if (BoardConfig::ACTIVE.input.power >= 0) {
       pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
     }
-    beginTouch();
+    if (startTouch) beginTouch();
     return;
   }
 
@@ -186,7 +186,11 @@ void InputManager::begin() {
   if (BoardConfig::ACTIVE.input.power >= 0) {
     pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
   }
-  beginTouch();
+  if (startTouch) beginTouch();
+}
+
+void InputManager::startTouch() {
+  if (!touchStarted) beginTouch();
 }
 
 int InputManager::getButtonFromADC(const int adcValue, const int ranges[], const int numButtons) {
@@ -1346,6 +1350,7 @@ bool InputManager::wasHomeKeyTapped() const { return touchHomeKeyTapEvent; }
 bool InputManager::wasHomeKeyLongPressed() const { return touchHomeKeyLongEvent; }
 
 void InputManager::beginTouch() {
+  touchStarted = true;
 #if FREEINK_CAP_TOUCH
   auto& t = BoardConfig::ACTIVE.touch;
   if (t.controller == BoardConfig::TouchController::None) {
@@ -1441,6 +1446,15 @@ InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
 #if FREEINK_CAP_TOUCH
   const auto& t = BoardConfig::ACTIVE.touch;
   if (!t.hibernateInSleep || t.sda < 0 || t.scl < 0) return TouchSleepResult::NotApplicable;
+  if (!touchStarted) {
+    // A sleep entry before startTouch(). After a deep-sleep wake the controller is
+    // still as the last sleep entry left it. After any other reset it may be awake,
+    // so the primary gets the single best-effort write below (no reset retry: a
+    // controller only counts as found once the probe has run).
+    if (esp_reset_reason() == ESP_RST_DEEPSLEEP) return TouchSleepResult::NotApplicable;
+    touchSleepController = t.controller;
+    touchSleepAddr = t.i2cAddress;
+  }
   const bool gt911 = touchSleepController == BoardConfig::TouchController::Gt911;
   const bool focaltech = touchSleepController == BoardConfig::TouchController::Ft5x06 ||
                          touchSleepController == BoardConfig::TouchController::Ft6336u;

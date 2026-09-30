@@ -101,14 +101,15 @@ public:
     // CUTOFF_SAMPLES consecutive readings are at or below the cutoff. It never
     // fires while the charge-status ladder reports external power (USB idle,
     // charging, complete or the no-battery blink), nor on a reading below
-    // CELL_PRESENT_MIN_MV (no cell: P+ reads about 0 V on USB). Take readings
-    // with the radio quiet: the divider taps P+ behind the protection FETs and
-    // reads low under load. Call from one task. `known` is false when no
-    // reading was judged against the cutoff (no cutoff, external power, no
-    // cell); `millivolts` receives the last reading.
+    // CELL_PRESENT_MIN_MV (no cell: P+ reads about 0 V on USB). The divider taps
+    // P+ behind the protection FETs and reads low under load, so with `radioOn`
+    // a reading is judged against the cutoff minus
+    // PowerConfig::cutoffRadioAllowanceMv. Call from one task. `known` is false
+    // when no reading was judged against the cutoff (no cutoff, external power,
+    // no cell); `millivolts` receives the last reading.
     static constexpr uint8_t CUTOFF_SAMPLES = 3;
     static constexpr uint16_t CELL_PRESENT_MIN_MV = 2500;
-    bool isBelowCutoff(bool* known = nullptr, uint16_t* millivolts = nullptr) const;
+    bool isBelowCutoff(bool* known = nullptr, uint16_t* millivolts = nullptr, bool radioOn = false) const;
 
     // Analog charge-status ladder (BoardConfig::ChargeStatusLadder). poll takes
     // one sample when one is due (not before settleAfterBootMs of uptime, then at

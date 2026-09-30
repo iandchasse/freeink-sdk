@@ -109,11 +109,16 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   // Release any deep-sleep hold on RST. powerDownRailsForSleep() holds it HIGH
   // while the panel rail remains powered, or LOW alongside a gated-off rail;
   // either hold survives the wake reset and would make the reset pulse below
-  // bounce off the latch. Boards routing RST through an IO expander leave the
-  // pin unassigned and reset via the freeink_board_epd_reset hook instead.
+  // bounce off the latch. The HIGH level is preset before the driver is enabled
+  // (GPIO_OUT resets to 0) and the hold is released last, so RST never glitches
+  // LOW ahead of the reset pulse. Boards routing RST through an IO expander leave
+  // the pin unassigned and reset via the freeink_board_epd_reset hook instead.
   if (pins.rst >= 0) {
-    gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
+    const auto rst = static_cast<gpio_num_t>(pins.rst);
+    gpio_set_level(rst, 1);
     pinMode(pins.rst, OUTPUT);
+    digitalWrite(pins.rst, HIGH);
+    gpio_hold_dis(rst);
   }
   if (busy == BusyPolarity::ActiveLow) {
     pinMode(pins.busy, INPUT_PULLUP);
