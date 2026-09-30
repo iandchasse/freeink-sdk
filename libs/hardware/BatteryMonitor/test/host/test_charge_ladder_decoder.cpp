@@ -169,6 +169,22 @@ void testUnknownHoldExpires() {
   CHECK(g.state() == State::Charging);
 }
 
+void testRunCounters() {
+  Decoder d;
+  CHECK(d.candidate() == State::Unknown && d.candidateRun() == 0);
+  d.feed(PARAMS, 2200);
+  CHECK(d.candidate() == State::OnBattery && d.candidateRun() == 1 && d.state() == State::Unknown);
+  d.feed(PARAMS, 2200);
+  CHECK(d.candidateRun() == 2 && d.state() == State::OnBattery);
+  d.feed(PARAMS, 1500);
+  CHECK(d.unknownRun() == 1 && d.candidateRun() == 0);
+  d.feed(PARAMS, 550);
+  d.feed(PARAMS, 550);
+  CHECK(d.unknownRun() == 0 && d.completeRun() == 2 && d.candidateRun() == 0);
+  d.feed(PARAMS, 2200);
+  CHECK(d.completeRun() == 0 && d.candidate() == State::OnBattery && d.candidateRun() == 1);
+}
+
 void testSparseSamplesCannotFakeComplete() {
   // Two samples that happen to land on the 550 mV blink phase are not enough.
   Decoder d;
@@ -187,6 +203,7 @@ int main() {
   testNoBatteryBlink();
   testSettlingTailIsNotABlink();
   testUnknownHoldExpires();
+  testRunCounters();
   testSparseSamplesCannotFakeComplete();
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

@@ -125,6 +125,31 @@ public:
     // (ChargeStatusLadder::unknownHoldSamples readings outside every window).
     static bool chargeStatusLost();
 
+#if FREEINK_DIAGNOSTICS
+    // Charge-status ladder internals, for a bring-up screen that must not take
+    // its own samples (the ladder is sampled at most once per minIntervalMs).
+    // Reads cached state only; any task may call it.
+    struct ChargeLadderDiagnostics {
+      using State = BoardConfig::ChargeState;
+      bool sampled = false;              // at least one sample taken this boot
+      uint32_t lastSampleMs = 0;         // millis() of the last sample
+      State decoded = State::Unknown;    // decoder output
+      State published = State::Unknown;  // chargeStatus()
+      State candidate = State::Unknown;  // awaiting debounce
+      uint8_t candidateRun = 0;          // agreeing readings for `candidate`
+      uint8_t completeRun = 0;           // consecutive Complete-window readings
+      uint8_t unknownRun = 0;            // consecutive readings outside every window
+      bool everDecoded = false;          // a state was decoded this boot
+      bool lost = false;                 // chargeStatusLost()
+      bool disproved = false;            // the P+ cross-check publishes Charging/Complete as OnBattery
+      uint8_t trendSamples = 0;          // readings in the open P+ cross-check window
+      uint16_t trendStartMv = 0;         // P+ at the start of that window
+      uint32_t lastMv = 0;               // last oversampled pin reading
+      uint32_t samples = 0;              // samples taken this boot
+    };
+    static ChargeLadderDiagnostics chargeLadderDiagnostics();
+#endif
+
     // Percentage from a millivolt value, off a standard 1S Li-ion discharge
     // curve. The result is always a multiple of 10: voltage cannot resolve a
     // Li-ion pack any finer than that, and pretending otherwise just produces a

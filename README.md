@@ -376,6 +376,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` | single framebuffer (uses controller RAM as previous frame) |
 | `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper and Paper Mono, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
+| `-DFREEINK_DIAGNOSTICS=1` | the managers also record what they observe and expose read accessors, for a hardware test build (see [Bring-up diagnostics](#bring-up-diagnostics)); off by default, and then none of it is compiled |
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
 (`NO_FLIP`, `MIRROR_X`, `MIRROR_Y`, or `ROTATE_180`). The SSD1677 driver applies it in
@@ -885,6 +886,33 @@ read, since Arduino-ESP32 3.x only try-locks the ADC unit and returns 0 to the l
 use its `freeink::adc::` readers for your own ADC reads) and `SharedI2c.h` (`busHz()` /
 `beginBus()` give every driver on the sensor-bus pins one clock, plus stuck-bus recovery
 and the sleep release).
+
+### Bring-up diagnostics
+
+Read-only accessors for a hardware test build; none of them changes behaviour.
+The ones in the first table, and what they record, exist only with
+`-DFREEINK_DIAGNOSTICS=1`: without it the managers compile to the same object
+code as before, so a product build pays nothing. (An out-of-line function that is
+compiled but never called is dropped at link time, but on Xtensa its presence
+can still shift the assembler's alignment padding elsewhere in the file, hence
+the flag.)
+
+| Accessor | Reports |
+|---|---|
+| `BatteryMonitor::chargeLadderDiagnostics()` | the decoded and published charge state, the debounce candidate and run counters, the lost/disproved flags, the P+ cross-check window, the last oversampled pin mV and the sample count, from cached state (no ADC read) |
+| `FreeInkDisplay::busDiagnostics()` (`EpdBus::diagnostics()`) | the last BUSY wait (ms, tag, timed out) and wait/timeout counts; the last refresh a driver reported through `EpdBus::noteRefresh()` (the SSD1677 driver does): the mode it actually ran after any FAST→HALF/FULL promotion, the update-sequence byte, async/turn-off/custom-LUT, and activation-to-completion time |
+| `SDCardManager::cardInfo()` | native SDMMC: card type (SDSC/SDHC/SDXC/MMC), CSD capacity, bus width, host cap, card max and real clock, CID name/MID/OID/revision/serial/date, power cycles the last mount used and its last error (SPI: mounted and type only) |
+| `FrontlightManager::monitorDiagnostics()` | LED-rail monitor trips (count, LED mV, limit, time) and the last reading (pin and LED mV), kept after the light is switched off, which clears `fault()` |
+| `InputManager::touchDiagnostics()` | whether touch is active, the last raw contact before any mapping (FT5x06, FT6336U, GT911), the boot probe (cached, found, fallback), reset pulses, and `prepareTouchForSleep()`'s result and reset-retry for this boot and for the sleep entry this boot woke from |
+| `PowerManager::peekAbnormalResets()` / `peekAbortedSleepInfo()` / `bootResetRecord()` | the RTC records without consuming them, and what this boot's `countAbnormalResets()` and `takeAbortedSleepInfo()` returned, kept after the consumer has cleared or taken them |
+
+Header-only helpers, available in every build (not emitted unless called):
+
+| Helper | Does |
+|---|---|
+| `freeink::i2c::scanSensorBus(hz)` (`SharedI2c.h`) | an address-only ACK map of the sensor bus; uses a running controller as it is (restoring its clock after a scan at another `hz`), or starts and ends a bus no driver owns |
+| `InputManager::touchMapping()` / `setTouchMapping()` | read or change, in RAM, `swapXY`/`flipX`/`flipY` and the raw ranges of `ACTIVE.touch`, for calibration (used from the next poll) |
+| `ChargeLadderDecoder::candidate()` / `candidateRun()` / `completeRun()` / `unknownRun()` | the decoder's debounce progress |
 
 ### Devices backed by external libraries
 

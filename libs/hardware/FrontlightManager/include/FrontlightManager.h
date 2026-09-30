@@ -88,6 +88,25 @@ class FrontlightManager {
   bool fault() const { return _fault; }
   void clearFault() { _fault = false; }
 
+#if FREEINK_DIAGNOSTICS
+  // LED-rail monitor record (all zero without FREEINK_CAP_FRONTLIGHT). Unlike
+  // fault(), it survives the light being switched off after a trip, so a test
+  // can see a trip the consumer has already handled. mV values are on the LED
+  // rail (pin mV x monitorScaleX1000 / 1000) unless named "pin".
+  struct MonitorDiagnostics {
+    uint32_t trips = 0;            // trips since boot
+    uint32_t lastTripLedMv = 0;    // LED rail at the last trip
+    uint32_t lastTripMs = 0;       // millis() of the last trip
+    uint32_t lastTripLimitMv = 0;  // monitorTripMv in force then
+    uint32_t samples = 0;          // monitor readings taken since boot
+    uint32_t lastPinMv = 0;        // last monitor reading at the ADC pin
+    uint32_t lastLedMv = 0;        // the same reading on the LED rail
+    uint32_t lastSampleMs = 0;     // millis() of that reading
+    uint32_t skippedSamples = 0;   // ticks that could not take the ADC in time
+  };
+  MonitorDiagnostics monitorDiagnostics() const;
+#endif
+
   bool present() const {
 #if FREEINK_CAP_FRONTLIGHT
     // A PMIC-driven frontlight (Paper Mono: PM1 PWM0 -> AW9967) has no ESP
@@ -168,6 +187,9 @@ class FrontlightManager {
 
   bool _begun = false;
   volatile bool _fault = false;  // set by the LED monitor on the esp_timer task
+#if FREEINK_DIAGNOSTICS && FREEINK_CAP_FRONTLIGHT
+  MonitorDiagnostics _monitorDiag;  // written by checkMonitor() under _gateLock
+#endif
 #if FREEINK_DEVICE_EEGO_A4
   bool _i2cConfigured = false;
 #endif

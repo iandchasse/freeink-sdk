@@ -562,6 +562,22 @@ void FrontlightManager::checkMonitor() {
       }
     }
     const uint32_t ledMv = pinMv * fl.monitorScaleX1000 / 1000u;
+#if FREEINK_DIAGNOSTICS
+    if (sampled) {
+      ++_monitorDiag.samples;
+      _monitorDiag.lastPinMv = pinMv;
+      _monitorDiag.lastLedMv = ledMv;
+      _monitorDiag.lastSampleMs = millis();
+    } else {
+      ++_monitorDiag.skippedSamples;
+    }
+    if (sampled && ledMv > fl.monitorTripMv) {
+      ++_monitorDiag.trips;
+      _monitorDiag.lastTripLedMv = ledMv;
+      _monitorDiag.lastTripMs = millis();
+      _monitorDiag.lastTripLimitMv = fl.monitorTripMv;
+    }
+#endif
     if (sampled && ledMv > fl.monitorTripMv) {
       _fault = true;
       goDark(maxDuty(fl.pwmResolutionBits));
@@ -681,6 +697,21 @@ void FrontlightManager::prepareForSleep() {
   LOG_DBG("FrontlightMgr", "prepareForSleep: dark, LEDC detached");
 #endif
 }
+
+#if FREEINK_DIAGNOSTICS
+FrontlightManager::MonitorDiagnostics FrontlightManager::monitorDiagnostics() const {
+#if FREEINK_CAP_FRONTLIGHT
+  // The monitor writes the record under _gateLock; a copy taken while it is
+  // held elsewhere for longer than the wait may be one reading apart.
+  const bool locked = _gateLock != nullptr && xSemaphoreTake(_gateLock, MONITOR_ADC_WAIT) == pdTRUE;
+  const MonitorDiagnostics copy = _monitorDiag;
+  if (locked) xSemaphoreGive(_gateLock);
+  return copy;
+#else
+  return {};
+#endif
+}
+#endif
 
 void FrontlightManager::off() { setBrightness(0); }
 void FrontlightManager::on() { setBrightness(_lastBrightness); }

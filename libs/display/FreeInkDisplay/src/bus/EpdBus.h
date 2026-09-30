@@ -20,6 +20,33 @@ enum class BusyPolarity : uint8_t {
   UcIdleHigh,  // UC8179/UC8279 X4 Pro: delay one tick, then wait until BUSY_N is HIGH
 };
 
+#if defined(FREEINK_DIAGNOSTICS) && FREEINK_DIAGNOSTICS
+// What the bus observed of BUSY waits and of the refreshes a driver reported
+// (EpdBus::noteRefresh), read with EpdBus::diagnostics(). One record for the
+// build: there is one panel.
+struct EpdBusDiagnostics {
+  uint32_t waits = 0;                 // BUSY waits that ended
+  uint32_t timeouts = 0;              // waits that gave up with BUSY still asserted
+  uint32_t lastWaitMs = 0;            // duration of the last wait
+  bool lastWaitTimedOut = false;      // the last wait gave up
+  const char* lastWaitTag = nullptr;  // tag of the last wait (a string literal, or nullptr)
+  uint32_t refreshes = 0;             // activations drivers reported
+  // Refresh mode the driver actually ran, after any promotion of the requested
+  // one (FAST to HALF or FULL on the first paint or after grayscale), as
+  // freeink::RefreshMode (0 Full, 1 Half, 2 Fast; FreeInkDisplay::RefreshMode
+  // uses the same order). kNoRefresh until a driver reports one.
+  static constexpr uint8_t kNoRefresh = 0xFF;
+  uint8_t lastRefreshMode = kNoRefresh;
+  uint8_t lastRefreshSequence = 0;    // controller update-sequence byte (SSD1677 0x22 value)
+  bool lastRefreshAsync = false;      // fired without waiting (displayStart)
+  bool lastRefreshTurnOff = false;    // the caller asked for power-down afterwards
+  bool lastRefreshCustomLut = false;  // ran on a loaded (grayscale) LUT
+  bool refreshInFlight = false;       // activation reported, completion wait not ended
+  uint32_t lastRefreshMs = 0;         // activation to the end of its completion wait
+  bool lastRefreshTimedOut = false;   // that completion wait gave up
+};
+#endif
+
 struct EpdPins {
   int8_t sclk;
   int8_t mosi;
@@ -114,6 +141,14 @@ class EpdBus {
   const EpdPins& pins() const { return _pins; }
   uint32_t spiHz() const { return _spiHz; }
   BusyPolarity busyPolarity() const { return _busy; }
+
+#if defined(FREEINK_DIAGNOSTICS) && FREEINK_DIAGNOSTICS
+  // A driver calls noteRefresh() right after it fires an update
+  // (MASTER_ACTIVATION or equivalent); the next waitRefreshComplete() closes
+  // it. `mode` is a freeink::RefreshMode value.
+  static void noteRefresh(uint8_t mode, uint8_t sequence, bool async, bool turnOff, bool customLut);
+  static EpdBusDiagnostics diagnostics();
+#endif
 
  private:
   // Busy-wait hooks (see setBusyWaitHooks / setBusyWaitSliceHook)

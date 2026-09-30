@@ -303,6 +303,9 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
     bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
     bus.data(seqOverride);
     bus.cmd(CMD_MASTER_ACTIVATION);
+#if FREEINK_DIAGNOSTICS
+    EpdBus::noteRefresh(static_cast<uint8_t>(mode), seqOverride, async, turnOff, _customLutActive);
+#endif
     if (!async) bus.waitRefreshComplete("refresh");
     // Only sequences carrying the low two disable bits physically power down.
     // X4 Pro DU (0xFC) does not, so a turnOff request must run the documented
@@ -355,6 +358,9 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   bus.cmd(CMD_DISPLAY_UPDATE_CTRL2);
   bus.data(displayMode);
   bus.cmd(CMD_MASTER_ACTIVATION);
+#if FREEINK_DIAGNOSTICS
+  EpdBus::noteRefresh(static_cast<uint8_t>(mode), displayMode, async, turnOff, _customLutActive);
+#endif
   if (!async) bus.waitRefreshComplete("refresh");
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   // esp_rom_printf hits the always-on IDF console; Serial (HWCDC) drops on S3.

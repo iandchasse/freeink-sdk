@@ -71,6 +71,12 @@ constexpr uint32_t TOUCH_PROBE_MAGIC = 0x54434850;  // "TCHP"
 RTC_DATA_ATTR uint32_t touchProbeMagic = 0;
 RTC_DATA_ATTR uint8_t touchProbeResult = 0;
 RTC_DATA_ATTR uint8_t touchProbeGt911Addr = 0;  // the address a GT911 answered at, for its sleep command
+#if FREEINK_DIAGNOSTICS
+// The last prepareTouchForSleep() before a deep sleep, for the boot that follows
+// (RTC data survives deep sleep only): 0 = none, else 1 + TouchSleepResult.
+RTC_DATA_ATTR uint8_t touchSleepRecord = 0;
+RTC_DATA_ATTR bool touchSleepRecordRetried = false;
+#endif
 
 TouchProbe cachedTouchProbe() {
   if (esp_reset_reason() != ESP_RST_DEEPSLEEP || touchProbeMagic != TOUCH_PROBE_MAGIC) return TouchProbe::Unknown;
@@ -158,6 +164,14 @@ InputManager::InputManager()
       twoButtonLongPressActive(false) {}
 
 void InputManager::begin(const bool startTouch) {
+#if FREEINK_DIAGNOSTICS && FREEINK_CAP_TOUCH
+  // Keep the record of the sleep entry this boot woke from before a sleep entry
+  // of this boot replaces it.
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP) {
+    diagPreviousSleep = touchSleepRecord;
+    diagPreviousSleepRetried = touchSleepRecordRetried;
+  }
+#endif
 #if FREEINK_CAP_TOUCH
   // The touch probe waits; keep a GT911 the last sleep entry left asleep from
   // waking on a floating INT meanwhile (the probe or the next sleep entry takes
@@ -289,6 +303,33 @@ bool InputManager::adcLadderContact() {
   }
   return false;
 }
+
+#if FREEINK_DIAGNOSTICS
+InputManager::TouchDiagnostics InputManager::touchDiagnostics() const {
+  TouchDiagnostics d{};
+  d.active = touchDataEnabled;
+  d.rawValid = diagRawValid;
+  d.rawX = diagRawX;
+  d.rawY = diagRawY;
+  d.rawAtMs = diagRawAtMs;
+  d.rawFrames = diagRawFrames;
+  d.probeRan = diagProbeRan;
+  d.probeCached = diagProbeCached;
+  d.probeFound = diagProbeFound;
+  d.probeOnFallback = diagProbeOnFallback;
+  d.resetPulses = diagResetPulses;
+  d.sleepRan = diagSleepRan;
+  d.sleepResult = diagSleepResult;
+  d.sleepRetried = diagSleepRetried;
+  d.previousSleepResult = TouchSleepResult::NotApplicable;
+  if (diagPreviousSleep != 0) {
+    d.previousSleepKnown = true;
+    d.previousSleepResult = static_cast<TouchSleepResult>(diagPreviousSleep - 1u);
+    d.previousSleepRetried = diagPreviousSleepRetried;
+  }
+  return d;
+}
+#endif
 
 uint8_t InputManager::getState() {
   uint8_t state = 0;
@@ -1438,6 +1479,12 @@ void InputManager::beginTouch() {
     }
   }
 
+#if FREEINK_DIAGNOSTICS
+  diagProbeRan = true;
+  diagProbeCached = cached != TouchProbe::Unknown;
+  diagProbeFound = found;
+  diagProbeOnFallback = onFallback;
+#endif
   if (found) {
     touchSleepController = t.controller;
     touchSleepAddr = t.i2cAddress;
@@ -1492,7 +1539,24 @@ void InputManager::beginTouchController() {
 #endif
 }
 
+#if FREEINK_DIAGNOSTICS
 InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
+  const uint32_t resetsBefore = diagResetPulses;
+  const TouchSleepResult result = prepareTouchForSleepUnrecorded();
+  diagSleepRan = true;
+  diagSleepResult = result;
+  diagSleepRetried = diagResetPulses != resetsBefore;  // only the FocalTech retry pulses reset here
+#if FREEINK_CAP_TOUCH
+  touchSleepRecord = static_cast<uint8_t>(1u + static_cast<uint8_t>(result));
+  touchSleepRecordRetried = diagSleepRetried;
+#endif
+  return result;
+}
+
+InputManager::TouchSleepResult InputManager::prepareTouchForSleepUnrecorded() {
+#else
+InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
+#endif
 #if FREEINK_CAP_TOUCH
   const auto& t = BoardConfig::ACTIVE.touch;
   if (!t.hibernateInSleep || t.sda < 0 || t.scl < 0) return TouchSleepResult::NotApplicable;
@@ -1713,6 +1777,9 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 bool InputManager::pulseTouchReset() {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.reset < 0 || t.resetPulseMs == 0) return false;
+#if FREEINK_DIAGNOSTICS
+  ++diagResetPulses;
+#endif
   gpio_hold_dis(static_cast<gpio_num_t>(t.reset));
   pinMode(t.reset, OUTPUT);
   digitalWrite(t.reset, LOW);
@@ -1899,6 +1966,9 @@ void InputManager::pollFt5x06(const unsigned long now) {
   }
   const uint16_t rawX = static_cast<uint16_t>((data[1] & 0x0F) << 8) | data[2];
   const uint16_t rawY = static_cast<uint16_t>((data[3] & 0x0F) << 8) | data[4];
+#if FREEINK_DIAGNOSTICS
+  noteTouchRaw(rawX, rawY, now);
+#endif
   const uint16_t sx = t.swapXY ? rawY : rawX;
   const uint16_t sy = t.swapXY ? rawX : rawY;
 
@@ -2447,6 +2517,9 @@ void InputManager::pollFt6336u(const unsigned long now) {
   if (isTouching) {
     const uint16_t rawX = (static_cast<uint16_t>(data[3] & 0x0F) << 8) | data[4];
     const uint16_t rawY = (static_cast<uint16_t>(data[5] & 0x0F) << 8) | data[6];
+#if FREEINK_DIAGNOSTICS
+    noteTouchRaw(rawX, rawY, now);  // before the range check, so an out-of-range contact still shows
+#endif
     const auto& t = BoardConfig::ACTIVE.touch;
     const uint16_t sx = t.swapXY ? rawY : rawX;
     const uint16_t sy = t.swapXY ? rawX : rawY;
@@ -2542,6 +2615,9 @@ void InputManager::pollGt911(const unsigned long now) {
         const uint16_t rawX = static_cast<uint16_t>(record[offset]) | (static_cast<uint16_t>(record[offset + 1]) << 8);
         const uint16_t rawY =
             static_cast<uint16_t>(record[offset + 2]) | (static_cast<uint16_t>(record[offset + 3]) << 8);
+#if FREEINK_DIAGNOSTICS
+        if (i == 0) noteTouchRaw(rawX, rawY, now);
+#endif
         TouchPoint& point = touchSnapshot.points[i].point;
         point.valid = true;
         // Panel-native coordinates (calibrated raw range, touch panel's

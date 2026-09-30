@@ -86,6 +86,13 @@ class ChargeLadderDecoder {
   }
 
   State state() const { return state_; }
+  // Debounce progress, for diagnostics: the state waiting to be confirmed and
+  // its agreeing readings so far, consecutive Complete-window readings, and
+  // consecutive readings outside every window.
+  State candidate() const { return candidate_; }
+  uint8_t candidateRun() const { return candidateRun_; }
+  uint8_t completeRun() const { return completeRun_; }
+  uint8_t unknownRun() const { return unknownRun_; }
 
  private:
   State state_ = State::Unknown;

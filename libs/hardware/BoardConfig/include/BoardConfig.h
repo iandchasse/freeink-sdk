@@ -347,6 +347,15 @@
 #ifndef FREEINK_CAP_I2C_RECOVERY
 #define FREEINK_CAP_I2C_RECOVERY (FREEINK_DEVICE_SILKSCREEN)
 #endif
+// Bring-up diagnostics: the managers also record what they observe (BUSY waits
+// and the refresh mode a driver ran, SD mount attempts, charge-ladder samples,
+// front-light trips, raw touch coordinates, touch sleep results, this boot's
+// reset records) and expose read accessors, for a hardware test build. Off by
+// default, and then neither the records nor the accessors are compiled, so the
+// managers build to the same object code as without this flag.
+#ifndef FREEINK_DIAGNOSTICS
+#define FREEINK_DIAGNOSTICS 0
+#endif
 
 // Place the facade framebuffer(s) in PSRAM (heap, MALLOC_CAP_SPIRAM) instead of
 // static DRAM .bss. Default on for M5Paper v1.1: the classic ESP32 has tight

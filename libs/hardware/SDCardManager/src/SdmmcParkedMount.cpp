@@ -54,6 +54,10 @@ bool SdmmcBlockDevice::beginParked(const BoardConfig::SdmmcPins& pins) {
 
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < kParkedMountAttempts; attempt++) {
+#if FREEINK_DIAGNOSTICS
+    _mountAttempts = static_cast<uint8_t>(attempt + 1);
+    if (attempt > 0) _lastMountError = mountErr;  // the attempt before this one failed
+#endif
     BoardConfig::parkSdmmcBus();
     BoardConfig::unparkSdmmcBus(pins.powerOffMs);
     delay(pins.powerOnSettleMs);
@@ -72,6 +76,9 @@ bool SdmmcBlockDevice::beginParked(const BoardConfig::SdmmcPins& pins) {
   }
 
   if (mountErr != ESP_OK) {
+#if FREEINK_DIAGNOSTICS
+    _lastMountError = mountErr;
+#endif
     LOG_ERR("SD", "SDMMC mount failed after %d power cycles: %s", kParkedMountAttempts, esp_err_to_name(mountErr));
     heap_caps_free(_dmaBuffer);
     _dmaBuffer = nullptr;

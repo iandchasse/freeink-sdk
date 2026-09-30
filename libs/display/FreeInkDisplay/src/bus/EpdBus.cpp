@@ -67,6 +67,43 @@ static void IRAM_ATTR epdBusyIsr() {
   if (woken) portYIELD_FROM_ISR();
 }
 
+#if FREEINK_DIAGNOSTICS
+// Written by the task driving the panel, read by any task (fields may be one
+// wait apart).
+static EpdBusDiagnostics s_busDiag;
+static unsigned long s_refreshStartMs = 0;
+
+static void recordWait(const unsigned long start, const bool timedOut, const char* tag) {
+  ++s_busDiag.waits;
+  if (timedOut) ++s_busDiag.timeouts;
+  s_busDiag.lastWaitMs = millis() - start;
+  s_busDiag.lastWaitTimedOut = timedOut;
+  s_busDiag.lastWaitTag = tag;
+}
+
+// Close the refresh noteRefresh() opened, once its completion wait has ended.
+static void closeRefresh() {
+  if (!s_busDiag.refreshInFlight) return;
+  s_busDiag.refreshInFlight = false;
+  s_busDiag.lastRefreshMs = millis() - s_refreshStartMs;
+  s_busDiag.lastRefreshTimedOut = s_busDiag.lastWaitTimedOut;
+}
+
+void EpdBus::noteRefresh(const uint8_t mode, const uint8_t sequence, const bool async, const bool turnOff,
+                         const bool customLut) {
+  s_refreshStartMs = millis();
+  ++s_busDiag.refreshes;
+  s_busDiag.lastRefreshMode = mode;
+  s_busDiag.lastRefreshSequence = sequence;
+  s_busDiag.lastRefreshAsync = async;
+  s_busDiag.lastRefreshTurnOff = turnOff;
+  s_busDiag.lastRefreshCustomLut = customLut;
+  s_busDiag.refreshInFlight = true;
+}
+
+EpdBusDiagnostics EpdBus::diagnostics() { return s_busDiag; }
+#endif
+
 void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso, int8_t coCs) {
   _pins = pins;
   _spiHz = spiHz;
@@ -325,6 +362,13 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   }
 
   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+#if FREEINK_DIAGNOSTICS
+  // Every loop above ends on its idle level unless it gave up (UcIdleHigh never does).
+  const int busyLevel = digitalRead(_pins.busy);
+  recordWait(start,
+             p == BusyPolarity::ActiveHigh ? busyLevel == HIGH : p != BusyPolarity::UcIdleHigh && busyLevel == LOW,
+             tag);
+#endif
   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
 
   if (tag && Serial) {
@@ -338,6 +382,9 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   // edge can never make the caller write RAM while the waveform is still busy.
   if (_busy == BusyPolarity::UcIdleHigh) {
     waitBusy(_busy, tag);
+#if FREEINK_DIAGNOSTICS
+    closeRefresh();
+#endif
     return;
   }
   // A host that installed a busy-wait slice hook (e.g. CrossPoint light-sleeping
@@ -365,6 +412,9 @@ void EpdBus::waitRefreshComplete(const char* tag) {
       }
     }
     waitBusy(tag);
+#if FREEINK_DIAGNOSTICS
+    closeRefresh();
+#endif
     return;
   }
   // ISR-driven completion wait: sleep the task on a semaphore and wake on the
@@ -372,6 +422,9 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   // polling if the semaphore could not be created.
   if (!s_epdRefreshDone) {
     waitBusy(tag);
+#if FREEINK_DIAGNOSTICS
+    closeRefresh();
+#endif
     return;
   }
   // Levels by polarity. CHANGE is armed so both the delayed BUSY assertion and
@@ -391,11 +444,19 @@ void EpdBus::waitRefreshComplete(const char* tag) {
     // command was a no-op or its entire pulse completed before we armed.
     if (xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(20)) != pdTRUE) {
       detachInterrupt(digitalPinToInterrupt(_pins.busy));
+#if FREEINK_DIAGNOSTICS
+      recordWait(start, false, tag);
+      closeRefresh();
+#endif
       return;
     }
     sawWorking = digitalRead(_pins.busy) == workingLevel;
     if (!sawWorking && digitalRead(_pins.busy) == doneLevel) {
       detachInterrupt(digitalPinToInterrupt(_pins.busy));
+#if FREEINK_DIAGNOSTICS
+      recordWait(start, false, tag);
+      closeRefresh();
+#endif
       return;
     }
   }
@@ -409,6 +470,10 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
 
   detachInterrupt(digitalPinToInterrupt(_pins.busy));
+#if FREEINK_DIAGNOSTICS
+  recordWait(start, digitalRead(_pins.busy) != doneLevel, tag);  // still working: the 30 s wait gave up
+  closeRefresh();
+#endif
   if (tag && Serial) {
     Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
   }

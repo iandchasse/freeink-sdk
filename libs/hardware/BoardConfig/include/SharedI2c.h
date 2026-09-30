@@ -113,6 +113,51 @@ inline bool beginBus(TwoWire& wire, const int8_t sda, const int8_t scl, const ui
   return wire.begin(sda, scl, hz);
 }
 
+// Address-only probe of the sensor bus, for a bring-up screen. Each address in
+// [first, last] gets a zero-length write; an ACK sets bit (addr & 7) of
+// found[addr >> 3]. Respects the bus owner: a running controller is used as it
+// is (each probe takes Wire's bus lock, so it interleaves with other drivers'
+// transfers) and only its clock is changed, to `hz`, for the scan and then put
+// back; a bus no driver has started is started through beginBus() and ended
+// again afterwards. A clock change reaches every device on the bus, touch
+// included, so scan while no other driver is mid-sequence. `hz` 0 = the clock
+// the bus already runs (or busHz() when it has to be started).
+struct ScanResult {
+  bool ok = false;          // the bus could be used (pins assigned, controller up)
+  bool wasRunning = false;  // a driver owned the bus before the scan
+  uint32_t hz = 0;          // clock the scan ran at
+  uint8_t count = 0;        // addresses that ACKed
+  uint8_t found[16] = {};   // ACK bitmap over 0x00-0x7F
+  bool acked(const uint8_t addr) const { return addr < 0x80 && (found[addr >> 3] & (1u << (addr & 7))) != 0; }
+};
+
+inline ScanResult scanSensorBus(const uint32_t hz = 0, const uint8_t first = 0x08, const uint8_t last = 0x77) {
+  ScanResult result;
+  const BoardConfig::SensorsConfig& s = BoardConfig::ACTIVE.sensors;
+  if (s.i2cSda < 0 || s.i2cScl < 0 || first > last || last > 0x7F) return result;
+  TwoWire& wire = sensorWire();
+  result.wasRunning = perimanGetPinBusType(static_cast<uint8_t>(s.i2cSda)) == ESP32_BUS_TYPE_I2C_MASTER_SDA;
+  uint32_t restoreHz = 0;
+  if (result.wasRunning) {
+    const uint32_t current = wire.getClock();
+    if (hz != 0 && hz != current && wire.setClock(hz)) restoreHz = current;
+  } else if (!beginBus(wire, s.i2cSda, s.i2cScl, hz != 0 ? hz : busHz(s.i2cSda, s.i2cScl, 100000))) {
+    return result;
+  }
+  result.ok = true;
+  result.hz = wire.getClock();
+  for (uint16_t addr = first; addr <= last; ++addr) {
+    wire.beginTransmission(static_cast<uint8_t>(addr));
+    if (wire.endTransmission() == 0) {
+      result.found[addr >> 3] |= static_cast<uint8_t>(1u << (addr & 7));
+      ++result.count;
+    }
+  }
+  if (restoreHz != 0) wire.setClock(restoreHz);
+  if (!result.wasRunning) wire.end();
+  return result;
+}
+
 // Deep-sleep entry on an i2cBusRecovery board: end the sensor bus, then leave
 // SDA/SCL as unheld inputs with no pulls so the external pull-ups keep them HIGH,
 // clocking the bus free if a slave still holds SDA LOW. Wire::end() takes the

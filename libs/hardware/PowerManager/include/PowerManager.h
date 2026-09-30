@@ -99,6 +99,27 @@ class PowerManager {
     int wakePinLevel = 0;
   };
   static AbortedSleepInfo takeAbortedSleepInfo();
+
+#if defined(FREEINK_DIAGNOSTICS) && FREEINK_DIAGNOSTICS
+  // Non-consuming reads for diagnostics. peekAbnormalResets() is the count in
+  // RTC memory now (0 before the first countAbnormalResets() since power-on,
+  // and after clearAbnormalResets()); peekAbortedSleepInfo() is what
+  // takeAbortedSleepInfo() would return now.
+  static uint8_t peekAbnormalResets();
+  static AbortedSleepInfo peekAbortedSleepInfo();
+
+  // What this boot's countAbnormalResets() and takeAbortedSleepInfo() returned,
+  // kept after the consumer has cleared the count or taken the record. An
+  // aborted record, once taken, stays reported even if a later take returns
+  // none.
+  struct BootResetRecord {
+    bool counted = false;        // countAbnormalResets() ran this boot
+    uint8_t abnormalResets = 0;  // its result
+    bool abortedSleepTaken = false;
+    AbortedSleepInfo abortedSleep;
+  };
+  static BootResetRecord bootResetRecord();
+#endif
 };
 
 }  // namespace freeink

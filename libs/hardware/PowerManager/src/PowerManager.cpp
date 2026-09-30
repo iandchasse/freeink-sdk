@@ -59,6 +59,10 @@ RTC_NOINIT_ATTR AbortedSleepRecord abortedSleepRecord;
 RTC_NOINIT_ATTR uint32_t releaseWakeMagic;
 RTC_NOINIT_ATTR uint32_t abnormalResetsMagic;
 RTC_NOINIT_ATTR uint32_t abnormalResets;
+#if FREEINK_DIAGNOSTICS
+// This boot's reads of the two records above (bootResetRecord()); plain RAM.
+static PowerManager::BootResetRecord bootRecord;
+#endif
 
 void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
@@ -317,6 +321,10 @@ uint8_t PowerManager::countAbnormalResets(const bool abortedSleep) {
   if (!abnormal || abnormalResetsMagic != ABNORMAL_RESETS_MAGIC) abnormalResets = 0;
   if (abnormal && abnormalResets < UINT8_MAX) ++abnormalResets;
   abnormalResetsMagic = ABNORMAL_RESETS_MAGIC;
+#if FREEINK_DIAGNOSTICS
+  bootRecord.counted = true;
+  bootRecord.abnormalResets = static_cast<uint8_t>(abnormalResets);
+#endif
   return static_cast<uint8_t>(abnormalResets);
 }
 
@@ -337,7 +345,29 @@ PowerManager::AbortedSleepInfo PowerManager::takeAbortedSleepInfo() {
   // rather than following a garbage `aborted` bit.
   abortedSleepRecord.aborted = false;
   abortedSleepMagic = ABORTED_SLEEP_MAGIC;
+#if FREEINK_DIAGNOSTICS
+  bootRecord.abortedSleepTaken = true;
+  if (info.aborted) bootRecord.abortedSleep = info;
+#endif
   return info;
 }
+
+#if FREEINK_DIAGNOSTICS
+uint8_t PowerManager::peekAbnormalResets() {
+  return abnormalResetsMagic == ABNORMAL_RESETS_MAGIC ? static_cast<uint8_t>(abnormalResets) : 0;
+}
+
+PowerManager::AbortedSleepInfo PowerManager::peekAbortedSleepInfo() {
+  AbortedSleepInfo info;
+  if (abortedSleepMagic == ABORTED_SLEEP_MAGIC && abortedSleepRecord.aborted) {
+    info.aborted = true;
+    info.wakeupCause = abortedSleepRecord.wakeupCause;
+    info.wakePinLevel = abortedSleepRecord.wakePinLevel;
+  }
+  return info;
+}
+
+PowerManager::BootResetRecord PowerManager::bootResetRecord() { return bootRecord; }
+#endif
 
 }  // namespace freeink

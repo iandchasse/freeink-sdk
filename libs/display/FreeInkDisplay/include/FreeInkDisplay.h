@@ -306,6 +306,14 @@ class FreeInkDisplay {
     _bus.setBusyWaitSliceHook(sliceHook);
   }
 
+#if defined(FREEINK_DIAGNOSTICS) && FREEINK_DIAGNOSTICS
+  // Bring-up diagnostics: the last BUSY wait and whether it timed out, and the
+  // last refresh the driver ran, including the mode it actually used
+  // (lastRefreshMode, in RefreshMode order) and its activation-to-completion
+  // time. The SSD1677 driver reports refreshes.
+  EpdBusDiagnostics busDiagnostics() const { return EpdBus::diagnostics(); }
+#endif
+
   // Access to frame buffer
   uint8_t* getFrameBuffer() const { return frameBuffer; }
   bool framebufferReady() const { return frameBuffer != nullptr; }

@@ -694,6 +694,10 @@ ChargeDecoder g_chargeDecoder;
 bool g_chargeSampled = false;
 bool g_chargePinReady = false;
 uint32_t g_chargeLastSampleMs = 0;
+#if FREEINK_DIAGNOSTICS
+uint32_t g_chargeLastMv = 0;
+uint32_t g_chargeSamples = 0;
+#endif
 
 // Cross-check of a decoded Charging/Complete against the cell (boards with a
 // lowBatteryCutoffMv). A real charge lifts P+, so P+ at or below the cutoff that
@@ -776,6 +780,10 @@ void BatteryMonitor::pollChargeStatus() {
     const uint32_t mv = sum / n;
     g_chargeSampled = true;
     g_chargeLastSampleMs = now;
+#if FREEINK_DIAGNOSTICS
+    g_chargeLastMv = mv;
+    ++g_chargeSamples;
+#endif
     const ChargeDecoder::Params params = {ladder.windows,         ladder.count,
                                           ladder.debounceSamples, ladder.completeStableSamples,
                                           ladder.blinkDeltaMv,    ladder.unknownHoldSamples};
@@ -803,6 +811,28 @@ BoardConfig::ChargeState BatteryMonitor::chargeStatus() {
 bool BatteryMonitor::chargeStatusLost() {
   return g_chargeEverDecoded.load() && chargeStatus() == BoardConfig::ChargeState::Unknown;
 }
+
+#if FREEINK_DIAGNOSTICS
+BatteryMonitor::ChargeLadderDiagnostics BatteryMonitor::chargeLadderDiagnostics() {
+  ChargeLadderDiagnostics d;
+  d.sampled = g_chargeSampled;
+  d.lastSampleMs = g_chargeLastSampleMs;
+  d.decoded = g_chargeDecoder.state();
+  d.published = chargeStatus();
+  d.candidate = g_chargeDecoder.candidate();
+  d.candidateRun = g_chargeDecoder.candidateRun();
+  d.completeRun = g_chargeDecoder.completeRun();
+  d.unknownRun = g_chargeDecoder.unknownRun();
+  d.everDecoded = g_chargeEverDecoded.load();
+  d.lost = chargeStatusLost();
+  d.disproved = g_powerDisproved;
+  d.trendSamples = g_trendSamples;
+  d.trendStartMv = g_trendStartMv;
+  d.lastMv = g_chargeLastMv;
+  d.samples = g_chargeSamples;
+  return d;
+}
+#endif
 
 bool BatteryMonitor::readM5Pm1Status(Status& status) const {
   status.supported = true;

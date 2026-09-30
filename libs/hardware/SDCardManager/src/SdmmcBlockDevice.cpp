@@ -15,6 +15,10 @@
 namespace freeink {
 
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
+#if FREEINK_DIAGNOSTICS
+  _mountAttempts = 0;
+  _lastMountError = 0;
+#endif
   if (pins.busWidth == 0) return false;
   if (pins.parkLowWhenOff) return beginParked(pins);
 
@@ -90,6 +94,10 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
+#if FREEINK_DIAGNOSTICS
+    _mountAttempts = static_cast<uint8_t>(attempt + 1);
+    if (attempt > 0) _lastMountError = mountErr;  // the attempt before this one failed
+#endif
     if (sdPwr >= 0) {
       digitalWrite(sdPwr, sdOff);
       delay(80);
@@ -107,6 +115,9 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     if (e == ESP_OK) break;
   }
   if (mountErr != ESP_OK) {
+#if FREEINK_DIAGNOSTICS
+    _lastMountError = mountErr;
+#endif
     if (Serial)
       Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
     heap_caps_free(_dmaBuffer);

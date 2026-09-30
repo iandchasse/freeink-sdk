@@ -319,6 +319,62 @@ class InputManager {
   // other boards.
   bool adcLadderContact();
 
+  // Touch mounting and range (BoardConfig::ACTIVE.touch), for calibrating a
+  // panel at runtime. setTouchMapping() changes RAM only (the profile is
+  // restored at the next boot) and takes effect at the next poll; call it with
+  // no contact down. It refuses (returns false, nothing changed) an empty range.
+  struct TouchMapping {
+    bool swapXY;
+    bool flipX;
+    bool flipY;
+    uint16_t rawMinX, rawMaxX;  // post-swap (panel) axes
+    uint16_t rawMinY, rawMaxY;
+  };
+  TouchMapping touchMapping() const {
+    const BoardConfig::TouchConfig& t = BoardConfig::ACTIVE.touch;
+    return {t.swapXY, t.flipX, t.flipY, t.rawMinX, t.rawMaxX, t.rawMinY, t.rawMaxY};
+  }
+  bool setTouchMapping(const TouchMapping& mapping) {
+    if (mapping.rawMaxX <= mapping.rawMinX || mapping.rawMaxY <= mapping.rawMinY) return false;
+    BoardConfig::TouchConfig& t = BoardConfig::ACTIVE.touch;
+    t.swapXY = mapping.swapXY;
+    t.flipX = mapping.flipX;
+    t.flipY = mapping.flipY;
+    t.rawMinX = mapping.rawMinX;
+    t.rawMaxX = mapping.rawMaxX;
+    t.rawMinY = mapping.rawMinY;
+    t.rawMaxY = mapping.rawMaxY;
+    return true;
+  }
+
+#if FREEINK_DIAGNOSTICS
+  // Touch bring-up record. Raw coordinates are the controller's own axes
+  // before swapXY, the range mapping and the flips, from the FT5x06, FT6336U
+  // and GT911 (first contact) paths.
+  struct TouchDiagnostics {
+    bool active;    // touch is up and polled (a controller answered)
+    bool rawValid;  // a contact was decoded this boot
+    uint16_t rawX;  // last decoded contact, controller units
+    uint16_t rawY;
+    uint32_t rawAtMs;              // millis() of that contact
+    uint32_t rawFrames;            // contact frames decoded this boot
+    bool probeRan;                 // the optional/fallback probe ran this boot
+    bool probeCached;              // it started from the RTC-cached result (deep-sleep wake)
+    bool probeFound;               // a controller answered it
+    bool probeOnFallback;          // ...and it was TouchConfig::fallbackController
+    uint32_t resetPulses;          // TouchConfig::resetPulseMs pulses this boot
+    TouchSleepResult sleepResult;  // this boot's last prepareTouchForSleep()
+    bool sleepRetried;             // ...needed the reset and a second command (FocalTech)
+    bool sleepRan;                 // prepareTouchForSleep() ran this boot
+    // The prepareTouchForSleep() of the sleep entry this boot woke from (deep
+    // sleep only; kept in RTC memory).
+    TouchSleepResult previousSleepResult;
+    bool previousSleepRetried;
+    bool previousSleepKnown;
+  };
+  TouchDiagnostics touchDiagnostics() const;
+#endif
+
  private:
   static ButtonHook s_buttonHook;
 
@@ -490,6 +546,33 @@ class InputManager {
   bool touchSuppressed = false;                  // suppressTouchContact() latch; holds through
                                                  // the release-edge frame, cleared in
                                                  // serviceTouch() once the contact is over
+
+#if FREEINK_DIAGNOSTICS
+  // touchDiagnostics() record. prepareTouchForSleep() wraps the unrecorded body.
+  TouchSleepResult prepareTouchForSleepUnrecorded();
+  void noteTouchRaw(const uint16_t x, const uint16_t y, const unsigned long now) {
+    diagRawValid = true;
+    diagRawX = x;
+    diagRawY = y;
+    diagRawAtMs = now;
+    ++diagRawFrames;
+  }
+  bool diagRawValid = false;
+  uint16_t diagRawX = 0;
+  uint16_t diagRawY = 0;
+  uint32_t diagRawAtMs = 0;
+  uint32_t diagRawFrames = 0;
+  bool diagProbeRan = false;
+  bool diagProbeCached = false;
+  bool diagProbeFound = false;
+  bool diagProbeOnFallback = false;
+  uint32_t diagResetPulses = 0;
+  bool diagSleepRan = false;
+  TouchSleepResult diagSleepResult = TouchSleepResult::NotApplicable;
+  bool diagSleepRetried = false;
+  uint8_t diagPreviousSleep = 0;  // RTC record captured at begin(): 0 = none, else 1 + TouchSleepResult
+  bool diagPreviousSleepRetried = false;
+#endif
 
 #if FREEINK_CAP_ADC_LADDERS
   // InputStyle::AdcLadders debounce, one per BoardProfile::adcLadders ladder.

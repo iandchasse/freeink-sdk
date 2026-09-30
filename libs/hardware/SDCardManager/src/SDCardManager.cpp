@@ -11,6 +11,12 @@
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
 #endif
+#if FREEINK_SD_SDMMC && FREEINK_DIAGNOSTICS
+#include <cstring>
+
+#include "sd_protocol_defs.h"
+#include "sdmmc_cmd.h"
+#endif
 
 SDCardManager SDCardManager::instance;
 
@@ -77,6 +83,41 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   cachedUsedBytesValid = false;
   return _dev;
 }
+
+#if FREEINK_DIAGNOSTICS
+SDCardManager::CardInfo SDCardManager::cardInfo() {
+  CardInfo info;
+  info.mounted = initialized;
+  if (!_dev) return info;
+  info.mountAttempts = _dev->mountAttempts();
+  info.lastMountError = _dev->lastMountError();
+  const auto* card = static_cast<const sdmmc_card_t*>(_dev->card());
+  if (!card) return info;
+  info.cardReady = true;
+  info.capacityBytes = static_cast<uint64_t>(card->csd.capacity) * static_cast<uint32_t>(card->csd.sector_size);
+  if (card->is_mmc) {
+    info.type = CardType::Mmc;
+  } else if (card->is_mem) {
+    // CCS set: block-addressed SDHC/SDXC; SDXC starts above 32 GiB.
+    const bool highCapacity = (card->ocr & SD_OCR_SDHC_CAP) != 0;
+    info.type = !highCapacity                               ? CardType::Sdsc
+                : info.capacityBytes > (uint64_t{32} << 30) ? CardType::Sdxc
+                                                            : CardType::Sdhc;
+  }
+  info.busWidth = static_cast<uint8_t>(1u << card->log_bus_width);
+  info.hostMaxKhz = static_cast<uint32_t>(card->host.max_freq_khz);
+  info.cardMaxKhz = card->max_freq_khz;
+  info.clockKhz = card->real_freq_khz > 0 ? static_cast<uint32_t>(card->real_freq_khz) : 0;
+  memcpy(info.name, card->cid.name, sizeof(card->cid.name));
+  info.name[sizeof(info.name) - 1] = '\0';
+  info.manufacturerId = static_cast<uint8_t>(card->cid.mfg_id);
+  info.oemId = static_cast<uint16_t>(card->cid.oem_id);
+  info.revision = static_cast<uint8_t>(card->cid.revision);
+  info.serial = static_cast<uint32_t>(card->cid.serial);
+  info.date = static_cast<uint16_t>(card->cid.date);
+  return info;
+}
+#endif
 
 void SDCardManager::shutdown() {
   if (BoardConfig::ACTIVE.sdmmc.parkLowWhenOff) {
@@ -213,6 +254,21 @@ bool SDCardManager::begin() {
 
   return initialized;
 }
+
+#if FREEINK_DIAGNOSTICS
+SDCardManager::CardInfo SDCardManager::cardInfo() {
+  CardInfo info;
+  info.mounted = initialized;
+  auto* const card = sd.card();
+  if (!initialized || !card) return info;
+  info.cardReady = true;
+  const uint8_t type = card->type();  // cached at begin(), no card I/O
+  info.type = type == SD_CARD_TYPE_SDHC                              ? CardType::Sdhc
+              : type == SD_CARD_TYPE_SD1 || type == SD_CARD_TYPE_SD2 ? CardType::Sdsc
+                                                                     : CardType::Unknown;
+  return info;
+}
+#endif
 
 // SdFat's card object already IS a block device: with USE_BLOCK_DEVICE_INTERFACE
 // (or HAS_SDIO_CLASS) set, SdSpiCard derives from FsBlockDeviceInterface and

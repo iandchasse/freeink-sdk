@@ -93,6 +93,34 @@ class SDCardManager {
   // USB-MSC owner. The caller must reinitialize the manager (begin()) after the
   // owner releases the card. Returns null when nothing is mounted.
   FsBlockDeviceInterface* detachFilesystemForRawAccess();
+
+#if FREEINK_DIAGNOSTICS
+  // Card and link details for a bring-up screen, from what the mount already
+  // read (no card I/O). Native SDMMC fills every field it knows; the SPI backend
+  // reports only `mounted` and `type`. Unknown fields stay 0 / empty.
+  enum class CardType : uint8_t { Unknown, Sdsc, Sdhc, Sdxc, Mmc };
+  struct CardInfo {
+    bool mounted = false;    // the filesystem is mounted (ready())
+    bool cardReady = false;  // the card is initialised (SDMMC: also while lent to USB-MSC)
+    CardType type = CardType::Unknown;
+    uint8_t busWidth = 0;        // data lines in use
+    uint32_t hostMaxKhz = 0;     // host clock cap (SdmmcPins::maxFreqKhz or the 20 MHz default)
+    uint32_t cardMaxKhz = 0;     // fastest clock the card reports
+    uint32_t clockKhz = 0;       // clock the host actually runs
+    uint64_t capacityBytes = 0;  // card capacity from its CSD (not the volume)
+    char name[9] = {};           // CID product name, NUL-terminated
+    uint8_t manufacturerId = 0;  // CID MID
+    uint16_t oemId = 0;          // CID OID
+    uint8_t revision = 0;        // CID PRV
+    uint32_t serial = 0;         // CID PSN
+    uint16_t date = 0;           // CID MDT as esp-idf decodes it
+    // SDMMC: power cycles the last begin() used, and the esp_err_t of its last
+    // failed attempt (0 when none failed).
+    uint8_t mountAttempts = 0;
+    int32_t lastMountError = 0;
+  };
+  CardInfo cardInfo();
+#endif
 #if FREEINK_SD_SDMMC
   // Stop the card for deep sleep: unmount the volume, stop the SDMMC host, and
   // float the bus pads so their pull-ups stop back-feeding the card's VDD net

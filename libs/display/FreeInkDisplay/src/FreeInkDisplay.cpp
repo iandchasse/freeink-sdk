@@ -58,6 +58,11 @@
 #endif
 
 namespace freeink {
+// EpdBusDiagnostics::lastRefreshMode is documented in either enum's order.
+static_assert(static_cast<int>(RefreshMode::Full) == static_cast<int>(FreeInkDisplay::FULL_REFRESH) &&
+                  static_cast<int>(RefreshMode::Half) == static_cast<int>(FreeInkDisplay::HALF_REFRESH) &&
+                  static_cast<int>(RefreshMode::Fast) == static_cast<int>(FreeInkDisplay::FAST_REFRESH),
+              "RefreshMode and FreeInkDisplay::RefreshMode must share an order");
 namespace {
 RefreshMode toInternal(FreeInkDisplay::RefreshMode m) {
   switch (m) {

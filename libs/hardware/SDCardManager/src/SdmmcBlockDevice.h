@@ -38,6 +38,15 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   Sector_t sectorCount() override;
   bool syncDevice() override { return true; }
 
+#if FREEINK_DIAGNOSTICS
+  // The initialised card (an esp-idf sdmmc_card_t), or null before a mount;
+  // power cycles the last begin() used, and the esp_err_t of its last failed
+  // attempt (0 when none failed).
+  const void* card() const { return _card; }
+  uint8_t mountAttempts() const { return _mountAttempts; }
+  int32_t lastMountError() const { return _lastMountError; }
+#endif
+
  private:
   static constexpr size_t kSectorSize = 512;
   static constexpr size_t kMaxTransferSectors = 8;
@@ -50,6 +59,10 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
   // type). Hold it opaquely and cast in the .cpp, where the esp-idf header is included.
   void* _card = nullptr;
   uint8_t* _dmaBuffer = nullptr;
+#if FREEINK_DIAGNOSTICS
+  uint8_t _mountAttempts = 0;
+  int32_t _lastMountError = 0;
+#endif
 };
 
 }  // namespace freeink
