@@ -366,8 +366,9 @@ class InputManager {
     TouchSleepResult sleepResult;  // this boot's last prepareTouchForSleep()
     bool sleepRetried;             // ...needed the reset and a second command (FocalTech)
     bool sleepRan;                 // prepareTouchForSleep() ran this boot
-    // The prepareTouchForSleep() of the sleep entry this boot woke from (deep
-    // sleep only; kept in RTC memory).
+    // The prepareTouchForSleep() of the last sleep entry that did something,
+    // as this boot woke from it (deep sleep only; kept in RTC memory). A re-sleep
+    // before startTouch() that did nothing (a ghost wake's) leaves it as it was.
     TouchSleepResult previousSleepResult;
     bool previousSleepRetried;
     bool previousSleepKnown;

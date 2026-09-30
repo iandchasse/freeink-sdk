@@ -1557,8 +1557,13 @@ InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
   diagSleepResult = result;
   diagSleepRetried = diagResetPulses != resetsBefore;  // only the FocalTech retry pulses reset here
 #if FREEINK_CAP_TOUCH
-  touchSleepRecord = static_cast<uint8_t>(1u + static_cast<uint8_t>(result));
-  touchSleepRecordRetried = diagSleepRetried;
+  // An entry that did nothing (a re-sleep before startTouch(), such as a ghost
+  // wake's, with no GT911 left asleep) keeps the last full entry's record, so
+  // the next boot still reads what that entry did.
+  if (!(result == TouchSleepResult::NotApplicable && !touchStarted)) {
+    touchSleepRecord = static_cast<uint8_t>(1u + static_cast<uint8_t>(result));
+    touchSleepRecordRetried = diagSleepRetried;
+  }
 #endif
   return result;
 }
