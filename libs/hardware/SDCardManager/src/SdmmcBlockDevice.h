@@ -41,6 +41,9 @@ class SdmmcBlockDevice : public FsBlockDeviceInterface {
  private:
   static constexpr size_t kSectorSize = 512;
   static constexpr size_t kMaxTransferSectors = 8;
+  static constexpr int kParkedMountAttempts = 3;
+
+  bool beginParked(const BoardConfig::SdmmcPins& pins);
 
   // esp-idf's sdmmc_card_t is a typedef of an anonymous struct, so it can't be
   // forward-declared here (a `struct sdmmc_card_t;` tag is a different, conflicting

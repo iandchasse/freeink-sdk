@@ -21,8 +21,11 @@ constexpr uint8_t PCF8563_VL_FLAG = 0x80;  // seconds reg bit7: oscillator stopp
 
 // PCF85063A register map. Same BCD time layout as the PCF8563 but shifted:
 // Control_1/2 at 0x00/0x01, time from 0x04, seconds bit7 is the OS (oscillator
-// stopped) flag, and Months carries no century bit.
+// stopped) flag, and Months carries no century bit. Micro Crystal's RV-8263-C7
+// shares the map. Control_2 bits 2:0 select the CLKOUT frequency; 111 = off.
 constexpr uint8_t PCF85063_REG_CONTROL1 = 0x00;
+constexpr uint8_t PCF85063_REG_CONTROL2 = 0x01;
+constexpr uint8_t PCF85063_CLKOUT_MASK = 0x07;
 constexpr uint8_t PCF85063_REG_TIME = 0x04;
 constexpr uint8_t PCF85063_OS_FLAG = 0x80;
 
@@ -32,6 +35,7 @@ constexpr uint8_t DS3231_REG_CONTROL = 0x0E;
 constexpr uint8_t DS3231_REG_STATUS = 0x0F;
 constexpr uint8_t DS3231_CONTROL_INTCN = 0x04;
 constexpr uint8_t DS3231_STATUS_OSF = 0x80;
+constexpr uint8_t DS3231_STATUS_EN32KHZ = 0x08;
 
 // RX8130CE register map (Paper Mono / PaperS3).
 constexpr uint8_t RX8130_REG_TIME = 0x10;
@@ -86,45 +90,72 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   return true;
 }
 
-}  // namespace
-
-bool Rtc::begin() {
-  const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
+// Probe and initialise one RTC. Returns false when it does not ACK.
+bool beginDevice(const uint8_t addr, const BoardConfig::RtcType type) {
   if (addr == 0) return false;
-  const auto& s = BoardConfig::ACTIVE.sensors;
-  if (s.i2cSda < 0 || s.i2cScl < 0 || s.i2cHz == 0) return false;
-  ensureWire();
+  const bool lowPower = BoardConfig::ACTIVE.sensors.rtcLowPower;
   uint8_t status = 0;
-  switch (s.rtcType) {
+  switch (type) {
     case BoardConfig::RtcType::Pcf8563:
       if (!readRegs(addr, PCF8563_REG_CONTROL_STATUS1, &status, 1)) return false;
       writeReg(addr, PCF8563_REG_CLKOUT, PCF8563_CLKOUT_DISABLED);  // we don't use the 32 kHz CLKOUT
-      break;
+      return true;
     case BoardConfig::RtcType::Pcf85063:
-      // No CLKOUT write: the PCF85063's CLKOUT lives in Control_2 alongside bits
-      // this driver has no business touching, and it boots disabled.
+      // CLKOUT lives in Control_2 alongside alarm/timer bits, so it is only
+      // switched off (read-modify-write) on boards that ask for it: a PCF85063A
+      // or RV-8263-C7 with its CLKOUT enabled runs 32.768 kHz out of the pin.
       if (!readRegs(addr, PCF85063_REG_CONTROL1, &status, 1)) return false;
-      break;
+      if (lowPower) {
+        uint8_t control2 = 0;
+        if (readRegs(addr, PCF85063_REG_CONTROL2, &control2, 1)) {
+          writeReg(addr, PCF85063_REG_CONTROL2, static_cast<uint8_t>(control2 | PCF85063_CLKOUT_MASK));
+        }
+      }
+      return true;
     case BoardConfig::RtcType::Ds3231:
       if (!readRegs(addr, DS3231_REG_STATUS, &status, 1)) return false;
       writeReg(addr, DS3231_REG_CONTROL, DS3231_CONTROL_INTCN);  // disable square-wave output
-      break;
+      if (lowPower && (status & DS3231_STATUS_EN32KHZ)) {
+        // EN32KHZ powers up set; the VBAT timekeeping current assumes it clear.
+        // OSF is written back as read: writing 1 leaves it unchanged, and
+        // clearing it here would hide a lost time.
+        writeReg(addr, DS3231_REG_STATUS, static_cast<uint8_t>(status & ~DS3231_STATUS_EN32KHZ));
+      }
+      return true;
     case BoardConfig::RtcType::Rx8130:
-      if (!readRegs(addr, RX8130_REG_CONTROL0, &status, 1)) return false;
-      break;
+      return readRegs(addr, RX8130_REG_CONTROL0, &status, 1);
     case BoardConfig::RtcType::None:
       return false;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool Rtc::begin() {
+  const auto& s = BoardConfig::ACTIVE.sensors;
+  if (s.rtcAddr == 0) return false;
+  if (s.i2cSda < 0 || s.i2cScl < 0 || s.i2cHz == 0) return false;
+  ensureWire();
+  if (beginDevice(s.rtcAddr, s.rtcType)) {
+    addr_ = s.rtcAddr;
+    type_ = static_cast<uint8_t>(s.rtcType);
+  } else if (s.rtcFallbackType != BoardConfig::RtcType::None && beginDevice(s.rtcFallbackAddr, s.rtcFallbackType)) {
+    addr_ = s.rtcFallbackAddr;
+    type_ = static_cast<uint8_t>(s.rtcFallbackType);
+  } else {
+    return false;
   }
   begun_ = true;
   return true;
 }
 
 bool Rtc::now(DateTime& out) {
-  const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
+  const uint8_t addr = addr_;
   if (!begun_ || addr == 0) return false;
-  const auto& s = BoardConfig::ACTIVE.sensors;
+  const auto rtcType = static_cast<BoardConfig::RtcType>(type_);
   uint8_t raw[7] = {};
-  switch (s.rtcType) {
+  switch (rtcType) {
     case BoardConfig::RtcType::Pcf8563: {
       if (!readRegs(addr, PCF8563_REG_TIME, raw, sizeof(raw))) return false;
       if (raw[0] & PCF8563_VL_FLAG) return false;  // oscillator stopped -> time not trustworthy
@@ -194,14 +225,14 @@ bool Rtc::now(DateTime& out) {
 }
 
 bool Rtc::set(const DateTime& dt) {
-  const uint8_t addr = BoardConfig::ACTIVE.sensors.rtcAddr;
+  const uint8_t addr = addr_;
   if (!begun_ || addr == 0) return false;
-  const auto& s = BoardConfig::ACTIVE.sensors;
+  const auto rtcType = static_cast<BoardConfig::RtcType>(type_);
   const uint8_t centuryBit = dt.year < 2000 ? 0x80U : 0x00U;
   ensureWire();
   auto& wire = sensorWire();
-  if (s.rtcType == BoardConfig::RtcType::None) return false;
-  if (s.rtcType == BoardConfig::RtcType::Rx8130) {
+  if (rtcType == BoardConfig::RtcType::None) return false;
+  if (rtcType == BoardConfig::RtcType::Rx8130) {
     uint8_t control = 0;
     if (!readRegs(addr, RX8130_REG_CONTROL0, &control, 1) ||
         !writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control | RX8130_STOP))) {
@@ -220,7 +251,7 @@ bool Rtc::set(const DateTime& dt) {
     const bool restarted = writeReg(addr, RX8130_REG_CONTROL0, static_cast<uint8_t>(control & ~RX8130_STOP));
     return written && restarted;
   }
-  if (s.rtcType == BoardConfig::RtcType::Pcf85063) {
+  if (rtcType == BoardConfig::RtcType::Pcf85063) {
     wire.beginTransmission(addr);
     wire.write(PCF85063_REG_TIME);
     wire.write(decToBcd(dt.second));  // also clears OS once a valid time is written
@@ -233,11 +264,11 @@ bool Rtc::set(const DateTime& dt) {
     return wire.endTransmission() == 0;
   }
   wire.beginTransmission(addr);
-  wire.write(s.rtcType == BoardConfig::RtcType::Pcf8563 ? PCF8563_REG_TIME : DS3231_REG_TIME);
+  wire.write(rtcType == BoardConfig::RtcType::Pcf8563 ? PCF8563_REG_TIME : DS3231_REG_TIME);
   wire.write(decToBcd(dt.second));  // also clears VL once a valid time is written
   wire.write(decToBcd(dt.minute));
   wire.write(decToBcd(dt.hour));
-  if (s.rtcType == BoardConfig::RtcType::Pcf8563) {
+  if (rtcType == BoardConfig::RtcType::Pcf8563) {
     wire.write(decToBcd(dt.day));
     wire.write(decToBcd(dt.weekday));
     wire.write(static_cast<uint8_t>(decToBcd(dt.month) | centuryBit));
@@ -248,10 +279,12 @@ bool Rtc::set(const DateTime& dt) {
   }
   wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
   if (wire.endTransmission() != 0) return false;
-  if (s.rtcType == BoardConfig::RtcType::Ds3231) {
+  if (rtcType == BoardConfig::RtcType::Ds3231) {
     uint8_t status = 0;
     if (readRegs(addr, DS3231_REG_STATUS, &status, 1)) {
-      writeReg(addr, DS3231_REG_STATUS, static_cast<uint8_t>(status & ~DS3231_STATUS_OSF));
+      uint8_t cleared = static_cast<uint8_t>(status & ~DS3231_STATUS_OSF);
+      if (BoardConfig::ACTIVE.sensors.rtcLowPower) cleared = static_cast<uint8_t>(cleared & ~DS3231_STATUS_EN32KHZ);
+      writeReg(addr, DS3231_REG_STATUS, cleared);
     }
   }
   return true;

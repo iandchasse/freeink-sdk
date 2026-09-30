@@ -31,6 +31,9 @@ struct EpdPins {
   // is always powered; driven HIGH in begin() on boards that gate it (e.g. Sticky's
   // EP_PWR_EN GPIO47). Default -1 keeps existing 6-field aggregate initializers valid.
   int8_t powerEnable = -1;
+  // Internal pull-down on an active-high BUSY with no external pull (see
+  // BoardConfig::DisplayPins::busyPullDown). Default false keeps a bare INPUT.
+  bool busyPullDown = false;
 };
 
 class EpdBus {

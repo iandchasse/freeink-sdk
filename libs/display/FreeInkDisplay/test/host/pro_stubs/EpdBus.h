@@ -4,7 +4,7 @@
 #include <vector>
 namespace freeink {
 enum class BusyPolarity { ActiveHigh, ActiveLow, X3TwoPhase, UcIdleHigh };
-struct EpdPins { int8_t sclk, mosi, cs, dc, rst, busy, powerEnable=-1; };
+struct EpdPins { int8_t sclk, mosi, cs, dc, rst, busy, powerEnable=-1; bool busyPullDown=false; };
 class EpdBus {
  public:
   struct Write { uint8_t command; std::vector<uint8_t> bytes; unsigned transactions=0; };

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <Logging.h>
 #include <M5Pm1.h>
 #include <esp_idf_version.h>
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -9,7 +10,10 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+
+#include "ChargeLadderDecoder.h"
 
 #if FREEINK_BATTERY_I2C_GAUGE
 #include <Wire.h>
@@ -472,7 +476,15 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
       status.percentage = percentageFromMillivolts(status.millivolts);
       status.percentageKnown = true;
     }
-    if (_chargeStatusPin >= 0) {
+    if (BoardConfig::hasChargeStatusLadder()) {
+      const BoardConfig::ChargeState state = chargeStatus();
+      status.chargingKnown =
+          state != BoardConfig::ChargeState::Unknown && state != BoardConfig::ChargeState::NoBattery;
+      status.charging = state == BoardConfig::ChargeState::Charging;
+      bool externalKnown = false;
+      status.externalPower = isExternalPowerPresent(&externalKnown);
+      status.externalPowerKnown = externalKnown;
+    } else if (_chargeStatusPin >= 0) {
       status.chargingKnown = true;
       status.charging = digitalRead(_chargeStatusPin) == chargeActiveLevel();
     }
@@ -544,6 +556,9 @@ bool BatteryMonitor::isCharging() const {
     Status status;
     return readM5Pm1Status(status) && status.chargingKnown && status.charging;
   }
+  if (BoardConfig::hasChargeStatusLadder()) {
+    return chargeStatus() == BoardConfig::ChargeState::Charging;
+  }
   if (_chargeStatusPin < 0) {
     return false;
   }
@@ -553,6 +568,14 @@ bool BatteryMonitor::isCharging() const {
 }
 
 bool BatteryMonitor::isExternalPowerPresent(bool* known) const {
+  if (BoardConfig::hasChargeStatusLadder()) {
+    using BoardConfig::ChargeState;
+    const ChargeState state = chargeStatus();
+    const bool present =
+        state == ChargeState::ExternalIdle || state == ChargeState::Charging || state == ChargeState::Complete;
+    if (known) *known = present || state == ChargeState::OnBattery;
+    return present;
+  }
   bool observed = false;
 #if FREEINK_BATTERY_I2C_GAUGE
   const bool present = readChargerExternalPower(observed);
@@ -573,6 +596,132 @@ bool BatteryMonitor::isExternalPowerPresent(bool* known) const {
   }
   if (known) *known = false;
   return false;
+}
+
+uint16_t BatteryMonitor::readMillivoltsAveraged(const uint8_t samples) const {
+#if ESP_IDF_VERSION_MAJOR < 5
+  (void)samples;
+  return readMillivolts();
+#else
+  if (samples <= 1 || !hasAdcBackend() || hasGaugeBackend() || hasM5Pm1Backend() || BoardConfig::isOnePage()) {
+    return readMillivolts();
+  }
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < samples; ++i) sum += analogReadMilliVolts(_adcPin);
+  return static_cast<uint16_t>(static_cast<float>(sum / samples) * _dividerMultiplier);
+#endif
+}
+
+bool BatteryMonitor::isBelowCutoff(bool* known, uint16_t* millivolts) const {
+  static bool s_sampled = false;
+  static uint32_t s_lastSampleMs = 0;
+  static uint8_t s_belowCount = 0;
+  static bool s_lastKnown = false;
+  static uint16_t s_lastMv = 0;
+  static uint32_t s_unknownSinceMs = 0;
+  static bool s_unknownLogged = false;
+
+  const uint16_t cutoffMv = BoardConfig::ACTIVE.power.lowBatteryCutoffMv;
+  if (cutoffMv == 0 || !hasAdcBackend() || hasGaugeBackend() || hasM5Pm1Backend()) {
+    if (known) *known = false;
+    return false;
+  }
+  const uint32_t now = millis();
+  if (s_sampled && now - s_lastSampleMs < 1000) {
+    if (known) *known = s_lastKnown;
+    if (millivolts) *millivolts = s_lastMv;
+    return s_belowCount >= CUTOFF_SAMPLES;
+  }
+  s_sampled = true;
+  s_lastSampleMs = now;
+  s_lastKnown = false;
+
+  if (BoardConfig::hasChargeStatusLadder()) {
+    using BoardConfig::ChargeState;
+    const ChargeState state = chargeStatus();
+    if (state == ChargeState::ExternalIdle || state == ChargeState::Charging || state == ChargeState::Complete ||
+        state == ChargeState::NoBattery) {
+      // External power carries the load (or there is no cell to protect).
+      s_belowCount = 0;
+      s_unknownSinceMs = 0;
+      if (known) *known = false;
+      return false;
+    }
+    if (state == ChargeState::Unknown) {
+      // Not decodable (yet): allowed, but only on a reading that proves a cell.
+      if (s_unknownSinceMs == 0) {
+        s_unknownSinceMs = now != 0 ? now : 1;
+      } else if (!s_unknownLogged && now - s_unknownSinceMs > 10000) {
+        s_unknownLogged = true;
+        LOG_INF("BAT", "Charge-status ladder still unknown after 10 s; the cutoff relies on the cell reading");
+      }
+    } else {
+      s_unknownSinceMs = 0;
+    }
+  }
+
+  const uint16_t mv = readMillivoltsAveraged(16);
+  s_lastMv = mv;
+  if (millivolts) *millivolts = mv;
+  if (mv < CELL_PRESENT_MIN_MV) {
+    s_belowCount = 0;  // no cell (USB-powered): P+ reads about 0 V
+    if (known) *known = false;
+    return false;
+  }
+  s_lastKnown = true;
+  if (known) *known = true;
+  if (mv <= cutoffMv) {
+    if (s_belowCount < UINT8_MAX) ++s_belowCount;
+  } else {
+    s_belowCount = 0;
+  }
+  return s_belowCount >= CUTOFF_SAMPLES;
+}
+
+namespace {
+// Charge-status ladder sampler. Only pollChargeStatus() (main loop) writes it;
+// the decoded state is published through an atomic for other tasks.
+using ChargeDecoder = freeink::battery_detail::ChargeLadderDecoder<BoardConfig::ChargeLadderWindow>;
+std::atomic<uint8_t> g_chargeState{static_cast<uint8_t>(BoardConfig::ChargeState::Unknown)};
+std::atomic<bool> g_chargePollBusy{false};
+ChargeDecoder g_chargeDecoder;
+bool g_chargeSampled = false;
+bool g_chargePinReady = false;
+uint32_t g_chargeLastSampleMs = 0;
+}  // namespace
+
+void BatteryMonitor::pollChargeStatus() {
+  if (!BoardConfig::hasChargeStatusLadder()) return;
+  bool expected = false;
+  if (!g_chargePollBusy.compare_exchange_strong(expected, true)) return;
+  const BoardConfig::ChargeStatusLadder& ladder = BoardConfig::ACTIVE.chargeLadder;
+  const uint32_t now = millis();
+  if (now >= ladder.settleAfterBootMs && (!g_chargeSampled || now - g_chargeLastSampleMs >= ladder.minIntervalMs)) {
+    if (!g_chargePinReady) {
+      pinMode(ladder.pin, INPUT);  // no internal pulls: they would swamp a 1 M-class ladder
+      g_chargePinReady = true;
+    }
+    const uint8_t n = ladder.oversample == 0 ? 1 : ladder.oversample;
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < n; ++i) sum += analogReadMilliVolts(ladder.pin);
+    const uint32_t mv = sum / n;
+    g_chargeSampled = true;
+    g_chargeLastSampleMs = now;
+    const ChargeDecoder::Params params = {ladder.windows, ladder.count, ladder.debounceSamples,
+                                          ladder.completeStableSamples, ladder.blinkDeltaMv};
+    const BoardConfig::ChargeState previous = g_chargeDecoder.state();
+    const BoardConfig::ChargeState state = g_chargeDecoder.feed(params, static_cast<int32_t>(mv));
+    g_chargeState.store(static_cast<uint8_t>(state));
+    if (state != previous) {
+      LOG_DBG("BAT", "Charge status %u -> %u at %lu mV", static_cast<unsigned>(previous),
+              static_cast<unsigned>(state), static_cast<unsigned long>(mv));
+    }
+  }
+  g_chargePollBusy.store(false);
+}
+
+BoardConfig::ChargeState BatteryMonitor::chargeStatus() {
+  return static_cast<BoardConfig::ChargeState>(g_chargeState.load());
 }
 
 bool BatteryMonitor::readM5Pm1Status(Status& status) const {

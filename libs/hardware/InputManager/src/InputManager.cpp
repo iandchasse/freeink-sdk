@@ -18,6 +18,9 @@
 #if FREEINK_DEVICE_PAPERMONO
 #include <PaperMonoBoard.h>
 #endif
+#if FREEINK_ADC_LADDER_TRACE
+#include <Logging.h>
+#endif
 #if defined(TOUCH_PROBE_DEBUG)
 #include <esp_rom_sys.h>
 
@@ -46,6 +49,13 @@ const char* InputManager::BUTTON_NAMES[] = {"Back", "Confirm", "Left", "Right", 
 
 namespace {
 int absInt(const int value) { return value < 0 ? -value : value; }
+
+// Input mode for the power pin: the pull opposite its active level, or none when
+// the board biases the pin externally (InputPins::powerExternalPull).
+uint8_t powerPinMode() {
+  if (BoardConfig::ACTIVE.input.powerExternalPull) return INPUT;
+  return BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP;
+}
 
 #if defined(TOUCH_PROBE_DEBUG)
 void touchDebugPrintf(const char* format, ...) {
@@ -93,8 +103,19 @@ void InputManager::begin() {
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
-    pinMode(BoardConfig::ACTIVE.input.power, BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+    pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
     analogSetAttenuation(ADC_11db);
+    beginTouch();
+    return;
+  }
+
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::AdcLadders) {
+    // Ladder pins carry external pull-ups that define idle, so no internal pulls.
+    for (const BoardConfig::AdcLadder& ladder : BoardConfig::ACTIVE.adcLadders.ladders) {
+      if (ladder.pin >= 0) pinMode(ladder.pin, INPUT);
+    }
+    analogSetAttenuation(ADC_11db);
+    if (BoardConfig::ACTIVE.input.power >= 0) pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
     beginTouch();
     return;
   }
@@ -107,8 +128,7 @@ void InputManager::begin() {
     if (BoardConfig::ACTIVE.input.up >= 0) pinMode(BoardConfig::ACTIVE.input.up, INPUT_PULLUP);
     if (BoardConfig::ACTIVE.input.down >= 0) pinMode(BoardConfig::ACTIVE.input.down, INPUT_PULLUP);
     if (BoardConfig::ACTIVE.input.power >= 0) {
-      pinMode(BoardConfig::ACTIVE.input.power,
-              BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+      pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
     }
     beginTouch();
     return;
@@ -128,7 +148,7 @@ void InputManager::begin() {
   // Configured after the loop so a pin shared with a button (all such boards
   // are active-low) resolves to the same INPUT_PULLUP either way.
   if (BoardConfig::ACTIVE.input.power >= 0) {
-    pinMode(BoardConfig::ACTIVE.input.power, BoardConfig::ACTIVE.input.powerActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+    pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
   }
   beginTouch();
 }
@@ -143,9 +163,36 @@ int InputManager::getButtonFromADC(const int adcValue, const int ranges[], const
   return -1;
 }
 
+// One raw read (only its saturation matters) plus `oversample` calibrated reads,
+// averaged: the upper ladder levels sit where the 11 dB curve compresses.
+void InputManager::sampleAdcLadder(const int8_t pin, const uint8_t oversample, int& raw, int& mv) {
+  const uint8_t n = oversample == 0 ? 1 : oversample;
+  raw = analogRead(pin);
+  int32_t mvSum = 0;
+  for (uint8_t i = 0; i < n; ++i) {
+    mvSum += static_cast<int32_t>(analogReadMilliVolts(pin));
+  }
+  mv = static_cast<int>(mvSum / n);
+}
+
 void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2) {
   group1 = {BUTTON_ADC_PIN_1, -1, -1};
   group2 = {BUTTON_ADC_PIN_2, -1, -1};
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::AdcLadders) {
+    const BoardConfig::AdcLadderConfig& cfg = BoardConfig::ACTIVE.adcLadders;
+    ButtonAdcSample* const groups[2] = {&group1, &group2};
+    for (uint8_t i = 0; i < 2; ++i) {
+      const BoardConfig::AdcLadder& ladder = cfg.ladders[i];
+      if (ladder.pin < 0) continue;
+      int raw = 0;
+      int mv = 0;
+      sampleAdcLadder(ladder.pin, cfg.oversample, raw, mv);
+      const int decoded =
+          freeink::input_detail::decodeAdcLadder(ladder.keys, ladder.count, mv, raw, cfg.releasedMinMv);
+      *groups[i] = {ladder.pin, raw, decoded >= 0 ? decoded : -1};
+    }
+    return;
+  }
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     return;
   }
@@ -186,6 +233,14 @@ uint8_t InputManager::getState() {
     return state;
   }
 
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::AdcLadders) {
+    state = getAdcLadderState();
+    if (isPowerButtonPhysicallyPressed()) state |= (1 << BTN_POWER);
+    state |= serviceTouch();
+    if (s_buttonHook) state |= s_buttonHook();
+    return state;
+  }
+
   if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
     state = getDigitalState();
     state |= serviceTouch();                    // run the touch machine; OR any synthesized button
@@ -215,6 +270,44 @@ uint8_t InputManager::getState() {
 
   state |= serviceTouch();
   if (s_buttonHook) state |= s_buttonHook();  // board buttons (e.g. I2C expander)
+  return state;
+}
+
+// InputStyle::AdcLadders: decode each ladder (AdcLadderDecode.h) and commit a key
+// only after stableSamples identical clean decodes on polls >= 5 ms apart.
+// Readings that are not a clean key level (chords, press edges) are ignored.
+// Between polls the committed keys are reported unchanged.
+uint8_t InputManager::getAdcLadderState() {
+  const BoardConfig::AdcLadderConfig& cfg = BoardConfig::ACTIVE.adcLadders;
+  const unsigned long now = millis();
+  const bool sampleNow = !ladderSampled || now - ladderSampledAt >= LADDER_MIN_POLL_MS;
+  if (sampleNow) {
+    ladderSampled = true;
+    ladderSampledAt = now;
+  }
+  uint8_t state = 0;
+  for (uint8_t i = 0; i < 2; ++i) {
+    const BoardConfig::AdcLadder& ladder = cfg.ladders[i];
+    if (ladder.pin < 0) continue;
+    if (sampleNow) {
+      int raw = 0;
+      int mv = 0;
+      sampleAdcLadder(ladder.pin, cfg.oversample, raw, mv);
+      const int decoded =
+          freeink::input_detail::decodeAdcLadder(ladder.keys, ladder.count, mv, raw, cfg.releasedMinMv);
+      ladderDebounce[i].update(decoded, cfg.stableSamples);
+#if FREEINK_ADC_LADDER_TRACE
+      static int lastTraceMv[2] = {-1000, -1000};
+      if (absInt(mv - lastTraceMv[i]) > 20) {
+        lastTraceMv[i] = mv;
+        LOG_INF("LADDER", "pin %d: %d mV raw %d -> %d (committed %d)", ladder.pin, mv, raw, decoded,
+                ladderDebounce[i].committed);
+      }
+#endif
+    }
+    const int committed = ladderDebounce[i].committed;
+    if (committed >= 0 && committed < 8) state |= static_cast<uint8_t>(1u << committed);
+  }
   return state;
 }
 

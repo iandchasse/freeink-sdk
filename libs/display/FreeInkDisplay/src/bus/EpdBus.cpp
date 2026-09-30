@@ -92,6 +92,16 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     delay(100);
   }
 
+  // Deselect the panel before SPI takes the clock pin: preset CS HIGH, then enable
+  // its driver, so CS is never driven LOW (GPIO_OUT resets to 0) or left floating
+  // while SCLK is live. Also releases a sleep hold on CS.
+  if (pins.cs >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(pins.cs));
+    gpio_set_level(static_cast<gpio_num_t>(pins.cs), 1);
+    pinMode(pins.cs, OUTPUT);
+    digitalWrite(pins.cs, HIGH);
+  }
+
   SPI.begin(pins.sclk, spiMiso, pins.mosi, pins.cs);
 
   pinMode(pins.cs, OUTPUT);
@@ -105,7 +115,13 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     gpio_hold_dis(static_cast<gpio_num_t>(pins.rst));
     pinMode(pins.rst, OUTPUT);
   }
-  pinMode(pins.busy, busy == BusyPolarity::ActiveLow ? INPUT_PULLUP : INPUT);
+  if (busy == BusyPolarity::ActiveLow) {
+    pinMode(pins.busy, INPUT_PULLUP);
+  } else if (busy == BusyPolarity::ActiveHigh && pins.busyPullDown) {
+    pinMode(pins.busy, INPUT_PULLDOWN);  // no external pull: a missing panel reads not-busy
+  } else {
+    pinMode(pins.busy, INPUT);
+  }
   if (_coCs >= 0) {
     pinMode(_coCs, OUTPUT);
     digitalWrite(_coCs, HIGH);

@@ -16,13 +16,15 @@ namespace freeink {
 
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   if (pins.busWidth == 0) return false;
+  if (pins.parkLowWhenOff) return beginParked(pins);
 
   // Host config matches the OEM (recovered from app1's mountSD via Ghidra): full
   // default capability flags (0x37) with the actual width selected via slot.width
-  // only, and the data clock at 40 MHz. The read timeouts we chased earlier were a
-  // mount-sequencing problem, not a clock-margin one — see the retry loop below.
+  // only, and the data clock at SDMMC_FREQ_DEFAULT (20 MHz) unless the profile caps
+  // it. The read timeouts we chased earlier were a mount-sequencing problem, not a
+  // clock-margin one — see the retry loop below.
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.max_freq_khz = SDMMC_FREQ_DEFAULT;  // 40 MHz
+  host.max_freq_khz = pins.maxFreqKhz != 0 ? pins.maxFreqKhz : SDMMC_FREQ_DEFAULT;
 
   // Slot pin map. The ESP32-S3 routes SDMMC through the GPIO matrix, so the data
   // and clock/command lines are assignable (unlike the classic ESP32's fixed slot).
@@ -34,7 +36,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   slot.d1 = static_cast<gpio_num_t>(pins.d1);
   slot.d2 = static_cast<gpio_num_t>(pins.d2);
   slot.d3 = static_cast<gpio_num_t>(pins.d3);
-  slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+  if (pins.internalPullups) slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
   if (sdmmc_host_init() != ESP_OK) return false;
   if (sdmmc_host_init_slot(host.slot, &slot) != ESP_OK) {
@@ -60,6 +62,10 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // on hardware: pulsing then holding LOW mounts reliably, whereas driving it HIGH
   // after init breaks every block read with 0x107.
   const int8_t sdPwr = BoardConfig::ACTIVE.sd.powerEnable;
+  // Gate levels from the profile's polarity. Every SDMMC board with a gate today is
+  // active-LOW (HIGH = off, LOW = on), which is the OEM sequence below.
+  const uint8_t sdOn = BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW;
+  const uint8_t sdOff = sdOn == HIGH ? LOW : HIGH;
   if (sdPwr >= 0) {
     gpio_hold_dis(static_cast<gpio_num_t>(sdPwr));
     pinMode(sdPwr, OUTPUT);
@@ -85,9 +91,9 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
     if (sdPwr >= 0) {
-      digitalWrite(sdPwr, HIGH);
+      digitalWrite(sdPwr, sdOff);
       delay(80);
-      digitalWrite(sdPwr, LOW);  // run with the enable held LOW
+      digitalWrite(sdPwr, sdOn);  // run with the card powered
       delay(120);
     }
     esp_err_t e = sdmmc_card_init(&host, card);

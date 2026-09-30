@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <driver/gpio.h>
+#include <driver/rtc_io.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <soc/soc_caps.h>
@@ -14,6 +15,12 @@ namespace freeink {
 namespace {
 int8_t powerPin() { return BoardConfig::ACTIVE.input.power; }
 bool powerActiveHigh() { return BoardConfig::ACTIVE.input.powerActiveHigh; }
+// Input mode for the power pin: the pull opposite its active level, or none when
+// the board biases the pin externally (InputPins::powerExternalPull).
+uint8_t powerPinMode() {
+  if (BoardConfig::ACTIVE.input.powerExternalPull) return INPUT;
+  return powerActiveHigh() ? INPUT_PULLDOWN : INPUT_PULLUP;
+}
 
 // Records a deepSleep() abort (see deepSleep()) across the esp_restart() that
 // follows it, so the next boot can report it via takeAbortedSleepInfo().
@@ -58,8 +65,16 @@ bool PowerManager::armPowerButtonWakeup() {
   if (pin < 0) return false;
   const bool activeHigh = powerActiveHigh();
 
-  // Hold the idle level with the opposite pull so the line is defined in sleep.
-  pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+  // Hold the idle level with the opposite pull so the line is defined in sleep,
+  // unless the board's own pull already defines it: then keep both pulls off in
+  // the digital and the RTC domain (the RTC pad is what ext1 samples).
+  pinMode(pin, powerPinMode());
+#if SOC_RTCIO_INPUT_OUTPUT_SUPPORTED
+  if (BoardConfig::ACTIVE.input.powerExternalPull && rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(pin))) {
+    rtc_gpio_pullup_dis(static_cast<gpio_num_t>(pin));
+    rtc_gpio_pulldown_dis(static_cast<gpio_num_t>(pin));
+  }
+#endif
   armWakeOnPins(1ULL << pin, /*wakeLow=*/!activeHigh);
   return true;
 }
@@ -69,7 +84,7 @@ void PowerManager::waitForPowerButtonRelease() {
   if (pin < 0) return;
   const bool activeHigh = powerActiveHigh();
 
-  pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+  pinMode(pin, powerPinMode());
   const int pressedLevel = activeHigh ? HIGH : LOW;
   while (digitalRead(pin) == pressedLevel) {
     delay(50);
@@ -80,10 +95,14 @@ namespace {
 // Drive a rail-enable pin to `offLevel` and latch it so the level survives deep
 // sleep (requires gpio_deep_sleep_hold_en(), done in deepSleep()). gpio_hold_dis
 // first: a hold left over from a previous cycle would make the writes no-ops.
+// The level is preset before the output is enabled (pinMode keeps GPIO_OUT), so
+// a pin whose output register still holds its reset 0 (e.g. an EPD RST on a
+// sleep path taken before the display was begun) never glitches LOW.
 void holdRailOff(int8_t pin, uint8_t offLevel) {
   if (pin < 0) return;
   const auto g = static_cast<gpio_num_t>(pin);
   gpio_hold_dis(g);
+  gpio_set_level(g, offLevel);
   pinMode(pin, OUTPUT);
   digitalWrite(pin, offLevel);
   gpio_hold_en(g);
@@ -113,6 +132,12 @@ void PowerManager::powerDownRailsForSleep() {
   holdRailOff(b.touch.powerEnable, b.touch.powerEnableActiveHigh ? LOW : HIGH);
   // The mic enable also carries a polarity flag; OFF is the inactive level.
   holdRailOff(b.mic.enable, b.mic.enableActiveHigh ? LOW : HIGH);
+  // Board-declared sleep levels (BoardConfig::ParkedPin), e.g. an EPD CS with no
+  // pull-up held HIGH, or a touch reset held LOW on an unswitched rail.
+  for (const BoardConfig::ParkedPin& p : b.parkedPins) {
+    if (p.sleep == BoardConfig::PinPark::Low) holdRailOff(p.pin, LOW);
+    if (p.sleep == BoardConfig::PinPark::High) holdRailOff(p.pin, HIGH);
+  }
 }
 
 void PowerManager::deepSleep() {

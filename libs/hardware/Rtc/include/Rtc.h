@@ -26,8 +26,9 @@ class Rtc {
     uint8_t weekday = 0;  // 0=Sunday .. 6=Saturday
   };
 
-  // Brings up the I2C bus and disables the RTC's CLKOUT. Returns false when the
-  // active board has no RTC or the device doesn't ACK.
+  // Brings up the I2C bus and disables the RTC's CLKOUT. Tries rtcAddr/rtcType,
+  // then the profile's rtcFallbackAddr/rtcFallbackType when the first does not
+  // answer. Returns false when the active board has no RTC or neither ACKs.
   bool begin();
   bool present() const { return begun_; }
 
@@ -47,6 +48,8 @@ class Rtc {
 
  private:
   bool begun_ = false;
+  uint8_t addr_ = 0;  // resolved by begin(): primary or fallback
+  uint8_t type_ = 0;  // BoardConfig::RtcType of addr_
 };
 
 }  // namespace freeink

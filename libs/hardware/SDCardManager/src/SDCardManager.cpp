@@ -79,6 +79,21 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
 }
 
 void SDCardManager::shutdown() {
+  if (BoardConfig::ACTIVE.sdmmc.parkLowWhenOff) {
+    // Park even when nothing is mounted: a failed mount, or the raw USB-MSC
+    // handoff (host alive, filesystem detached), still leaves the pads to settle.
+    // Unmount, tear the host down, drive the bus LOW with pulls off, gate the
+    // card off, and keep the bus LOW while SD_VDD bleeds down (>= 20 ms).
+    if (initialized) _vol.end();
+    if (_dev) _dev->end();
+    BoardConfig::parkSdmmcBus();
+    delay(20);
+    initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytes = 0;
+    cachedUsedBytesValid = false;
+    return;
+  }
   if (!initialized || !_dev) return;
   // FsVolume::end() flushes SdFat's cached FAT/directory sectors; SDMMC block
   // writes are synchronous, so the card is consistent once it returns.

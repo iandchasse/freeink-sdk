@@ -1,4 +1,6 @@
 #pragma once
+#include <BoardConfig.h>
+
 #include <cstdint>
 
 // FreeInk SDK — battery monitor.
@@ -75,9 +77,11 @@ public:
     //
     // This is NOT isCharging(): a full battery stops charging while still
     // plugged in, so isCharging() goes false with the cable still attached.
-    // Only a source that reports the input rail itself can answer this, so it
-    // is currently the BQ25896's REG0B — VBUS_STAT[7:5] plus PG_STAT — and
-    // nothing else. Boards without that charger IC cannot observe it.
+    // Only a source that reports the input rail itself can answer this: the
+    // BQ25896's REG0B (VBUS_STAT[7:5] plus PG_STAT), the M5PM1's PWR_SRC, or an
+    // analog charge-status ladder (charger idle, charging or complete = present;
+    // on battery = not present, though a cable too weak to carry the load may
+    // still be attached; unknown or the no-battery blink = no opinion).
     //
     // `known` (optional, out) is set false when the board has no way to tell,
     // or the read failed. Callers MUST branch on it: a bare false means "no
@@ -85,6 +89,34 @@ public:
     // same is how you get a device that thinks the cable is gone because it
     // never had a way to see it.
     bool isExternalPowerPresent(bool* known = nullptr) const;
+
+    // Like readMillivolts(), averaged over `samples` ADC reads on the ADC backend
+    // (a high-impedance divider reads noisy single samples). Other backends read
+    // once.
+    uint16_t readMillivoltsAveraged(uint8_t samples) const;
+
+    // Low-battery cutoff (BoardConfig::PowerConfig::lowBatteryCutoffMv, ADC
+    // backend only). Takes one averaged reading per call, at most one per second
+    // (a sooner call repeats the last verdict), and returns true once
+    // CUTOFF_SAMPLES consecutive readings are at or below the cutoff. It never
+    // fires while the charge-status ladder reports external power (USB idle,
+    // charging, complete or the no-battery blink), nor on a reading below
+    // CELL_PRESENT_MIN_MV (no cell: P+ reads about 0 V on USB). Take readings
+    // with the radio quiet: the divider taps P+ behind the protection FETs and
+    // reads low under load. Call from one task. `known` is false when no
+    // reading was judged against the cutoff (no cutoff, external power, no
+    // cell); `millivolts` receives the last reading.
+    static constexpr uint8_t CUTOFF_SAMPLES = 3;
+    static constexpr uint16_t CELL_PRESENT_MIN_MV = 2500;
+    bool isBelowCutoff(bool* known = nullptr, uint16_t* millivolts = nullptr) const;
+
+    // Analog charge-status ladder (BoardConfig::ChargeStatusLadder). poll takes
+    // one sample when one is due (not before settleAfterBootMs of uptime, then at
+    // most every minIntervalMs) and updates the decoded state; call it from the
+    // main loop only. chargeStatus() returns the cached state without touching
+    // the ADC, so any task may call it. Unknown on boards without a ladder.
+    static void pollChargeStatus();
+    static BoardConfig::ChargeState chargeStatus();
 
     // Percentage from a millivolt value, off a standard 1S Li-ion discharge
     // curve. The result is always a multiple of 10: voltage cannot resolve a

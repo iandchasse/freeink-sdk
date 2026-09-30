@@ -417,6 +417,7 @@ enum class InputStyle : uint8_t {
   DigitalFiveKey,           // 3 physical GPIO keys + synthesized events (Murphy M3)
   DigitalTwoButton,         // short up/down; holds synthesize back/confirm/power
   OnePageAdcLadder,         // OnePage: 4 front keys on GPIO4 ADC ladder + 3 side GPIO keys
+  AdcLadders,               // data-driven ADC ladders (BoardProfile::adcLadders) + power GPIO
 };
 
 // Panel controller silicon. Drivers are selected from this at begin().
@@ -466,6 +467,10 @@ struct DisplayPins {
   int8_t rst;
   int8_t busy;
   int8_t powerEnable;
+  // Internal pull-down on an active-high BUSY line that has no external pull, so
+  // a missing or unplugged panel reads not-busy instead of floating. Defaulted so
+  // existing initializers stay valid and keep a bare INPUT.
+  bool busyPullDown = false;
 };
 
 struct SdPins {
@@ -493,6 +498,19 @@ struct SdmmcPins {
   int8_t d2;
   int8_t d3;
   uint8_t busWidth;  // 0 = not an SDMMC board (use SdPins/SPI), 1 or 4 = SDMMC
+  // Data clock cap in kHz. 0 = SDMMC_FREQ_DEFAULT (20 MHz).
+  uint16_t maxFreqKhz = 0;
+  // Internal pull-ups on CMD/D0-D3. Boards whose external bus pull-ups sit on the
+  // switched card rail set false: pull-ups to the always-on rail back-feed a
+  // gated card.
+  bool internalPullups = true;
+  // Real power cycle around the mount and before sleep: the bus is driven LOW
+  // (pulls off) before the sd.powerEnable gate goes off, stays LOW for at least
+  // powerOffMs, is released to Hi-Z before power-on, and the card settles for
+  // powerOnSettleMs before host init. false keeps the legacy mount sequence.
+  bool parkLowWhenOff = false;
+  uint16_t powerOffMs = 20;
+  uint16_t powerOnSettleMs = 20;
 };
 
 // The I2C fuel-gauge silicon a board carries. Each type has its own register map and
@@ -532,6 +550,84 @@ struct InputPins {
   int8_t power;
   bool powerActiveHigh;  // true = pressed reads HIGH (INPUT_PULLDOWN); false = active-LOW (INPUT_PULLUP)
   int8_t adcLadderPin = PIN_UNASSIGNED;  // ADC pin for single resistor ladder (e.g. OnePage GPIO4)
+  // The power pin already has an external pull that defines its idle level, so it
+  // is read as plain INPUT with both internal pulls off (digital and RTC domain).
+  // An internal pull in parallel would move the pressed level toward VIH.
+  bool powerExternalPull = false;
+};
+
+// Logical button indices used by data tables such as AdcLadderKey. They match
+// InputManager::BTN_* (InputManager.h asserts it).
+namespace LadderButton {
+constexpr uint8_t Back = 0;
+constexpr uint8_t Confirm = 1;
+constexpr uint8_t Left = 2;
+constexpr uint8_t Right = 3;
+constexpr uint8_t Up = 4;
+constexpr uint8_t Down = 5;
+}  // namespace LadderButton
+
+// One key of an ADC resistor ladder: calibrated millivolt window, inclusive.
+struct AdcLadderKey {
+  uint16_t minMv;
+  uint16_t maxMv;
+  uint8_t button;  // LadderButton::*
+};
+
+// A resistor ladder on one ADC pin (InputStyle::AdcLadders). A reading inside a
+// key's window is that key; a saturated or >= releasedMinMv reading is released;
+// anything else (chords, edges of a press) is ignored.
+struct AdcLadder {
+  int8_t pin = PIN_UNASSIGNED;
+  uint8_t count = 0;
+  AdcLadderKey keys[6] = {};
+};
+
+struct AdcLadderConfig {
+  AdcLadder ladders[2] = {};
+  uint16_t releasedMinMv = 0;  // 0 = only a saturated raw reading counts as released
+  uint8_t oversample = 8;      // analogReadMilliVolts samples averaged per poll
+  uint8_t stableSamples = 2;   // identical decodes (polls >= 5 ms apart) before a key commits
+};
+
+// Analog charge-status decoding (a charger's status pins encoded on one ADC pin).
+enum class ChargeState : uint8_t { Unknown, OnBattery, Charging, Complete, ExternalIdle, NoBattery };
+
+struct ChargeLadderWindow {
+  uint16_t minMv;  // inclusive
+  uint16_t maxMv;  // inclusive
+  ChargeState state;
+};
+
+// A charge-status ladder on one ADC pin, read with no internal pulls at 11 dB. The
+// node is slow, so it is sampled at most every minIntervalMs and not before
+// settleAfterBootMs of uptime. A state changes after debounceSamples agreeing
+// samples; readings outside every window keep the last state. Complete is
+// reported only after completeStableSamples consecutive in-window samples, and
+// in-window readings that swing by blinkDeltaMv or more report NoBattery (a
+// charger blinking between two states with no cell).
+struct ChargeStatusLadder {
+  int8_t pin = PIN_UNASSIGNED;
+  uint8_t count = 0;
+  ChargeLadderWindow windows[4] = {};
+  uint16_t minIntervalMs = 1000;
+  uint16_t settleAfterBootMs = 500;
+  uint8_t debounceSamples = 2;
+  uint8_t completeStableSamples = 8;
+  uint16_t blinkDeltaMv = 70;
+  uint8_t oversample = 16;
+};
+
+// Per-pin levels a board needs outside any driver's control. `boot` is applied
+// first thing in setup() (holdPowerRails()), `sleep` just before deep sleep
+// (PowerManager::powerDownRailsForSleep(), held through sleep). None leaves the
+// pin alone at that point; InputNoPull configures an input with both pulls off.
+enum class PinPark : uint8_t { None, Low, High, InputNoPull };
+
+struct ParkedPin {
+  int8_t pin = PIN_UNASSIGNED;
+  PinPark boot = PinPark::None;
+  PinPark sleep = PinPark::None;
 };
 
 // Capacitive touch panel description (TouchController::None disables it).
@@ -679,6 +775,15 @@ struct SensorsConfig {
   bool imuSwapXY = false;
   bool imuFlipX = false;
   bool imuFlipY = false;
+  // RTC low-power init: on a DS3231, clear EN32KHZ (status bit 3, powers up set);
+  // on a PCF85063-class part, set the CLKOUT frequency field to "off".
+  bool rtcLowPower = false;
+  // Second RTC footprint probed when rtcAddr does not answer (0 = none).
+  RtcType rtcFallbackType = RtcType::None;
+  uint8_t rtcFallbackAddr = 0;
+  // The RTC has no backup supply, so losing time is routine: firmware should
+  // fetch the time again whenever the RTC reports it invalid, not only once.
+  bool rtcResyncWhenInvalid = false;
 };
 
 // How the panel is mounted relative to the driver's native scan. Any board injects
@@ -705,6 +810,10 @@ struct PowerConfig {
   // until sleep isolates the pad and lets the line float back to enabled.
   int8_t chargeEnable = PIN_UNASSIGNED;
   bool chargeEnableActiveHigh = false;  // "n"-suffixed enables are active-low
+  // Battery voltage (mV, after the divider) at or below which firmware puts the
+  // board to sleep while it runs on the cell. 0 = no cutoff. See
+  // BatteryMonitor::isBelowCutoff().
+  uint16_t lowBatteryCutoffMv = 0;
 };
 
 // Panel rows/columns the device's bezel physically overlaps, in the panel's
@@ -771,6 +880,13 @@ struct BoardProfile {
   // I2C frontlight (LM3630A). Defaulted so existing profiles need no change;
   // a board with one sets it (EEGO A4).
   I2cFrontlightConfig i2cFrontlight = NO_I2C_FRONTLIGHT;
+  // Boot and sleep levels for pins no driver owns at those moments (see
+  // ParkedPin). Empty by default.
+  ParkedPin parkedPins[8] = {};
+  // Key windows for InputStyle::AdcLadders. Empty by default.
+  AdcLadderConfig adcLadders = {};
+  // Analog charge-status ladder (pin PIN_UNASSIGNED = none).
+  ChargeStatusLadder chargeLadder = {};
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1839,26 +1955,29 @@ static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
 // rules: silkscreen-pcb docs/HARDWARE.md §13 (GPIO map) and §13.1 (firmware
 // contract). Panel VDDIO/VCI sit on the always-on 3V3 with no switch (§6.1), and
 // the LDO enable is tied to VIN, so there is no power latch (§3.5). The eight
-// keys are on two ADC ladders (IO1, IO4; §9.1), which no InputStyle decodes yet,
-// so only the power button is read. Touch (§8) and the front light (§7) are
-// optional parts and are not described here yet.
+// keys are on two ADC ladders (IO1, IO4; §9.1). Touch (§8) and the front light
+// (§7) are optional parts and are not described here yet: IO42 (ADIM) and IO40
+// (COLOR_SEL) are parked LOW and IO11 (TP_RST) is held LOW in sleep.
 constexpr BoardProfile SILKSCREEN = {
     Board::Silkscreen,
     "silkscreen",
-    InputStyle::DigitalButtons,  // power button only; ladder keys not decoded yet
+    InputStyle::AdcLadders,      // two key ladders (adcLadders below) + IO18 power button
     DisplayController::SSD1677,  // default GDEQ0426T82 config, same panel as X4
     800,
     480,
     // Display SPI (4-wire, BS=GND, no MISO): SCLK 13, MOSI 12, CS 14, DC 21, RST 47,
-    // BUSY 48. No panel power switch (§6.1).
-    {13, 12, 14, 21, 47, 48, PIN_UNASSIGNED},
+    // BUSY 48. No panel power switch (§6.1). BUSY has no external pull, so use the
+    // internal pull-down (a missing panel reads not-busy).
+    {13, 12, 14, 21, 47, 48, PIN_UNASSIGNED, true},
     20000000,  // displaySpiHz: 20 MHz, below the SSD1677 40 MHz default until bench-checked
     // SD: SPI pins unused (4-bit SDMMC below). IO10 SD_ACTIVATE gates SD_VDD through
     // Q7 and is active-LOW: LOW = card powered (§5).
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 10, false, 0, false},
-    // {back, confirm, left, right, up, down, power, powerActiveHigh}
-    // PWR_BUTTON IO18: SW10 to 3V3 through R62, R76 100k pull-down, pressed ~3.0 V (§9.2).
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 18, true},
+    // {back, confirm, left, right, up, down, power, powerActiveHigh, adcLadderPin, powerExternalPull}
+    // PWR_BUTTON IO18: SW10 to 3V3 through R62, R76 100k pull-down, pressed ~3.0 V, so
+    // no internal pulls (§9.2).
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 18, true,
+     PIN_UNASSIGNED, true},
     8,               // batteryAdc: BAT_MONIT IO8 = P+/2 (ADC1_CH7, §3.6)
     PIN_UNASSIGNED,  // batteryChargeStatus: USB_STAT IO9 is an analog ladder, not a digital /STAT (§3.7)
     2.0f,            // batteryDividerMultiplier: R12/R10 1M/1M
@@ -1868,17 +1987,68 @@ constexpr BoardProfile SILKSCREEN = {
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
-    // 4-bit SDMMC: CLK 7, CMD 15, D0 6, D1 5, D2 17, D3 16 (§5)
-    {7, 15, 6, 5, 17, 16, 4},
+    // 4-bit SDMMC: CLK 7, CMD 15, D0 6, D1 5, D2 17, D3 16 (§5), 20 MHz. The 10k bus
+    // pull-ups sit on the gated SD_VDD, so no internal pull-ups, and the bus is parked
+    // LOW before the gate goes off: 50 ms off (>= 20 ms, SD_VDD < 0.5 V after ~7.4 ms),
+    // 20 ms settle after power-on (§5, §13.1).
+    {7, 15, 6, 5, 17, 16, 4, 20000, false, true, 50, 20},
     NO_GAUGE,
     NO_MIC,
     // DS3231MZ RTC (U13) at 0x68 on the shared I2C bus SDA 38 / SCL 39, 2.2k external
-    // pull-ups (§10). 100 kHz until 400 kHz is measured on the board.
-    {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None},
+    // pull-ups (§10). 100 kHz until 400 kHz is measured on the board. EN32KHZ cleared;
+    // the alternate U14 RV-8263-C7 (PCF85063-compatible) is probed at 0x51. No backup
+    // cell, so time is fetched again whenever the RTC reports it lost.
+    {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None, false, false, false, true, RtcType::Pcf85063,
+     0x51, true},
     1.0f,  // uiScale: button-navigated
-    {},    // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5)
-    0,     // displayControllerVariant: SSD1677, not probed
-    {}};   // viewableInsets: X4 default until the bezel is measured
+    // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5). Sleep at
+    // 3.4 V on P+, above the ~3.3 V "0%" point; the DW01A 2.4 V trip is a last resort.
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400},
+    0,                   // displayControllerVariant: SSD1677, not probed
+    {},                  // viewableInsets: X4 default until the bezel is measured
+    false,               // batteryChargeStatusActiveHigh: unused (no digital STAT)
+    NO_I2C_FRONTLIGHT,
+    // parkedPins {pin, boot, sleep}. EPD CS has no pull-up: HIGH before any SCLK edge
+    // and through sleep (§6.1). ADIM and COLOR_SEL LOW (§7, §13.1). Touch reset LOW in
+    // sleep, since J4 VDD is unswitched (§8).
+    {{14, PinPark::High, PinPark::High},
+     {42, PinPark::Low, PinPark::Low},
+     {40, PinPark::Low, PinPark::Low},
+     {11, PinPark::None, PinPark::Low}},
+    // adcLadders: windows in calibrated mV (11 dB), centred in the chord gaps (§9.1).
+    // LEFT starts at 1090 so LEFT+OK (<= ~1089 mV) stays rejected; LEFT+BACK aliases
+    // to LEFT and UP(1)+UP(2) to UP. The UP(2)/released split is provisional until
+    // measured (bring-up B5).
+    {{{1,
+       4,
+       {{0, 200, LadderButton::Right},
+        {1090, 1290, LadderButton::Left},
+        {2075, 2325, LadderButton::Confirm},
+        {2680, 2935, LadderButton::Back}}},
+      {4,
+       4,
+       {{0, 200, LadderButton::Down},
+        {1690, 1920, LadderButton::Up},
+        {2400, 2665, LadderButton::Down},
+        {2745, 2995, LadderButton::Up}}}},
+     3000,
+     16,
+     2},
+    // chargeLadder: USB_STAT IO9 (§3.7, §13.1): > 2.6 V charger idle, 1.8-2.6 V on
+    // battery, 0.8-1.35 V charging, 0.35-0.7 V complete (only once stable for 8
+    // samples; a swing of >= 70 mV there is the no-battery blink). 1 Hz, 0.5 s settle.
+    {9,
+     4,
+     {{2601, 0xFFFF, ChargeState::ExternalIdle},
+      {1800, 2600, ChargeState::OnBattery},
+      {800, 1350, ChargeState::Charging},
+      {350, 700, ChargeState::Complete}},
+     1000,
+     500,
+     2,
+     8,
+     70,
+     16}};
 
 static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
@@ -2102,11 +2272,102 @@ inline bool latchConflictsWithBus(int8_t pin) {
   return false;
 }
 
+// Drive `pin` as a push-pull output at `level` with both pulls off, without a
+// glitch: GPIO_OUT is preset before the driver is enabled, and pinMode keeps it
+// (and registers the pin, so later digitalWrite() calls are honoured). A pad
+// hold from a previous sleep is released last, so a held level hands over to
+// the driven one with no floating gap.
+inline void driveParkedLevel(int8_t pin, uint8_t level) {
+  const auto g = static_cast<gpio_num_t>(pin);
+  gpio_set_level(g, level);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+  gpio_hold_dis(g);
+}
+
+// SDMMC park state (SdmmcPins::parkLowWhenOff), shared by the boot park,
+// SdmmcBlockDevice and SDCardManager.
+inline bool sdmmcParked = false;
+inline uint32_t sdmmcParkedAtMs = 0;
+
+// Gate the card off the way SdmmcPins::parkLowWhenOff requires: CLK/CMD/D0-D3
+// driven LOW as outputs with both pulls off, then sd.powerEnable to its OFF
+// level. With the bus pull-ups on the gated card rail, any HIGH bus line would
+// back-feed the card. Records when the card went off; calling it again while
+// parked re-drives the levels and keeps that time. The caller keeps the bus LOW
+// for at least 20 ms before relying on the card being reset.
+inline void parkSdmmcBus() {
+  const SdmmcPins& s = ACTIVE.sdmmc;
+  for (const int8_t pin : {s.clk, s.cmd, s.d0, s.d1, s.d2, s.d3}) {
+    if (pin < 0) continue;
+    const auto g = static_cast<gpio_num_t>(pin);
+    gpio_hold_dis(g);
+    gpio_set_level(g, 0);
+    gpio_set_direction(g, GPIO_MODE_OUTPUT);
+    gpio_pullup_dis(g);
+    gpio_pulldown_dis(g);
+  }
+  if (const int8_t en = ACTIVE.sd.powerEnable; en >= 0) {
+    driveParkedLevel(en, ACTIVE.sd.powerActiveHigh ? LOW : HIGH);
+  }
+  if (!sdmmcParked) {
+    sdmmcParked = true;
+    sdmmcParkedAtMs = millis();
+  }
+}
+
+// Leave the park for a mount: wait until the card has been off for at least
+// offMs, release the bus to Hi-Z with no pulls, then drive sd.powerEnable ON.
+inline void unparkSdmmcBus(uint16_t offMs) {
+  if (sdmmcParked) {
+    const uint32_t offFor = millis() - sdmmcParkedAtMs;
+    if (offFor < offMs) delay(offMs - offFor);
+  }
+  const SdmmcPins& s = ACTIVE.sdmmc;
+  for (const int8_t pin : {s.clk, s.cmd, s.d0, s.d1, s.d2, s.d3}) {
+    if (pin < 0) continue;
+    const auto g = static_cast<gpio_num_t>(pin);
+    gpio_set_direction(g, GPIO_MODE_INPUT);
+    gpio_pullup_dis(g);
+    gpio_pulldown_dis(g);
+  }
+  if (const int8_t en = ACTIVE.sd.powerEnable; en >= 0) {
+    driveParkedLevel(en, ACTIVE.sd.powerActiveHigh ? HIGH : LOW);
+  }
+  sdmmcParked = false;
+}
+
 // Assert the board's power-rail latch pins. Battery-latched boards (e.g. the
 // Sticky) must call this first thing in setup() or the board powers off when
 // the user releases the power button. Releasing the pins (driving them LOW)
 // is a software power-off. No-op on boards without a latch.
+//
+// It also applies the profile's parkedPins boot levels (first, so e.g. an EPD
+// CS with no pull-up is HIGH before anything clocks the bus) and releases the
+// holds the sleep levels left, and on parkLowWhenOff SDMMC boards it starts the
+// boot with the card gated off and the bus parked (the mount then completes the
+// power cycle). Both are no-ops on boards that do not set them.
 inline void holdPowerRails() {
+  for (const ParkedPin& p : ACTIVE.parkedPins) {
+    if (p.pin < 0) continue;
+    switch (p.boot) {
+      case PinPark::Low:
+        driveParkedLevel(p.pin, LOW);
+        break;
+      case PinPark::High:
+        driveParkedLevel(p.pin, HIGH);
+        break;
+      case PinPark::InputNoPull:
+        pinMode(p.pin, INPUT);
+        break;
+      case PinPark::None:
+        break;
+    }
+    gpio_hold_dis(static_cast<gpio_num_t>(p.pin));  // the previous sleep's hold, after the boot level is set
+  }
+  if (ACTIVE.sdmmc.parkLowWhenOff && ACTIVE.sdmmc.busWidth != 0) {
+    parkSdmmcBus();
+  }
   for (const int8_t pin : {ACTIVE.power.latch0, ACTIVE.power.latch1}) {
     if (pin < 0) continue;
     if (latchConflictsWithBus(pin)) {
@@ -2164,5 +2425,8 @@ inline bool hasRtc() { return ACTIVE.sensors.rtcAddr != 0; }
 inline bool hasTempHumidity() { return ACTIVE.sensors.tempHumidityAddr != 0; }
 inline bool hasImu() { return ACTIVE.sensors.imuAddr != 0; }
 inline bool hasLeds() { return ACTIVE.leds.data != PIN_UNASSIGNED && ACTIVE.leds.count > 0; }
+inline bool hasChargeStatusLadder() {
+  return ACTIVE.chargeLadder.pin != PIN_UNASSIGNED && ACTIVE.chargeLadder.count > 0;
+}
 
 }  // namespace BoardConfig

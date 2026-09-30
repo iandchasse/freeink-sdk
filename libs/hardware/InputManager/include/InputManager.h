@@ -16,6 +16,8 @@
 
 #include <cstdint>
 
+#include "AdcLadderDecode.h"
+
 class InputManager {
  public:
   InputManager();
@@ -65,6 +67,10 @@ class InputManager {
   static constexpr uint8_t BTN_UP = 4;
   static constexpr uint8_t BTN_DOWN = 5;
   static constexpr uint8_t BTN_POWER = 6;
+  static_assert(BTN_BACK == BoardConfig::LadderButton::Back && BTN_CONFIRM == BoardConfig::LadderButton::Confirm &&
+                    BTN_LEFT == BoardConfig::LadderButton::Left && BTN_RIGHT == BoardConfig::LadderButton::Right &&
+                    BTN_UP == BoardConfig::LadderButton::Up && BTN_DOWN == BoardConfig::LadderButton::Down,
+                "BoardConfig::LadderButton must match the BTN_* indices");
 
   // Pins. POWER_BUTTON_PIN stays constexpr (consumers reference it in
   // pin-config contexts) and is bound to the build's default device; the input
@@ -266,7 +272,9 @@ class InputManager {
   };
 
   // Sample both button-group ADC pins now (synchronous analogRead). Safe to
-  // call alongside async polling. On boards without the Xteink ADC ladder both
+  // call alongside async polling. On InputStyle::AdcLadders boards the groups
+  // are the profile's two ladders, `button` is that sample's decode (-1 when it
+  // is released or not a clean key level). On boards without an ADC ladder both
   // samples report raw = -1, button = -1.
   void readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2);
 
@@ -305,6 +313,8 @@ class InputManager {
   void asyncPoll();
 
   int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
+  uint8_t getAdcLadderState();
+  static void sampleAdcLadder(int8_t pin, uint8_t oversample, int& raw, int& mv);
   bool isDigitalPressed(int8_t pin) const;
   uint8_t getDigitalState() const;
   void updateConfirmBackHold(unsigned long currentTime);
@@ -430,6 +440,12 @@ class InputManager {
   bool touchSuppressed = false;                  // suppressTouchContact() latch; holds through
                                                  // the release-edge frame, cleared in
                                                  // serviceTouch() once the contact is over
+
+  // InputStyle::AdcLadders debounce, one per BoardProfile::adcLadders ladder.
+  freeink::input_detail::AdcLadderDebounce ladderDebounce[2];
+  unsigned long ladderSampledAt = 0;
+  bool ladderSampled = false;
+  static constexpr unsigned long LADDER_MIN_POLL_MS = 5;  // decodes that count toward stability are >= 5 ms apart
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];

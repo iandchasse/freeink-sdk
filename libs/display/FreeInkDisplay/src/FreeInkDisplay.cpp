@@ -203,7 +203,7 @@ void FreeInkDisplay::begin() {
     // the EPD power-enable) are always correct. Constructor pin arguments are
     // retained for source compatibility; the active profile supplies the wiring.
     const auto& d = BoardConfig::ACTIVE.display;
-    const EpdPins pins{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy, d.powerEnable};
+    const EpdPins pins{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy, d.powerEnable, d.busyPullDown};
     _bus.begin(pins, _driver->spiHz(), _driver->busyPolarity(), _driver->spiMiso(), _driver->coCs());
   }
 
