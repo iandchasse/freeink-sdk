@@ -22,6 +22,7 @@ class ChargeLadderDecoder {
     uint8_t debounceSamples;
     uint8_t completeStableSamples;
     uint16_t blinkDeltaMv;
+    uint8_t unknownHoldSamples = 0;  // 0 = an out-of-window reading keeps the state indefinitely
   };
 
   static State classify(const Params& p, int32_t mv) {
@@ -34,28 +35,38 @@ class ChargeLadderDecoder {
   }
 
   // Feed one reading; returns the reported state.
-  //  * Outside every window: keep the last state, and restart the runs.
+  //  * Outside every window: keep the last state, and restart the runs. After
+  //    unknownHoldSamples such readings in a row (when set), report Unknown.
   //  * Complete window: only time separates "charged" from a no-battery blink
   //    (two levels that both sit in the window), so report Complete only after
   //    completeStableSamples consecutive in-window readings, and NoBattery as
-  //    soon as the in-window readings have swung by blinkDeltaMv or more.
+  //    soon as the in-window readings have swung by blinkDeltaMv or more. The
+  //    first in-window reading can sit on the node's settling tail after a
+  //    state change, so the swing is measured from the second one.
   //  * Any state change needs debounceSamples agreeing readings.
   State feed(const Params& p, int32_t mv) {
     State target = classify(p, mv);
     if (target == State::Unknown) {
       completeRun_ = 0;
       candidateRun_ = 0;
+      if (unknownRun_ < UINT8_MAX) ++unknownRun_;
+      if (p.unknownHoldSamples != 0 && unknownRun_ >= p.unknownHoldSamples) {
+        state_ = State::Unknown;
+        candidate_ = State::Unknown;
+      }
       return state_;
     }
+    unknownRun_ = 0;
     if (target == State::Complete) {
-      if (completeRun_ == 0) {
+      if (completeRun_ < UINT8_MAX) ++completeRun_;
+      if (completeRun_ == 2) {
         completeMin_ = mv;
         completeMax_ = mv;
+      } else if (completeRun_ > 2) {
+        if (mv < completeMin_) completeMin_ = mv;
+        if (mv > completeMax_) completeMax_ = mv;
       }
-      if (completeRun_ < UINT8_MAX) ++completeRun_;
-      if (mv < completeMin_) completeMin_ = mv;
-      if (mv > completeMax_) completeMax_ = mv;
-      if (completeMax_ - completeMin_ >= static_cast<int32_t>(p.blinkDeltaMv)) {
+      if (completeRun_ >= 3 && completeMax_ - completeMin_ >= static_cast<int32_t>(p.blinkDeltaMv)) {
         target = State::NoBattery;
       } else if (completeRun_ < p.completeStableSamples) {
         candidateRun_ = 0;  // still a candidate: neither confirms nor changes the state
@@ -81,6 +92,7 @@ class ChargeLadderDecoder {
   State candidate_ = State::Unknown;
   uint8_t candidateRun_ = 0;
   uint8_t completeRun_ = 0;
+  uint8_t unknownRun_ = 0;
   int32_t completeMin_ = 0;
   int32_t completeMax_ = 0;
 };

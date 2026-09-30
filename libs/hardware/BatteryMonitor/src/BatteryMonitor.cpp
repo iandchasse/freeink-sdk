@@ -479,8 +479,7 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
     }
     if (BoardConfig::hasChargeStatusLadder()) {
       const BoardConfig::ChargeState state = chargeStatus();
-      status.chargingKnown =
-          state != BoardConfig::ChargeState::Unknown && state != BoardConfig::ChargeState::NoBattery;
+      status.chargingKnown = state != BoardConfig::ChargeState::Unknown && state != BoardConfig::ChargeState::NoBattery;
       status.charging = state == BoardConfig::ChargeState::Charging;
       bool externalKnown = false;
       status.externalPower = isExternalPowerPresent(&externalKnown);
@@ -625,7 +624,7 @@ bool BatteryMonitor::isBelowCutoff(bool* known, uint16_t* millivolts, const bool
   static uint32_t s_unknownSinceMs = 0;
   static bool s_unknownLogged = false;
 
-  const uint16_t cutoffMv = BoardConfig::ACTIVE.power.lowBatteryCutoffMv;
+  const uint16_t cutoffMv = BoardConfig::powerPolicy().lowBatteryCutoffMv;
   if (cutoffMv == 0 || !hasAdcBackend() || hasGaugeBackend() || hasM5Pm1Backend()) {
     if (known) *known = false;
     return false;
@@ -674,7 +673,7 @@ bool BatteryMonitor::isBelowCutoff(bool* known, uint16_t* millivolts, const bool
   }
   s_lastKnown = true;
   if (known) *known = true;
-  const uint16_t allowanceMv = radioOn ? BoardConfig::ACTIVE.power.cutoffRadioAllowanceMv : 0;
+  const uint16_t allowanceMv = radioOn ? BoardConfig::powerPolicy().cutoffRadioAllowanceMv : 0;
   const uint16_t thresholdMv = cutoffMv > allowanceMv ? cutoffMv - allowanceMv : 0;
   if (mv <= thresholdMv) {
     if (s_belowCount < UINT8_MAX) ++s_belowCount;
@@ -690,10 +689,71 @@ namespace {
 using ChargeDecoder = freeink::battery_detail::ChargeLadderDecoder<BoardConfig::ChargeLadderWindow>;
 std::atomic<uint8_t> g_chargeState{static_cast<uint8_t>(BoardConfig::ChargeState::Unknown)};
 std::atomic<bool> g_chargePollBusy{false};
+std::atomic<bool> g_chargeEverDecoded{false};
 ChargeDecoder g_chargeDecoder;
 bool g_chargeSampled = false;
 bool g_chargePinReady = false;
 uint32_t g_chargeLastSampleMs = 0;
+
+// Cross-check of a decoded Charging/Complete against the cell (boards with a
+// lowBatteryCutoffMv). A real charge lifts P+, so P+ at or below the cutoff that
+// does not rise over CHARGE_TREND_WINDOW_SAMPLES minutes means the ladder is
+// wrong (e.g. an unpowered charger whose status pins pull the node into the
+// charging window), and the state is published as OnBattery so the cutoff, the
+// awake ceiling and USB presence stop trusting it.
+constexpr uint32_t CHARGE_TREND_INTERVAL_MS = 60000;
+constexpr uint8_t CHARGE_TREND_WINDOW_SAMPLES = 5;
+bool g_trendSampled = false;
+uint32_t g_trendLastMs = 0;
+uint8_t g_trendSamples = 0;  // readings in the open window; 0 = none open
+uint16_t g_trendStartMv = 0;
+bool g_powerDisproved = false;
+bool g_powerDisprovedLogged = false;
+
+void resetChargeTrend() {
+  g_trendSamples = 0;
+  g_powerDisproved = false;
+}
+
+// Called with each decoded state; true while the cell reading disproves the
+// decoded external power.
+bool externalPowerDisproved(const BoardConfig::ChargeState state, const uint32_t now) {
+  using BoardConfig::ChargeState;
+  const uint16_t cutoffMv = BoardConfig::powerPolicy().lowBatteryCutoffMv;
+  if (cutoffMv == 0 || (state != ChargeState::Charging && state != ChargeState::Complete)) {
+    resetChargeTrend();
+    return false;
+  }
+  if (g_trendSampled && now - g_trendLastMs < CHARGE_TREND_INTERVAL_MS) return g_powerDisproved;
+  g_trendSampled = true;
+  g_trendLastMs = now;
+  const BatteryMonitor battery;
+  const uint16_t mv = battery.readMillivoltsAveraged(16);
+  if (mv > cutoffMv || mv < BatteryMonitor::CELL_PRESENT_MIN_MV) {
+    resetChargeTrend();  // above the cutoff, or no cell to protect
+    return false;
+  }
+  if (g_powerDisproved) return true;
+  if (g_trendSamples == 0) {
+    g_trendSamples = 1;
+    g_trendStartMv = mv;
+    return false;
+  }
+  if (++g_trendSamples <= CHARGE_TREND_WINDOW_SAMPLES) return false;
+  if (mv > g_trendStartMv) {
+    // Rising: a real charge. Judge the next window from here.
+    g_trendSamples = 1;
+    g_trendStartMv = mv;
+    return false;
+  }
+  g_powerDisproved = true;
+  if (!g_powerDisprovedLogged) {
+    g_powerDisprovedLogged = true;
+    LOG_ERR("BAT", "Charge status %u but P+ stayed at %u mV (cutoff %u mV) for %u min; treating it as on battery",
+            static_cast<unsigned>(state), mv, cutoffMv, static_cast<unsigned>(CHARGE_TREND_WINDOW_SAMPLES));
+  }
+  return true;
+}
 }  // namespace
 
 void BatteryMonitor::pollChargeStatus() {
@@ -716,14 +776,21 @@ void BatteryMonitor::pollChargeStatus() {
     const uint32_t mv = sum / n;
     g_chargeSampled = true;
     g_chargeLastSampleMs = now;
-    const ChargeDecoder::Params params = {ladder.windows, ladder.count, ladder.debounceSamples,
-                                          ladder.completeStableSamples, ladder.blinkDeltaMv};
+    const ChargeDecoder::Params params = {ladder.windows,         ladder.count,
+                                          ladder.debounceSamples, ladder.completeStableSamples,
+                                          ladder.blinkDeltaMv,    ladder.unknownHoldSamples};
     const BoardConfig::ChargeState previous = g_chargeDecoder.state();
     const BoardConfig::ChargeState state = g_chargeDecoder.feed(params, static_cast<int32_t>(mv));
-    g_chargeState.store(static_cast<uint8_t>(state));
+    if (state != BoardConfig::ChargeState::Unknown) g_chargeEverDecoded.store(true);
+    const bool disproved = externalPowerDisproved(state, now);
+    g_chargeState.store(static_cast<uint8_t>(disproved ? BoardConfig::ChargeState::OnBattery : state));
     if (state != previous) {
-      LOG_DBG("BAT", "Charge status %u -> %u at %lu mV", static_cast<unsigned>(previous),
-              static_cast<unsigned>(state), static_cast<unsigned long>(mv));
+      LOG_DBG("BAT", "Charge status %u -> %u at %lu mV", static_cast<unsigned>(previous), static_cast<unsigned>(state),
+              static_cast<unsigned long>(mv));
+      if (state == BoardConfig::ChargeState::Unknown) {
+        LOG_INF("BAT", "Charge-status ladder outside every window for %u readings; no longer trusting its last state",
+                static_cast<unsigned>(ladder.unknownHoldSamples));
+      }
     }
   }
   g_chargePollBusy.store(false);
@@ -731,6 +798,10 @@ void BatteryMonitor::pollChargeStatus() {
 
 BoardConfig::ChargeState BatteryMonitor::chargeStatus() {
   return static_cast<BoardConfig::ChargeState>(g_chargeState.load());
+}
+
+bool BatteryMonitor::chargeStatusLost() {
+  return g_chargeEverDecoded.load() && chargeStatus() == BoardConfig::ChargeState::Unknown;
 }
 
 bool BatteryMonitor::readM5Pm1Status(Status& status) const {

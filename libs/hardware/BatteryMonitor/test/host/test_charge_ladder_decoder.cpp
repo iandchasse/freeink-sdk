@@ -31,7 +31,7 @@ constexpr Window WINDOWS[] = {{2601, 0xFFFF, State::ExternalIdle},
                               {1800, 2600, State::OnBattery},
                               {800, 1350, State::Charging},
                               {350, 700, State::Complete}};
-constexpr Decoder::Params PARAMS = {WINDOWS, 4, 2, 8, 70};
+constexpr Decoder::Params PARAMS = {WINDOWS, 4, 2, 8, 70, 30};
 
 State feedN(Decoder& d, int mv, int n) {
   State s = State::Unknown;
@@ -104,12 +104,14 @@ void testNoBatteryBlink() {
     CHECK(d.feed(PARAMS, (i / 3) % 2 == 0 ? 550 : 415) == State::NoBattery);  // never reports Complete
   }
 
-  // With ST mixed in, the smallest swing is 508 <-> 415 (93 mV).
+  // With ST mixed in, the smallest swing is 508 <-> 415 (93 mV). The first
+  // in-window sample only starts the run; the swing counts from the second.
   Decoder e;
   CHECK(feedN(e, 1115, 2) == State::Charging);
   CHECK(e.feed(PARAMS, 508) == State::Charging);
   CHECK(e.feed(PARAMS, 415) == State::Charging);
-  CHECK(e.feed(PARAMS, 508) == State::NoBattery);
+  CHECK(e.feed(PARAMS, 508) == State::Charging);  // swing seen: NoBattery candidate
+  CHECK(e.feed(PARAMS, 415) == State::NoBattery);
 
   // The ST step alone (550 <-> 508, 42 mV) is not a blink.
   Decoder f;
@@ -117,6 +119,54 @@ void testNoBatteryBlink() {
   for (int i = 0; i < 7; ++i) CHECK(f.feed(PARAMS, i % 2 == 0 ? 550 : 508) == State::Charging);
   CHECK(f.feed(PARAMS, 550) == State::Charging);
   CHECK(f.feed(PARAMS, 508) == State::Complete);
+}
+
+void testSettlingTailIsNotABlink() {
+  // After STDBY asserts, the node relaxes toward ~550 mV (tau ~17 ms); a 1 Hz sample
+  // can catch the tail inside the window on the way down.
+  Decoder d;
+  CHECK(feedN(d, 1115, 2) == State::Charging);
+  CHECK(d.feed(PARAMS, 680) == State::Charging);
+  CHECK(feedN(d, 550, 10) == State::Complete);
+
+  Decoder e;
+  CHECK(feedN(e, 2200, 3) == State::OnBattery);
+  CHECK(e.feed(PARAMS, 690) == State::OnBattery);
+  CHECK(feedN(e, 550, 10) == State::Complete);
+}
+
+void testUnknownHoldExpires() {
+  // A reading stuck in a gap between windows drops the last state after the hold.
+  Decoder d;
+  CHECK(feedN(d, 1115, 2) == State::Charging);
+  CHECK(feedN(d, 1500, 29) == State::Charging);
+  CHECK(d.feed(PARAMS, 1500) == State::Unknown);
+  CHECK(feedN(d, 1500, 10) == State::Unknown);
+  // A later clean reading decodes again after the usual debounce.
+  CHECK(d.feed(PARAMS, 2200) == State::Unknown);
+  CHECK(d.feed(PARAMS, 2200) == State::OnBattery);
+
+  // A short excursion keeps the state, and any in-window reading restarts the count.
+  Decoder e;
+  CHECK(feedN(e, 1115, 2) == State::Charging);
+  CHECK(feedN(e, 1500, 5) == State::Charging);
+  CHECK(e.feed(PARAMS, 1115) == State::Charging);
+  CHECK(feedN(e, 1500, 29) == State::Charging);
+
+  // The unplug transient (a sample or two in the gap before the on-battery level)
+  // is unaffected.
+  Decoder f;
+  CHECK(feedN(f, 1115, 2) == State::Charging);
+  CHECK(f.feed(PARAMS, 1500) == State::Charging);
+  CHECK(f.feed(PARAMS, 2200) == State::Charging);
+  CHECK(f.feed(PARAMS, 2200) == State::OnBattery);
+
+  // unknownHoldSamples 0 keeps the state indefinitely.
+  constexpr Decoder::Params keep = {WINDOWS, 4, 2, 8, 70, 0};
+  Decoder g;
+  for (int i = 0; i < 2; ++i) g.feed(keep, 1115);
+  for (int i = 0; i < 100; ++i) g.feed(keep, 1500);
+  CHECK(g.state() == State::Charging);
 }
 
 void testSparseSamplesCannotFakeComplete() {
@@ -135,6 +185,8 @@ int main() {
   testUnknownBandKeepsState();
   testCompleteNeedsStability();
   testNoBatteryBlink();
+  testSettlingTailIsNotABlink();
+  testUnknownHoldExpires();
   testSparseSamplesCannotFakeComplete();
   std::printf("%d checks, %d failed\n", checksRun, checksFailed);
   return checksFailed == 0 ? 0 : 1;

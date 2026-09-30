@@ -328,6 +328,25 @@
 #define FREEINK_CAP_NET_TLS13 0
 #endif
 #endif
+// Profile-data mechanisms (see the "Optional profile fields" table in the README)
+// that only the devices setting that data compile in. With a flag at 0 the
+// matching accessor below folds to false/0, so the code and its statics drop out.
+//   ADC_LADDERS:   InputStyle::AdcLadders key decoding (BoardProfile::adcLadders)
+//   CHARGE_LADDER: the analog charge-status ladder (BoardProfile::chargeLadder)
+//   POWER_POLICY:  the PowerConfig policy fields read through powerPolicy()
+//   I2C_RECOVERY:  SensorsConfig::i2cBusRecovery (stuck-bus recovery, sleep release)
+#ifndef FREEINK_CAP_ADC_LADDERS
+#define FREEINK_CAP_ADC_LADDERS (FREEINK_DEVICE_SILKSCREEN)
+#endif
+#ifndef FREEINK_CAP_CHARGE_LADDER
+#define FREEINK_CAP_CHARGE_LADDER (FREEINK_DEVICE_SILKSCREEN)
+#endif
+#ifndef FREEINK_CAP_POWER_POLICY
+#define FREEINK_CAP_POWER_POLICY (FREEINK_DEVICE_SILKSCREEN)
+#endif
+#ifndef FREEINK_CAP_I2C_RECOVERY
+#define FREEINK_CAP_I2C_RECOVERY (FREEINK_DEVICE_SILKSCREEN)
+#endif
 
 // Place the facade framebuffer(s) in PSRAM (heap, MALLOC_CAP_SPIRAM) instead of
 // static DRAM .bss. Default on for M5Paper v1.1: the classic ESP32 has tight
@@ -605,7 +624,9 @@ struct ChargeLadderWindow {
 // samples; readings outside every window keep the last state. Complete is
 // reported only after completeStableSamples consecutive in-window samples, and
 // in-window readings that swing by blinkDeltaMv or more report NoBattery (a
-// charger blinking between two states with no cell).
+// charger blinking between two states with no cell). The first in-window
+// sample after entering the Complete window may sit on the node's settling tail,
+// so the swing is measured from the second one.
 struct ChargeStatusLadder {
   int8_t pin = PIN_UNASSIGNED;
   uint8_t count = 0;
@@ -616,6 +637,9 @@ struct ChargeStatusLadder {
   uint8_t completeStableSamples = 8;
   uint16_t blinkDeltaMv = 70;
   uint8_t oversample = 16;
+  // Consecutive readings outside every window after which the last state is
+  // dropped and the ladder reports Unknown again. 0 = keep it indefinitely.
+  uint8_t unknownHoldSamples = 0;
 };
 
 // Per-pin levels a board needs outside any driver's control. `boot` is applied
@@ -673,6 +697,8 @@ struct TouchConfig {
   // `fallbackController` answers, touch is switched off for the session
   // (`controller` becomes None, so hasTouch() is false) and the result is kept in
   // RTC memory, so deep-sleep wakes skip the probe; a cold boot probes again.
+  // Without it, a board whose controllers do not answer keeps `controller` and
+  // caches nothing.
   bool optional = false;
   // Hardware reset before the first transaction: `reset` LOW for at least
   // resetPulseMs, then HIGH for at least resetSettleMs. 0 = the controller's
@@ -736,7 +762,9 @@ struct FrontlightConfig {
   // LED supply over-voltage monitor: an ADC pin sensing the LED rail through a
   // divider, read every 100 ms while lit. V_LED = mV * monitorScaleX1000 / 1000.
   // Above monitorTripMv the light goes dark and FrontlightManager::fault()
-  // latches until the light is switched on again. Off when any is unset/0.
+  // latches: the light stays dark at any brightness, on() included, until it is
+  // switched off (brightness 0) or clearFault() is called; the next non-zero
+  // brightness then runs the full enable sequence. Off when any is unset/0.
   int8_t monitorAdc = PIN_UNASSIGNED;
   uint16_t monitorScaleX1000 = 0;
   uint16_t monitorTripMv = 0;
@@ -891,10 +919,20 @@ struct PowerConfig {
   // network client traffic, including screens that hold auto-sleep off and the
   // "never" timeout. Minutes, 0 = no ceiling.
   uint8_t awakeCeilingMin = 0;
-  // Network screens switch the radio off as soon as their work has ended (an
-  // update check with no update, or a failed one), instead of when the user
-  // leaves them.
+  // Screens whose work has ended stop spinning the loop, and network screens
+  // switch the radio off (or back to modem sleep where a later step needs it)
+  // as soon as their work has ended, instead of when the user leaves them.
   bool radioOffWhenIdle = false;
+  // After a power-button wake, the consumer sleeps again on battery when no key,
+  // touch or tilt input arrives within this many seconds. 0 = off.
+  uint16_t wakeNoInputTimeoutS = 0;
+  // Seconds the consumer stays on a dead-end storage-error screen (no card) on
+  // battery before it sleeps. 0 = the normal sleep timeout.
+  uint8_t storageErrorSleepS = 0;
+  // On battery, the longest the consumer stays awake with no key, touch or tilt
+  // input, whatever else keeps it awake (network client traffic included).
+  // Minutes, 0 = no cap.
+  uint8_t awakeInputCapMin = 0;
 };
 
 // Panel rows/columns the device's bezel physically overlaps, in the panel's
@@ -2152,10 +2190,13 @@ constexpr BoardProfile SILKSCREEN = {
     //   resets in a row, sleep at once.
     // - Firmware writes need 3.6 V on battery. 15 min without input or client traffic
     //   on battery ends any screen, and network screens drop the radio when done.
+    // - On battery: a wake with no input sleeps after 3 min, the SD-error screen after
+    //   60 s, and 60 min without input ends any screen, client traffic or not.
     // {latch0, latch1, chargeEnable, chargeEnableActiveHigh, lowBatteryCutoffMv,
     //  releaseWaitMaxMs, earlyWakeDecision, abnormalResetLimit, cutoffRadioAllowanceMv,
-    //  firmwareUpdateMinMv, awakeCeilingMin, radioOffWhenIdle}
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400, 5000, true, 3, 100, 3600, 15, true},
+    //  firmwareUpdateMinMv, awakeCeilingMin, radioOffWhenIdle, wakeNoInputTimeoutS,
+    //  storageErrorSleepS, awakeInputCapMin}
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400, 5000, true, 3, 100, 3600, 15, true, 180, 60, 60},
     0,      // displayControllerVariant: SSD1677, not probed
     {},     // viewableInsets: X4 default until the bezel is measured
     false,  // batteryChargeStatusActiveHigh: unused (no digital STAT)
@@ -2195,6 +2236,10 @@ constexpr BoardProfile SILKSCREEN = {
     // chargeLadder: USB_STAT IO9 (§3.7, §13.1): > 2.6 V charger idle, 1.8-2.6 V on
     // battery, 0.8-1.35 V charging, 0.35-0.7 V complete (only once stable for 8
     // samples; a swing of >= 70 mV there is the no-battery blink). 1 Hz, 0.5 s settle.
+    // A reading stuck outside every window for 30 s (the on-battery level is not yet
+    // measured, and could land in a gap) drops the last state, so the cutoff and the
+    // awake ceiling fall back to the cell reading instead of trusting a stale
+    // "external power".
     {9,
      4,
      {{2601, 0xFFFF, ChargeState::ExternalIdle},
@@ -2206,7 +2251,8 @@ constexpr BoardProfile SILKSCREEN = {
      2,
      8,
      70,
-     16}};
+     16,
+     30}};
 
 static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
@@ -2214,6 +2260,14 @@ static_assert(40000000u / SILKSCREEN.frontlight.pwmFrequency >= (1u << SILKSCREE
               "Silkscreen front-light LEDC resolution is not reachable from the 40 MHz XTAL at this frequency");
 static_assert(SILKSCREEN.input.power >= 0 && SILKSCREEN.input.power <= 21,
               "Silkscreen wakes only by ext1 on the power button, which must be an RTC GPIO (0-21, §13.1)");
+// J4 touch VDD is unswitched (§8): a fitted tail must get its sleep command, which
+// needs the touch code. A board with no tail loses nothing, since the probe caches
+// it as absent.
+static_assert(FREEINK_CAP_TOUCH || !FREEINK_DEVICE_SILKSCREEN || !SILKSCREEN.touch.hibernateInSleep,
+              "Silkscreen needs FREEINK_CAP_TOUCH: a fitted touch tail must be hibernated before deep sleep");
+// The eight keys exist only as ADC-ladder data.
+static_assert(FREEINK_CAP_ADC_LADDERS || !FREEINK_DEVICE_SILKSCREEN,
+              "Silkscreen needs FREEINK_CAP_ADC_LADDERS: its keys are two ADC ladders");
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
@@ -2532,7 +2586,7 @@ inline void holdPowerRails() {
     }
     gpio_hold_dis(static_cast<gpio_num_t>(p.pin));  // the previous sleep's hold, after the boot level is set
   }
-  if (ACTIVE.sdmmc.parkLowWhenOff && ACTIVE.sdmmc.busWidth != 0) {
+  if (FREEINK_SD_SDMMC && ACTIVE.sdmmc.parkLowWhenOff && ACTIVE.sdmmc.busWidth != 0) {
     parkSdmmcBus();
   }
   for (const int8_t pin : {ACTIVE.power.latch0, ACTIVE.power.latch1}) {
@@ -2593,7 +2647,28 @@ inline bool hasTempHumidity() { return ACTIVE.sensors.tempHumidityAddr != 0; }
 inline bool hasImu() { return ACTIVE.sensors.imuAddr != 0; }
 inline bool hasLeds() { return ACTIVE.leds.data != PIN_UNASSIGNED && ACTIVE.leds.count > 0; }
 inline bool hasChargeStatusLadder() {
+#if FREEINK_CAP_CHARGE_LADDER
   return ACTIVE.chargeLadder.pin != PIN_UNASSIGNED && ACTIVE.chargeLadder.count > 0;
+#else
+  return false;
+#endif
 }
+// The keys are InputStyle::AdcLadders data (false without FREEINK_CAP_ADC_LADDERS).
+inline bool hasAdcLadders() {
+#if FREEINK_CAP_ADC_LADDERS
+  return ACTIVE.inputStyle == InputStyle::AdcLadders;
+#else
+  return false;
+#endif
+}
+// Read the PowerConfig policy fields (every field after chargeEnableActiveHigh)
+// through this: without FREEINK_CAP_POWER_POLICY it is an all-default constant,
+// so each policy folds to off at compile time. The latches and the charge enable
+// stay on ACTIVE.power.
+#if FREEINK_CAP_POWER_POLICY
+inline const PowerConfig& powerPolicy() { return ACTIVE.power; }
+#else
+constexpr PowerConfig powerPolicy() { return PowerConfig{}; }
+#endif
 
 }  // namespace BoardConfig

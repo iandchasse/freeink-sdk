@@ -127,12 +127,25 @@ class InputManager {
   // controller found, one best-effort hibernate goes to the primary address in
   // case a tail is fitted but did not answer the probe. A GT911 found at boot
   // gets its sleep command with INT held LOW through sleep. Before
-  // startTouch() has run, nothing is sent after a deep-sleep wake (the
-  // controller is as the last sleep entry left it); after any other reset the
-  // primary FocalTech address gets the one best-effort write. Call from the
-  // sleeping task before the I2C bus is released.
+  // startTouch() has run: after a deep-sleep wake a FocalTech controller is as
+  // the last sleep entry left it and gets nothing, while a GT911 the RTC-cached
+  // probe names gets its sleep command again (an S3 digital pad drops the INT
+  // hold at the wake, so INT floated), and INT held LOW even if that command is
+  // not answered; after any other reset the primary FocalTech address gets the
+  // one best-effort write. Call from the sleeping task before the I2C bus is
+  // released.
   enum class TouchSleepResult : uint8_t { NotApplicable, Asleep, NoAnswer };
   TouchSleepResult prepareTouchForSleep();
+  // GPIO-only part of prepareTouchForSleep(), for a sleep entry before
+  // startTouch() that sends no command (a release wake): a GT911 the RTC-cached
+  // probe names gets INT held LOW again for the sleep.
+  void holdTouchIntForSleep();
+  // For a sleep entry that must not trust the controller's state and runs before
+  // the probe (a reset-loop sleep): reset a FocalTech primary controller
+  // (TouchConfig::resetPulseMs/resetSettleMs), then send hibernate once. Bounded:
+  // the reset and settle time plus one write. NotApplicable without
+  // hibernateInSleep or a FocalTech primary.
+  TouchSleepResult resetAndHibernateTouch();
 
   // True only while a GT911 controller is present. Other touch controllers
   // retain their existing single-contact contract.
@@ -298,6 +311,13 @@ class InputManager {
   // is released or not a clean key level). On boards without an ADC ladder both
   // samples report raw = -1, button = -1.
   void readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2);
+
+  // InputStyle::AdcLadders: true when either ladder reads anything but released
+  // (a key, a chord or a press edge), by the ladder decoder's own released rule,
+  // from one sample per ladder (one conversion while released above
+  // releasedMinMv). A cheap wake test for idle polling, not a decode. False on
+  // other boards.
+  bool adcLadderContact();
 
  private:
   static ButtonHook s_buttonHook;
@@ -471,11 +491,13 @@ class InputManager {
                                                  // the release-edge frame, cleared in
                                                  // serviceTouch() once the contact is over
 
+#if FREEINK_CAP_ADC_LADDERS
   // InputStyle::AdcLadders debounce, one per BoardProfile::adcLadders ladder.
   freeink::input_detail::AdcLadderDebounce ladderDebounce[2];
   unsigned long ladderSampledAt = 0;
   bool ladderSampled = false;
   static constexpr unsigned long LADDER_MIN_POLL_MS = 5;  // decodes that count toward stability are >= 5 ms apart
+#endif
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];

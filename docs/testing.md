@@ -11,7 +11,12 @@ sh libs/ui/FreeInkUI/test/host/run.sh
 sh libs/book/FreeInkBook/test/host/run.sh
 sh libs/book/ContentProtection/test/host/run.sh
 sh libs/hardware/InputManager/test/host/run.sh
+sh libs/hardware/BatteryMonitor/test/host/run.sh
 ```
+
+The BatteryMonitor suite covers the analog charge-status ladder decoder
+(`ChargeLadderDecoder.h`): window classification, debounce, the no-battery
+blink, the settling tail and the unknown-band hold.
 
 The book suite also needs `zip`. It uses `sips` or ImageMagick's `convert` for
 JPEG fixtures and optionally Pillow for progressive JPEG fixtures; the related

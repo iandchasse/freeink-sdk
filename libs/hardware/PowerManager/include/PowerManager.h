@@ -53,6 +53,15 @@ class PowerManager {
   // parkLowWhenOff SDMMC bus LOW.
   static void powerDownRailsForSleep();
 
+  // Put an SSD1677 panel on an always-on rail into deep sleep without its driver,
+  // for a sleep entry that must not run the display code (a reset loop): pulse
+  // RESET (analog and clock off, the power-on state), wait for BUSY (bounded),
+  // then send deep sleep 0x10 / 0x03 bit-banged on the display pins, leaving CS
+  // HIGH and SCLK/MOSI/DC LOW. Returns false, doing nothing, unless the profile
+  // declares an SSD1677 with RESET, CS, SCLK, MOSI and DC and no display rail
+  // switch (a switched rail is simply cut).
+  static bool sleepPanelWithoutDriver();
+
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not
   // return — the chip resets on wake.
   [[noreturn]] static void deepSleep();

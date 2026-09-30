@@ -99,7 +99,7 @@ bool PowerManager::waitForPowerButtonRelease() {
 
   pinMode(pin, powerPinMode());
   const int pressedLevel = activeHigh ? HIGH : LOW;
-  const uint16_t maxMs = BoardConfig::ACTIVE.power.releaseWaitMaxMs;
+  const uint16_t maxMs = BoardConfig::powerPolicy().releaseWaitMaxMs;
   const uint32_t start = millis();
   while (digitalRead(pin) == pressedLevel) {
     if (maxMs != 0 && millis() - start >= maxMs) return false;
@@ -158,7 +158,7 @@ void PowerManager::powerDownRailsForSleep() {
   // deep sleep, and a bus line that floats HIGH back-feeds the gated card through
   // its pull-ups. The gate itself is re-held just below; holdPowerRails() releases
   // the bus at boot.
-  if (b.sdmmc.parkLowWhenOff && b.sdmmc.busWidth != 0) {
+  if (FREEINK_SD_SDMMC && b.sdmmc.parkLowWhenOff && b.sdmmc.busWidth != 0) {
     BoardConfig::parkSdmmcBus();
     for (const int8_t pin : {b.sdmmc.clk, b.sdmmc.cmd, b.sdmmc.d0, b.sdmmc.d1, b.sdmmc.d2, b.sdmmc.d3}) {
       if (pin >= 0) gpio_hold_en(static_cast<gpio_num_t>(pin));
@@ -190,6 +190,69 @@ void PowerManager::powerDownRailsForSleep() {
         break;
     }
   }
+}
+
+namespace {
+// One SPI mode-0 byte, MSB first, on plain GPIOs (sleepPanelWithoutDriver()).
+void bitBangByte(const gpio_num_t sclk, const gpio_num_t mosi, const uint8_t value) {
+  for (uint8_t mask = 0x80; mask != 0; mask >>= 1) {
+    gpio_set_level(mosi, (value & mask) != 0 ? 1 : 0);
+    delayMicroseconds(1);
+    gpio_set_level(sclk, 1);
+    delayMicroseconds(1);
+    gpio_set_level(sclk, 0);
+  }
+}
+
+void driveLevel(const int8_t pin, const uint8_t level) {
+  const auto g = static_cast<gpio_num_t>(pin);
+  gpio_hold_dis(g);
+  gpio_set_level(g, level);
+  pinMode(pin, OUTPUT);
+  digitalWrite(pin, level);
+}
+}  // namespace
+
+bool PowerManager::sleepPanelWithoutDriver() {
+  const BoardConfig::DisplayPins& d = BoardConfig::ACTIVE.display;
+  if (BoardConfig::ACTIVE.displayController != BoardConfig::DisplayController::SSD1677 || d.powerEnable >= 0 ||
+      d.rst < 0 || d.cs < 0 || d.sclk < 0 || d.mosi < 0 || d.dc < 0) {
+    return false;
+  }
+  constexpr uint8_t SSD1677_DEEP_SLEEP = 0x10;
+  constexpr uint8_t SSD1677_DEEP_SLEEP_MODE_2 = 0x03;
+  constexpr uint32_t RESET_LOW_MS = 10;
+  constexpr uint32_t RESET_SETTLE_MS = 10;
+  constexpr uint32_t BUSY_WAIT_MAX_MS = 100;
+  driveLevel(d.cs, HIGH);
+  driveLevel(d.sclk, LOW);
+  driveLevel(d.mosi, LOW);
+  driveLevel(d.dc, LOW);
+  // A hardware reset returns the controller to its power-on state, analog and
+  // clock off, whatever a crash left running; the image stays on the glass.
+  driveLevel(d.rst, HIGH);
+  digitalWrite(d.rst, LOW);
+  delay(RESET_LOW_MS + 1);
+  digitalWrite(d.rst, HIGH);
+  delay(RESET_SETTLE_MS + 1);
+  if (d.busy >= 0) {
+    pinMode(d.busy, d.busyPullDown ? INPUT_PULLDOWN : INPUT);
+    const uint32_t start = millis();
+    while (digitalRead(d.busy) == HIGH && millis() - start < BUSY_WAIT_MAX_MS) delay(1);
+  }
+  const auto cs = static_cast<gpio_num_t>(d.cs);
+  const auto dc = static_cast<gpio_num_t>(d.dc);
+  const auto sclk = static_cast<gpio_num_t>(d.sclk);
+  const auto mosi = static_cast<gpio_num_t>(d.mosi);
+  gpio_set_level(cs, 0);
+  gpio_set_level(dc, 0);
+  bitBangByte(sclk, mosi, SSD1677_DEEP_SLEEP);
+  gpio_set_level(dc, 1);
+  bitBangByte(sclk, mosi, SSD1677_DEEP_SLEEP_MODE_2);
+  gpio_set_level(cs, 1);
+  gpio_set_level(mosi, 0);
+  gpio_set_level(dc, 0);
+  return true;
 }
 
 void PowerManager::deepSleep() {

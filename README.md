@@ -361,6 +361,10 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky, Murphy, and Paper Mono |
 | `FREEINK_CAP_LED` | RGB LEDs (LedManager: addressable chains, or the Paper Mono's discrete PMIC/expander-driven LED) | on for M5 and Paper Mono |
 | `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |
+| `FREEINK_CAP_ADC_LADDERS` | `InputStyle::AdcLadders` key decoding (`BoardConfig::hasAdcLadders()`) | on for Silkscreen |
+| `FREEINK_CAP_CHARGE_LADDER` | the analog charge-status ladder (`BoardConfig::hasChargeStatusLadder()`, `BatteryMonitor::pollChargeStatus()`) | on for Silkscreen |
+| `FREEINK_CAP_POWER_POLICY` | the `PowerConfig` policy fields, read through `BoardConfig::powerPolicy()` (all zero without it) | on for Silkscreen |
+| `FREEINK_CAP_I2C_RECOVERY` | `SensorsConfig::i2cBusRecovery` (stuck-bus recovery, sleep release in `SharedI2c.h`) | on for Silkscreen |
 
 **Other flags:**
 
@@ -824,7 +828,18 @@ automatically as a dependency of `SDCardManager`.
    today's behaviour, so every existing positional initializer compiles unchanged
    and every other board behaves as before. Generic code reads the field; it never
    keys off the device. The fields below were added this way (for Silkscreen) and
-   are available to any board.
+   are available to any board; a board that sets the ladder, power-policy or
+   bus-recovery fields also needs the matching `FREEINK_CAP_*` flag (on by default
+   for its device).
+
+   A few generic changes from the same work apply to every board, as fixes:
+   the EPD bus presets CS HIGH before SPI starts and RESET HIGH before its output
+   is enabled; `holdRailOff()` presets a rail enable's level before enabling the
+   output; every SDK ADC read takes the `SharedAdc.h` lock, which fixes a race
+   in which a render-task battery read made a concurrent key-ladder read return
+   0 (a phantom RIGHT/DOWN on the Xteink ladders) or a battery sample read 0 mV;
+   and touch drivers on the sensor-bus pins run at `SensorsConfig::i2cHz`
+   (`busHz()`), which is the clock every existing board already used.
 
 ### Optional profile fields (all defaulted)
 
@@ -837,15 +852,15 @@ Leave a field out and the board keeps the old behaviour.
 | `SdmmcPins` | `parkLowWhenOff` (false), `powerOffMs` (20), `powerOnSettleMs` (20) | Real power cycle around the mount: bus LOW with pulls off before the gate goes off, off for `powerOffMs`, settle after power-on. The bus is also parked at boot, on a failed mount, on shutdown and held LOW through deep sleep. |
 | `InputPins` | `powerExternalPull` (false) | The power button has its own pull: read it as plain `INPUT` and arm the wake with both internal pulls off (digital and RTC). |
 | `BoardProfile` | `InputStyle::AdcLadders` + `adcLadders` (empty) | Up to two resistor-ladder ADC pins, per-key mV windows; a reading outside every window (chord, edge of a press) is ignored; `stableSamples` debounce. |
-| `BoardProfile` | `chargeLadder` (none) | A charger's status pins encoded on one ADC pin: windows per `ChargeState`, slow sampling, debounce, "complete" only when stable, no-battery blink detection. Drives `BatteryMonitor::chargeStatus()` and USB presence. |
+| `BoardProfile` | `chargeLadder` (none) | A charger's status pins encoded on one ADC pin: windows per `ChargeState`, slow sampling, debounce, "complete" only when stable, no-battery blink detection (measured from the second in-window sample, past the node's settling tail). `unknownHoldSamples` (0 = forever) drops the last state after that many readings outside every window (`BatteryMonitor::chargeStatusLost()`). With a `lowBatteryCutoffMv`, Charging/Complete while `P+` stays at or below the cutoff without rising for 5 min is reported as OnBattery. Drives `BatteryMonitor::chargeStatus()` and USB presence. |
 | `BoardProfile` | `parkedPins[8]` (empty) | `PinPark` boot and sleep levels (`Low`, `High`, `InputNoPull`) for pins no driver owns then: applied by `holdPowerRails()` at boot and held through sleep by `powerDownRailsForSleep()`. |
-| `TouchConfig` | `optional`, `fallbackController`/`fallbackAddr` (off) | Probe the panel at boot, then a second controller; with neither, `controller` becomes `None` for the session. The result is cached in RTC memory and trusted after a deep-sleep wake only. |
+| `TouchConfig` | `optional`, `fallbackController`/`fallbackAddr` (off) | Probe the panel at boot, then `fallbackController`/`fallbackAddr` if set. With `optional`, a board where neither answers switches to controller `None` for the session and caches the result in RTC memory (trusted after a deep-sleep wake only). Without `optional`, the primary controller is kept and nothing is cached. |
 | `TouchConfig` | `resetPulseMs`/`resetSettleMs` (0) | Hardware reset before the first transaction (FT5x06 path). |
-| `TouchConfig` | `hibernateInSleep` (false) | `InputManager::prepareTouchForSleep()` sends the controller's sleep command (FocalTech `0xA5 = 0x03` with a reset-and-retry on NACK; GT911 `0x8040 = 0x05` with `INT` held LOW). For a touch panel on an always-on rail. |
+| `TouchConfig` | `hibernateInSleep` (false) | `InputManager::prepareTouchForSleep()` sends the controller's sleep command (FocalTech `0xA5 = 0x03` with a reset-and-retry on NACK; GT911 `0x8040 = 0x05` with `INT` held LOW). A GT911 cached by the probe is put back to sleep (or its `INT` re-held, `holdTouchIntForSleep()`) on a sleep entry before the probe, since an S3 digital pad drops its hold at the wake. `resetAndHibernateTouch()` resets a FocalTech controller first, for a sleep entry that cannot trust its state. For a touch panel on an always-on rail. |
 | `TouchConfig` | `buttonsAlongsideTouch` (false) | The board keeps its keys with touch fitted: `BoardConfig::hasFrontButtons()` stays true. |
 | `FrontlightConfig` | `colorSelectGpio`, `colorSelectWarmHigh` (none, true) | One GPIO picks the warm or cool string (fixed choice at warmth ≥ 50 %, never PWM'd), switched only while the light is dark. |
 | `FrontlightConfig` | `enablePulseUs`, `offDwellMs` (0) | Enable-gated driver (e.g. TPS923610 `ADIM`): dark for `offDwellMs` before each enable, then the pin HIGH for `enablePulseUs`, then the PWM carrier. |
-| `FrontlightConfig` | `monitorAdc`, `monitorScaleX1000`, `monitorTripMv` (off) | LED-rail over-voltage monitor every 100 ms while lit; above the trip the light goes dark and `FrontlightManager::fault()` latches until the light is switched on again. |
+| `FrontlightConfig` | `monitorAdc`, `monitorScaleX1000`, `monitorTripMv` (off) | LED-rail over-voltage monitor every 100 ms while lit; above the trip the light goes dark and `FrontlightManager::fault()` latches: the light stays dark at any brightness, `on()` included, until it is switched off (brightness 0) or `clearFault()` is called; the next non-zero brightness then runs the full enable sequence. The latch is RAM only, so a consumer that restores the light at boot should also clear its saved "on". |
 | `SensorsConfig` | `rtcLowPower` (false) | DS3231: clear `EN32KHZ`; PCF85063-class: `CLKOUT` off. |
 | `SensorsConfig` | `rtcFallbackType`/`rtcFallbackAddr` (none) | Second RTC footprint, probed when the first does not answer. |
 | `SensorsConfig` | `rtcResyncWhenInvalid` (false) | No RTC backup cell: the consumer re-fetches the time whenever the RTC reports it invalid. |
@@ -853,11 +868,14 @@ Leave a field out and the board keeps the old behaviour.
 | `PowerConfig` | `lowBatteryCutoffMv` (0), `cutoffRadioAllowanceMv` (0) | `BatteryMonitor::isBelowCutoff(known, mv, radioOn)`: 3 consecutive once-a-second readings at or below the cutoff (less the allowance while the radio is on), never on external power or with no cell. |
 | `PowerConfig` | `releaseWaitMaxMs` (0 = unbounded) | A power button still held after this long at sleep entry: sleep until its release instead of spinning, and `PowerManager::takeReleaseWake()` tells the next boot to sleep again at once. |
 | `PowerConfig` | `earlyWakeDecision` (false) | The consumer decides sleep-or-boot right after the wake-hold check; `InputManager::begin(false)` defers the touch probe to `startTouch()`. |
-| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. |
-| `PowerConfig` | `firmwareUpdateMinMv`, `awakeCeilingMin`, `radioOffWhenIdle` (0/0/false) | Data for the consumer: battery floor for firmware writes, awake ceiling on battery with no input or client traffic, radio off when a network screen's work ends. |
+| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (an SSD1677 on an always-on rail: reset, then `0x10`/`0x03` bit-banged) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
+| `PowerConfig` | `firmwareUpdateMinMv`, `awakeCeilingMin`, `radioOffWhenIdle` (0/0/false) | Data for the consumer: battery floor for firmware writes, awake ceiling on battery with no input or client traffic, and screens whose work has ended stop spinning the loop and drop the radio. |
+| `PowerConfig` | `wakeNoInputTimeoutS`, `storageErrorSleepS`, `awakeInputCapMin` (0/0/0) | Data for the consumer, on battery: sleep again after a power-button wake with no input, leave a dead-end storage-error screen, and an awake cap that only input (not client traffic) extends. |
 
 Helpers and hooks the consumer calls when a board sets these:
-`BoardConfig::holdPowerRails()` first in `setup()`; `PowerManager::powerDownRailsForSleep()`
+`BoardConfig::holdPowerRails()` first in `setup()`; `BoardConfig::powerPolicy()` for the
+`PowerConfig` policy fields; `InputManager::adcLadderContact()` as a one-sample idle wake test
+on `AdcLadders` boards; `PowerManager::powerDownRailsForSleep()`
 then `deepSleepUntilPowerButton()` at every sleep entry, after
 `InputManager::prepareTouchForSleep()`, `freeink::i2c::releaseSensorBusForSleep()` and
 `FrontlightManager::prepareForSleep()` (dark, LEDC detached); `BoardConfig::hasFrontButtons()`

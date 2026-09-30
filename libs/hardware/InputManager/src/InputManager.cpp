@@ -70,6 +70,7 @@ enum class TouchProbe : uint8_t { Unknown, Primary, Fallback, Absent };
 constexpr uint32_t TOUCH_PROBE_MAGIC = 0x54434850;  // "TCHP"
 RTC_DATA_ATTR uint32_t touchProbeMagic = 0;
 RTC_DATA_ATTR uint8_t touchProbeResult = 0;
+RTC_DATA_ATTR uint8_t touchProbeGt911Addr = 0;  // the address a GT911 answered at, for its sleep command
 
 TouchProbe cachedTouchProbe() {
   if (esp_reset_reason() != ESP_RST_DEEPSLEEP || touchProbeMagic != TOUCH_PROBE_MAGIC) return TouchProbe::Unknown;
@@ -77,9 +78,30 @@ TouchProbe cachedTouchProbe() {
   return static_cast<TouchProbe>(touchProbeResult);
 }
 
-void storeTouchProbe(const TouchProbe result) {
+void storeTouchProbe(const TouchProbe result, const uint8_t gt911Addr) {
   touchProbeResult = static_cast<uint8_t>(result);
+  touchProbeGt911Addr = gt911Addr;
   touchProbeMagic = TOUCH_PROBE_MAGIC;
+}
+
+// True after a deep-sleep wake when the last sleep entry put a GT911 to sleep:
+// the cached probe names the GT911 fallback on a board that sleeps its touch.
+bool cachedGt911Asleep() {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  return t.hibernateInSleep && t.irq >= 0 && t.fallbackController == BoardConfig::TouchController::Gt911 &&
+         cachedTouchProbe() == TouchProbe::Fallback;
+}
+
+// A sleeping GT911 needs INT LOW: a floating or HIGH INT for 2-5 ms wakes it. An
+// S3 digital pad drops its hold at the deep-sleep wake, so this re-drives it, and
+// with `hold` latches it for the next sleep (gpio_deep_sleep_hold_en keeps it).
+void driveGt911IntLow(const bool hold) {
+  const auto irq = static_cast<gpio_num_t>(BoardConfig::ACTIVE.touch.irq);
+  gpio_hold_dis(irq);
+  gpio_set_level(irq, 0);
+  pinMode(BoardConfig::ACTIVE.touch.irq, OUTPUT);
+  digitalWrite(BoardConfig::ACTIVE.touch.irq, LOW);
+  if (hold) gpio_hold_en(irq);
 }
 
 // FocalTech hibernate command (FT5x06 / FT6x36 register map).
@@ -136,6 +158,12 @@ InputManager::InputManager()
       twoButtonLongPressActive(false) {}
 
 void InputManager::begin(const bool startTouch) {
+#if FREEINK_CAP_TOUCH
+  // The touch probe waits; keep a GT911 the last sleep entry left asleep from
+  // waking on a floating INT meanwhile (the probe or the next sleep entry takes
+  // the pad over).
+  if (!startTouch && !touchStarted && cachedGt911Asleep()) driveGt911IntLow(/*hold=*/false);
+#endif
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::XteinkAdcLadder) {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
@@ -145,7 +173,7 @@ void InputManager::begin(const bool startTouch) {
     return;
   }
 
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::AdcLadders) {
+  if (BoardConfig::hasAdcLadders()) {
     // Ladder pins carry external pull-ups that define idle, so no internal pulls.
     for (const BoardConfig::AdcLadder& ladder : BoardConfig::ACTIVE.adcLadders.ladders) {
       if (ladder.pin >= 0) pinMode(ladder.pin, INPUT);
@@ -219,7 +247,7 @@ void InputManager::sampleAdcLadder(const int8_t pin, const uint8_t oversample, i
 void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group2) {
   group1 = {BUTTON_ADC_PIN_1, -1, -1};
   group2 = {BUTTON_ADC_PIN_2, -1, -1};
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::AdcLadders) {
+  if (BoardConfig::hasAdcLadders()) {
     const BoardConfig::AdcLadderConfig& cfg = BoardConfig::ACTIVE.adcLadders;
     ButtonAdcSample* const groups[2] = {&group1, &group2};
     for (uint8_t i = 0; i < 2; ++i) {
@@ -228,8 +256,7 @@ void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group
       int raw = 0;
       int mv = 0;
       sampleAdcLadder(ladder.pin, cfg.oversample, raw, mv);
-      const int decoded =
-          freeink::input_detail::decodeAdcLadder(ladder.keys, ladder.count, mv, raw, cfg.releasedMinMv);
+      const int decoded = freeink::input_detail::decodeAdcLadder(ladder.keys, ladder.count, mv, raw, cfg.releasedMinMv);
       *groups[i] = {ladder.pin, raw, decoded >= 0 ? decoded : -1};
     }
     return;
@@ -244,6 +271,23 @@ void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group
   group2.raw = freeink::adc::readRaw(BUTTON_ADC_PIN_2);
   const int b2 = getButtonFromADC(group2.raw, ADC_RANGES_2, NUM_BUTTONS_2);
   group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
+}
+
+bool InputManager::adcLadderContact() {
+  if (!BoardConfig::hasAdcLadders()) return false;
+  const BoardConfig::AdcLadderConfig& cfg = BoardConfig::ACTIVE.adcLadders;
+  for (const BoardConfig::AdcLadder& ladder : cfg.ladders) {
+    if (ladder.pin < 0) continue;
+    const freeink::adc::Lock lock;
+    const int mv = static_cast<int>(analogReadMilliVolts(ladder.pin));
+    if (cfg.releasedMinMv != 0 && mv >= cfg.releasedMinMv) continue;  // released, one conversion
+    const int raw = analogRead(ladder.pin);
+    if (freeink::input_detail::decodeAdcLadder(ladder.keys, ladder.count, mv, raw, cfg.releasedMinMv) !=
+        freeink::input_detail::ADC_LADDER_RELEASED) {
+      return true;
+    }
+  }
+  return false;
 }
 
 uint8_t InputManager::getState() {
@@ -274,7 +318,7 @@ uint8_t InputManager::getState() {
     return state;
   }
 
-  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::AdcLadders) {
+  if (BoardConfig::hasAdcLadders()) {
     state = getAdcLadderState();
     if (isPowerButtonPhysicallyPressed()) state |= (1 << BTN_POWER);
     state |= serviceTouch();
@@ -319,6 +363,7 @@ uint8_t InputManager::getState() {
 // Readings that are not a clean key level (chords, press edges) are ignored.
 // Between polls the committed keys are reported unchanged.
 uint8_t InputManager::getAdcLadderState() {
+#if FREEINK_CAP_ADC_LADDERS
   const BoardConfig::AdcLadderConfig& cfg = BoardConfig::ACTIVE.adcLadders;
   const unsigned long now = millis();
   const bool sampleNow = !ladderSampled || now - ladderSampledAt >= LADDER_MIN_POLL_MS;
@@ -334,8 +379,7 @@ uint8_t InputManager::getAdcLadderState() {
       int raw = 0;
       int mv = 0;
       sampleAdcLadder(ladder.pin, cfg.oversample, raw, mv);
-      const int decoded =
-          freeink::input_detail::decodeAdcLadder(ladder.keys, ladder.count, mv, raw, cfg.releasedMinMv);
+      const int decoded = freeink::input_detail::decodeAdcLadder(ladder.keys, ladder.count, mv, raw, cfg.releasedMinMv);
       ladderDebounce[i].update(decoded, cfg.stableSamples);
 #if FREEINK_ADC_LADDER_TRACE
       static int lastTraceMv[2] = {-1000, -1000};
@@ -350,6 +394,9 @@ uint8_t InputManager::getAdcLadderState() {
     if (committed >= 0 && committed < 8) state |= static_cast<uint8_t>(1u << committed);
   }
   return state;
+#else
+  return 0;
+#endif
 }
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
@@ -1403,7 +1450,10 @@ void InputManager::beginTouch() {
     if (t.optional) t.controller = BoardConfig::TouchController::None;
   }
   if (t.optional) {
-    storeTouchProbe(!found ? TouchProbe::Absent : onFallback ? TouchProbe::Fallback : TouchProbe::Primary);
+    storeTouchProbe(!found       ? TouchProbe::Absent
+                    : onFallback ? TouchProbe::Fallback
+                                 : TouchProbe::Primary,
+                    onFallback && t.controller == BoardConfig::TouchController::Gt911 ? gt911Addr : 0);
   }
 #ifdef TOUCH_PROBE_DEBUG
   touchDebugPrintf("[touch] probe: cached=%u found=%d fallback=%d addr=0x%02X\n", static_cast<unsigned>(cached), found,
@@ -1447,11 +1497,23 @@ InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (!t.hibernateInSleep || t.sda < 0 || t.scl < 0) return TouchSleepResult::NotApplicable;
   if (!touchStarted) {
-    // A sleep entry before startTouch(). After a deep-sleep wake the controller is
-    // still as the last sleep entry left it. After any other reset it may be awake,
-    // so the primary gets the single best-effort write below (no reset retry: a
-    // controller only counts as found once the probe has run).
-    if (esp_reset_reason() == ESP_RST_DEEPSLEEP) return TouchSleepResult::NotApplicable;
+    // A sleep entry before startTouch(). After a deep-sleep wake a FocalTech
+    // controller is still as the last sleep entry left it (INT unheld is its
+    // normal sleep state). A GT911 is not: its INT hold ended at the wake, so INT
+    // floated and may have woken it. It gets its sleep command again, and INT is
+    // held LOW whether or not it answers (asleep, it may not). After any other
+    // reset the controller may be awake, so the primary gets the single
+    // best-effort write below (no reset retry: a controller only counts as found
+    // once the probe has run).
+    if (esp_reset_reason() == ESP_RST_DEEPSLEEP) {
+      if (!cachedGt911Asleep()) return TouchSleepResult::NotApplicable;
+      freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
+      Wire.setTimeOut(10);
+      gt911Addr = touchProbeGt911Addr;
+      const bool asleep = gt911Addr != 0 && gt911Sleep();
+      if (!asleep) driveGt911IntLow(/*hold=*/true);
+      return asleep ? TouchSleepResult::Asleep : TouchSleepResult::NoAnswer;
+    }
     touchSleepController = t.controller;
     touchSleepAddr = t.i2cAddress;
   }
@@ -1471,6 +1533,29 @@ InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
   // none found, the single write above is the whole (cheap) attempt.
   if (!asleep && touchDataEnabled && pulseTouchReset()) asleep = focaltechHibernate(touchSleepAddr);
   return asleep ? TouchSleepResult::Asleep : TouchSleepResult::NoAnswer;
+#else
+  return TouchSleepResult::NotApplicable;
+#endif
+}
+
+void InputManager::holdTouchIntForSleep() {
+#if FREEINK_CAP_TOUCH
+  if (!touchStarted && cachedGt911Asleep()) driveGt911IntLow(/*hold=*/true);
+#endif
+}
+
+InputManager::TouchSleepResult InputManager::resetAndHibernateTouch() {
+#if FREEINK_CAP_TOUCH
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const bool focaltech =
+      t.controller == BoardConfig::TouchController::Ft5x06 || t.controller == BoardConfig::TouchController::Ft6336u;
+  if (!t.hibernateInSleep || !focaltech || t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) {
+    return TouchSleepResult::NotApplicable;
+  }
+  pulseTouchReset();  // out of whatever state a crash left it in, into Active
+  freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
+  Wire.setTimeOut(10);
+  return focaltechHibernate(t.i2cAddress) ? TouchSleepResult::Asleep : TouchSleepResult::NoAnswer;
 #else
   return TouchSleepResult::NotApplicable;
 #endif
@@ -1666,7 +1751,9 @@ bool InputManager::gt911Sleep() {
   }
   delay(GT911_SLEEP_SETTLE_MS + 1U);
   // A floating or HIGH INT wakes a sleeping GT911. The digital-pad hold lasts
-  // through deep sleep (PowerManager enables gpio_deep_sleep_hold_en).
+  // through deep sleep (PowerManager enables gpio_deep_sleep_hold_en) but ends at
+  // the wake reset; prepareTouchForSleep() and holdTouchIntForSleep() re-hold it
+  // on a sleep entry before the probe.
   gpio_hold_en(irq);
   return true;
 }

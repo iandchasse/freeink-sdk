@@ -45,10 +45,10 @@ void testNominalLevels() {
   CHECK(bottom(2800) == BACK);
   CHECK(bottom(3300) == ADC_LADDER_RELEASED);
 
-  CHECK(side(33) == DOWN);     // DOWN(1)
-  CHECK(side(1800) == UP);     // UP(1)
-  CHECK(side(2533) == DOWN);   // DOWN(2)
-  CHECK(side(2877) == UP);     // UP(2)
+  CHECK(side(33) == DOWN);    // DOWN(1)
+  CHECK(side(1800) == UP);    // UP(1)
+  CHECK(side(2533) == DOWN);  // DOWN(2)
+  CHECK(side(2877) == UP);    // UP(2)
   CHECK(side(3300) == ADC_LADDER_RELEASED);
 }
 

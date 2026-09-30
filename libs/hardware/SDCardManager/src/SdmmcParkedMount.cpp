@@ -41,8 +41,8 @@ bool SdmmcBlockDevice::beginParked(const BoardConfig::SdmmcPins& pins) {
   if (pins.internalPullups) slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
   auto* card = static_cast<sdmmc_card_t*>(calloc(1, sizeof(sdmmc_card_t)));
-  _dmaBuffer = static_cast<uint8_t*>(heap_caps_malloc(kSectorSize * kMaxTransferSectors,
-                                                      MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  _dmaBuffer =
+      static_cast<uint8_t*>(heap_caps_malloc(kSectorSize * kMaxTransferSectors, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
   if (!card || !_dmaBuffer) {
     LOG_ERR("SD", "SDMMC mount: out of memory");
     free(card);

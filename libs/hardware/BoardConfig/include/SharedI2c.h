@@ -7,7 +7,8 @@
 // a second begin() on a running controller, so whichever driver starts the bus
 // first sets its clock. These helpers make SensorsConfig::i2cHz that clock for
 // every driver on the sensor-bus pins, and implement SensorsConfig::i2cBusRecovery
-// (free a stuck bus at boot, release the bus before deep sleep).
+// (free a stuck bus at boot, release the bus before deep sleep; compiled in with
+// FREEINK_CAP_I2C_RECOVERY).
 
 #include <Arduino.h>
 #include <BoardConfig.h>
@@ -85,17 +86,30 @@ inline bool recoverStuckBus(const int8_t sda, const int8_t scl) {
   return released;
 }
 
+// SensorsConfig::i2cBusRecovery, folded to false without FREEINK_CAP_I2C_RECOVERY.
+inline bool busRecoveryEnabled() {
+#if FREEINK_CAP_I2C_RECOVERY
+  return BoardConfig::ACTIVE.sensors.i2cBusRecovery;
+#else
+  return false;
+#endif
+}
+
+#if FREEINK_CAP_I2C_RECOVERY
 // Set once the sensor bus has had its boot check (i2cBusRecovery).
 inline bool sensorBusChecked = false;
+#endif
 
 // Start `wire` on (sda, scl). The first start of an i2cBusRecovery sensor bus in
 // a boot frees the bus first if a slave holds SDA LOW.
 inline bool beginBus(TwoWire& wire, const int8_t sda, const int8_t scl, const uint32_t hz) {
-  if (!sensorBusChecked && BoardConfig::ACTIVE.sensors.i2cBusRecovery && isSensorBus(sda, scl)) {
+#if FREEINK_CAP_I2C_RECOVERY
+  if (!sensorBusChecked && busRecoveryEnabled() && isSensorBus(sda, scl)) {
     sensorBusChecked = true;
     // Never under a running controller: only a bus no driver has started yet.
     if (perimanGetPinBusType(static_cast<uint8_t>(sda)) != ESP32_BUS_TYPE_I2C_MASTER_SDA) recoverStuckBus(sda, scl);
   }
+#endif
   return wire.begin(sda, scl, hz);
 }
 
@@ -107,7 +121,7 @@ inline bool beginBus(TwoWire& wire, const int8_t sda, const int8_t scl, const ui
 // does nothing) on other boards.
 inline bool releaseSensorBusForSleep() {
   const BoardConfig::SensorsConfig& s = BoardConfig::ACTIVE.sensors;
-  if (!s.i2cBusRecovery || s.i2cSda < 0 || s.i2cScl < 0) return true;
+  if (!busRecoveryEnabled() || s.i2cSda < 0 || s.i2cScl < 0) return true;
   sensorWire().end();
   gpio_hold_dis(static_cast<gpio_num_t>(s.i2cSda));
   gpio_hold_dis(static_cast<gpio_num_t>(s.i2cScl));

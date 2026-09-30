@@ -116,8 +116,14 @@ public:
     // most every minIntervalMs) and updates the decoded state; call it from the
     // main loop only. chargeStatus() returns the cached state without touching
     // the ADC, so any task may call it. Unknown on boards without a ladder.
+    // With a lowBatteryCutoffMv, a decoded Charging or Complete while P+ stays at
+    // or below the cutoff without rising for 5 min (sampled once a minute) is
+    // reported as OnBattery: a real charge lifts P+.
     static void pollChargeStatus();
     static BoardConfig::ChargeState chargeStatus();
+    // True once the ladder has decoded a state this boot and then lost it
+    // (ChargeStatusLadder::unknownHoldSamples readings outside every window).
+    static bool chargeStatusLost();
 
     // Percentage from a millivolt value, off a standard 1S Li-ion discharge
     // curve. The result is always a multiple of 10: voltage cannot resolve a
