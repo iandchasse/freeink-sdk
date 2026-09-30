@@ -25,6 +25,9 @@
 #if FREEINK_ADC_LADDER_TRACE
 #include <Logging.h>
 #endif
+#if FREEINK_DIAGNOSTICS
+#include <cstring>
+#endif
 #if defined(TOUCH_PROBE_DEBUG)
 #include <esp_rom_sys.h>
 
@@ -327,6 +330,13 @@ InputManager::TouchDiagnostics InputManager::touchDiagnostics() const {
     d.previousSleepResult = static_cast<TouchSleepResult>(diagPreviousSleep - 1u);
     d.previousSleepRetried = diagPreviousSleepRetried;
   }
+  if (touchDataEnabled) {
+    const BoardConfig::TouchConfig& t = BoardConfig::ACTIVE.touch;
+    d.address = t.controller == BoardConfig::TouchController::Gt911 ? gt911Addr : t.i2cAddress;
+  }
+  d.idRead = diagIdRead;
+  memcpy(d.id, diagId, sizeof(d.id));
+  d.longPressMs = static_cast<uint16_t>(TOUCH_LONG_PRESS_MS);
   return d;
 }
 #endif
@@ -1888,6 +1898,12 @@ void InputManager::beginFt5x06() {
     wrIrq = rdId && ft5x06WriteReg(0xA4, 0x00);
   }
   touchDataEnabled = wrMode && rdId && wrIrq;
+#if FREEINK_DIAGNOSTICS
+  if (rdId) {
+    diagIdRead = true;
+    memcpy(diagId, id, sizeof(diagId));
+  }
+#endif
 #ifdef TOUCH_PROBE_DEBUG
 #if FREEINK_DEVICE_PAPERMONO
   // Expander state alongside the probe result: OUT should show TP_EN (bit 12)

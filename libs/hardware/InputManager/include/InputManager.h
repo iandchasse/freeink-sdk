@@ -371,6 +371,12 @@ class InputManager {
     TouchSleepResult previousSleepResult;
     bool previousSleepRetried;
     bool previousSleepKnown;
+    uint8_t address;  // the address the active controller answered at (a GT911's strapped one); 0 = none
+    // FocalTech probe: the 0xA3-0xA8 window it read (0xA3 chip id, 0xA4 G_MODE,
+    // 0xA5 power mode, 0xA6 firmware, 0xA7, 0xA8 panel id).
+    bool idRead;
+    uint8_t id[6];
+    uint16_t longPressMs;  // contact held this long, still, is a long press
   };
   TouchDiagnostics touchDiagnostics() const;
 #endif
@@ -572,6 +578,8 @@ class InputManager {
   bool diagSleepRetried = false;
   uint8_t diagPreviousSleep = 0;  // RTC record captured at begin(): 0 = none, else 1 + TouchSleepResult
   bool diagPreviousSleepRetried = false;
+  bool diagIdRead = false;
+  uint8_t diagId[6] = {};
 #endif
 
 #if FREEINK_CAP_ADC_LADDERS
