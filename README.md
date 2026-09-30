@@ -139,6 +139,7 @@ so the SD manager itself stays device-agnostic.
 | **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
+| **Silkscreen** | ESP32-S3 | SSD1677 | 800×480 B/W (GDEQ0426T82) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip), optional FT6336U touch tail probed at boot (keys kept, GT911 fallback), native 4-bit SDMMC behind a gated card rail, DS3231MZ or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -153,7 +154,7 @@ profile. In builds without an Xteink profile the helpers compile to no-ops that
 return false without touching any pins, so an unconditional call is safe on
 every device. Devices on a different MCU build their own binary, selected with a
 `-DFREEINK_DEVICE_*` flag. A build targets exactly one of the four MCU families — ESP32-C3 (X3/X4),
-ESP32-C61 (OnePage), ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97), or classic ESP32 (M5Paper);
+ESP32-C61 (OnePage), ESP32-S3 (de-link/PaperColor/Murphy/LilyGo/Sticky/X4 Pro/Paper Mono/PaperS3/Waveshare 3.97/Silkscreen), or classic ESP32 (M5Paper);
 `BoardConfig` rejects mixing families at compile time.
 
 #### Per-batch panel controllers (`applyXteinkDisplayController()`)
@@ -336,6 +337,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_X4CLASSIC` | Xteink X4 Classic / X4C (S3, SSD1677/UC8179/UC8279 auto-detect, buttons-only — no touch/frontlight, + SDMMC) |
 | `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |
 | `-DFREEINK_DEVICE_PAPERS3` | M5Stack PaperS3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX + GT911 touch) |
+| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677 + ADC-ladder keys + optional touch + 4-bit SDMMC; the env sets `FREEINK_CAP_FRONTLIGHT`/`FREEINK_CAP_WARMLIGHT` when a light is fitted) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
@@ -349,7 +351,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | Flag | Gates | Default |
 |---|---|---|
 | `FREEINK_CAP_TOUCH` | capacitive touch decoder (InputManager) | on if a device has touch |
-| `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight |
+| `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight (Silkscreen's light is optional, so its env sets it) |
 | `FREEINK_CAP_COLOR` | color panel code | on for M5 |
 | `FREEINK_CAP_AUDIO` | audio output (AudioManager: ES8388/ES8311 codec + I2S WAV playback) | on for Murphy and M5 |
 | `FREEINK_CAP_MIC` | microphone capture (Microphone lib: PDM mic → 16-bit PCM via i2s_pdm RX) | on for Sticky and Paper Mono |
@@ -817,6 +819,54 @@ automatically as a dependency of `SDCardManager`.
    They happen to share a pinout, but each is a real profile — not one profile
    doing double duty. Same MCU but different GPIOs, screen, or controller ⇒ a
    separate profile and a separate env, never an auto-shared bin.
+4. **A board need the SDK cannot express yet becomes a new field, not a device
+   check.** Append it at the end of its struct with a default that reproduces
+   today's behaviour, so every existing positional initializer compiles unchanged
+   and every other board behaves as before. Generic code reads the field; it never
+   keys off the device. The fields below were added this way (for Silkscreen) and
+   are available to any board.
+
+### Optional profile fields (all defaulted)
+
+Leave a field out and the board keeps the old behaviour.
+
+| Struct | Field (default) | Effect when set |
+|---|---|---|
+| `DisplayPins` | `busyPullDown` (false) | Internal pull-down on an active-high `BUSY` with no external pull, awake only; `powerDownRailsForSleep()` removes it before deep sleep. |
+| `SdmmcPins` | `maxFreqKhz` (0 = 20 MHz), `internalPullups` (true) | Clock cap; set `internalPullups` false when the bus pull-ups sit on a gated card rail. |
+| `SdmmcPins` | `parkLowWhenOff` (false), `powerOffMs` (20), `powerOnSettleMs` (20) | Real power cycle around the mount: bus LOW with pulls off before the gate goes off, off for `powerOffMs`, settle after power-on. The bus is also parked at boot, on a failed mount, on shutdown and held LOW through deep sleep. |
+| `InputPins` | `powerExternalPull` (false) | The power button has its own pull: read it as plain `INPUT` and arm the wake with both internal pulls off (digital and RTC). |
+| `BoardProfile` | `InputStyle::AdcLadders` + `adcLadders` (empty) | Up to two resistor-ladder ADC pins, per-key mV windows; a reading outside every window (chord, edge of a press) is ignored; `stableSamples` debounce. |
+| `BoardProfile` | `chargeLadder` (none) | A charger's status pins encoded on one ADC pin: windows per `ChargeState`, slow sampling, debounce, "complete" only when stable, no-battery blink detection. Drives `BatteryMonitor::chargeStatus()` and USB presence. |
+| `BoardProfile` | `parkedPins[8]` (empty) | `PinPark` boot and sleep levels (`Low`, `High`, `InputNoPull`) for pins no driver owns then: applied by `holdPowerRails()` at boot and held through sleep by `powerDownRailsForSleep()`. |
+| `TouchConfig` | `optional`, `fallbackController`/`fallbackAddr` (off) | Probe the panel at boot, then a second controller; with neither, `controller` becomes `None` for the session. The result is cached in RTC memory and trusted after a deep-sleep wake only. |
+| `TouchConfig` | `resetPulseMs`/`resetSettleMs` (0) | Hardware reset before the first transaction (FT5x06 path). |
+| `TouchConfig` | `hibernateInSleep` (false) | `InputManager::prepareTouchForSleep()` sends the controller's sleep command (FocalTech `0xA5 = 0x03` with a reset-and-retry on NACK; GT911 `0x8040 = 0x05` with `INT` held LOW). For a touch panel on an always-on rail. |
+| `TouchConfig` | `buttonsAlongsideTouch` (false) | The board keeps its keys with touch fitted: `BoardConfig::hasFrontButtons()` stays true. |
+| `FrontlightConfig` | `colorSelectGpio`, `colorSelectWarmHigh` (none, true) | One GPIO picks the warm or cool string (fixed choice at warmth ≥ 50 %, never PWM'd), switched only while the light is dark. |
+| `FrontlightConfig` | `enablePulseUs`, `offDwellMs` (0) | Enable-gated driver (e.g. TPS923610 `ADIM`): dark for `offDwellMs` before each enable, then the pin HIGH for `enablePulseUs`, then the PWM carrier. |
+| `FrontlightConfig` | `monitorAdc`, `monitorScaleX1000`, `monitorTripMv` (off) | LED-rail over-voltage monitor every 100 ms while lit; above the trip the light goes dark and `FrontlightManager::fault()` latches until the light is switched on again. |
+| `SensorsConfig` | `rtcLowPower` (false) | DS3231: clear `EN32KHZ`; PCF85063-class: `CLKOUT` off. |
+| `SensorsConfig` | `rtcFallbackType`/`rtcFallbackAddr` (none) | Second RTC footprint, probed when the first does not answer. |
+| `SensorsConfig` | `rtcResyncWhenInvalid` (false) | No RTC backup cell: the consumer re-fetches the time whenever the RTC reports it invalid. |
+| `SensorsConfig` | `i2cBusRecovery` (false) | Pull-ups on an always-on rail: the first bus start in a boot clocks a stuck bus free; `freeink::i2c::releaseSensorBusForSleep()` ends the bus and leaves the lines released before sleep. |
+| `PowerConfig` | `lowBatteryCutoffMv` (0), `cutoffRadioAllowanceMv` (0) | `BatteryMonitor::isBelowCutoff(known, mv, radioOn)`: 3 consecutive once-a-second readings at or below the cutoff (less the allowance while the radio is on), never on external power or with no cell. |
+| `PowerConfig` | `releaseWaitMaxMs` (0 = unbounded) | A power button still held after this long at sleep entry: sleep until its release instead of spinning, and `PowerManager::takeReleaseWake()` tells the next boot to sleep again at once. |
+| `PowerConfig` | `earlyWakeDecision` (false) | The consumer decides sleep-or-boot right after the wake-hold check; `InputManager::begin(false)` defers the touch probe to `startTouch()`. |
+| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. |
+| `PowerConfig` | `firmwareUpdateMinMv`, `awakeCeilingMin`, `radioOffWhenIdle` (0/0/false) | Data for the consumer: battery floor for firmware writes, awake ceiling on battery with no input or client traffic, radio off when a network screen's work ends. |
+
+Helpers and hooks the consumer calls when a board sets these:
+`BoardConfig::holdPowerRails()` first in `setup()`; `PowerManager::powerDownRailsForSleep()`
+then `deepSleepUntilPowerButton()` at every sleep entry, after
+`InputManager::prepareTouchForSleep()`, `freeink::i2c::releaseSensorBusForSleep()` and
+`FrontlightManager::prepareForSleep()` (dark, LEDC detached); `BoardConfig::hasFrontButtons()`
+and `hasChargeStatusLadder()` for UI and policy. Two header-only helpers sit in the
+BoardConfig include directory: `SharedAdc.h` (one recursive lock around every SDK ADC
+read, since Arduino-ESP32 3.x only try-locks the ADC unit and returns 0 to the loser;
+use its `freeink::adc::` readers for your own ADC reads) and `SharedI2c.h` (`busHz()` /
+`beginBus()` give every driver on the sensor-bus pins one clock, plus stuck-bus recovery
+and the sleep release).
 
 ### Devices backed by external libraries
 
@@ -853,7 +903,7 @@ gaps (I²C battery gauge, expander button).
 libs/
   assets/Icons/             freeink::Icon format + vendored Lucide SVGs + generator
   display/FreeInkDisplay/   facade + EInkDisplay shim + per-controller drivers + LUTs
-  hardware/BoardConfig/     board profiles & capability descriptors
+  hardware/BoardConfig/     board profiles & capability descriptors (+ SharedAdc.h, SharedI2c.h)
   hardware/InputManager/    buttons + capacitive touch (CHSC6x, GT911, FT5x06)
   hardware/BatteryMonitor/  ADC battery + optional charge-sense
   hardware/SDCardManager/   SD storage (SdFat-over-SPI or native SDMMC)
