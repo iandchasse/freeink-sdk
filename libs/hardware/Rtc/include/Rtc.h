@@ -8,6 +8,7 @@
 // off, or rtcAddr == 0) link stub bodies and present() returns false.
 
 #include <Arduino.h>
+#include <BoardConfig.h>
 
 #include <cstdint>
 
@@ -31,6 +32,10 @@ class Rtc {
   // answer. Returns false when the active board has no RTC or neither ACKs.
   bool begin();
   bool present() const { return begun_; }
+  // The RTC begin() found, for a bring-up screen: its address (0 before begin()
+  // or when none answered) and the profile's RtcType for that address.
+  uint8_t address() const { return addr_; }
+  BoardConfig::RtcType type() const { return static_cast<BoardConfig::RtcType>(type_); }
 
   // Reads the current time. Returns false on I2C error or if the RTC reports its
   // oscillator stopped (low voltage / never set) — the time is then unreliable.

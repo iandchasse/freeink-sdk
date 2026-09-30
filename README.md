@@ -919,6 +919,7 @@ Header-only helpers, available in every build (not emitted unless called):
 | `freeink::i2c::scanSensorBus(hz)` (`SharedI2c.h`) | an address-only ACK map of the sensor bus; uses a running controller as it is (restoring its clock after a scan at another `hz`), or starts and ends a bus no driver owns |
 | `InputManager::touchMapping()` / `setTouchMapping()` | read or change, in RAM, `swapXY`/`flipX`/`flipY` and the raw ranges of `ACTIVE.touch`, for calibration (used from the next poll) |
 | `ChargeLadderDecoder::candidate()` / `candidateRun()` / `completeRun()` / `unknownRun()` | the decoder's debounce progress |
+| `Rtc::address()` / `type()` | the address `begin()` found the RTC at (primary or fallback, 0 when none) and the profile's `RtcType` for it |
 
 ### Devices backed by external libraries
 
