@@ -1,12 +1,11 @@
 #include "FrontlightManager.h"
 
 #if FREEINK_CAP_FRONTLIGHT
-#include "FrontlightManager.h"
-
 #include <M5Pm1.h>
+#include <SharedAdc.h>
 #include <Wire.h>
-#ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/gpio.h>
+#ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/ledc.h>
 // esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
 // for balancing the refcounted RC_FAST keep-on the LEDC driver takes for
@@ -131,6 +130,88 @@ bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
 }
 void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) { ledcWrite(ch, duty); }
 #endif
+
+// --- Enable-gated path (FrontlightConfig::colorSelectGpio / enablePulseUs / monitorAdc) ---
+// The PWM pin moves between the plain GPIO output register and its LEDC channel
+// through the GPIO matrix, so the channel and timer stay configured while dark.
+// No step touches a pull: gpio_set_direction() and the matrix routing leave the
+// pull bits alone, and nothing here calls gpio_reset_pin() (which would enable a
+// pull-up and, on an ADIM input, switch the driver on).
+
+constexpr uint64_t MONITOR_PERIOD_US = 100000;  // LED-rail monitor rate while lit
+// Dark this long or longer => the driver may have shut down (TPS923610: 2.5 ms), so
+// the next enable repeats the enable pulse.
+constexpr int64_t REENABLE_AFTER_DARK_US = 2000;
+constexpr TickType_t MONITOR_ADC_WAIT = pdMS_TO_TICKS(10);
+
+bool gatedPath(const BoardConfig::FrontlightConfig& fl) {
+  return fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED || fl.enablePulseUs != 0 ||
+         fl.monitorAdc != BoardConfig::PIN_UNASSIGNED;
+}
+
+bool monitorConfigured(const BoardConfig::FrontlightConfig& fl) {
+  return fl.monitorAdc != BoardConfig::PIN_UNASSIGNED && fl.monitorScaleX1000 != 0 && fl.monitorTripMv != 0;
+}
+
+uint32_t darkLevel(const BoardConfig::FrontlightConfig& fl) { return fl.activeHigh ? 0u : 1u; }
+
+// Drive the pad from the GPIO output register at `level`; its LEDC channel keeps
+// running, disconnected.
+void padToGpio(int8_t gpio, uint32_t level) {
+  const auto g = static_cast<gpio_num_t>(gpio);
+  gpio_set_level(g, level);
+  gpio_set_direction(g, GPIO_MODE_OUTPUT);
+}
+
+// Reconnect the pad to its LEDC channel and clear its GPIO output bit, so a later
+// LEDC detach or pinMode() leaves the pad LOW rather than on a stale HIGH.
+void padToLedc(int8_t gpio, uint8_t ch) {
+#ifdef FREEINK_FRONTLIGHT_LS
+  ledc_set_pin(gpio, LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch));
+  gpio_set_level(static_cast<gpio_num_t>(gpio), 0);
+#elif defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  (void)ch;
+  // Re-routes the pin's LEDC signal and sets GPIO_OUT to 0. Should the pin have
+  // lost its channel, drop the pad LOW instead of leaving it active.
+  if (!ledcOutputInvert(gpio, false)) gpio_set_level(static_cast<gpio_num_t>(gpio), 0);
+#else
+  ledcAttachPin(gpio, ch);
+  gpio_set_level(static_cast<gpio_num_t>(gpio), 0);
+#endif
+}
+
+// Release the LEDC channel. Arduino-ESP32 3.x ledcDetach() only routes the pad
+// back to its GPIO output register and frees the channel/timer: no pin reset and
+// no pull change.
+void detachChannel(int8_t gpio, uint8_t ch) {
+#ifdef FREEINK_FRONTLIGHT_LS
+  (void)gpio;
+  ledc_stop(LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch), 0);
+#elif defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  (void)ch;
+  ledcDetach(gpio);
+#else
+  (void)ch;
+  ledcDetachPin(gpio);
+#endif
+}
+
+// Holds the gated path's lock for a scope; a no-op without a monitor (then nothing
+// runs concurrently with apply()).
+class GateGuard {
+ public:
+  explicit GateGuard(SemaphoreHandle_t lock) : lock_(lock) {
+    if (lock_) xSemaphoreTake(lock_, portMAX_DELAY);
+  }
+  ~GateGuard() {
+    if (lock_) xSemaphoreGive(lock_);
+  }
+  GateGuard(const GateGuard&) = delete;
+  GateGuard& operator=(const GateGuard&) = delete;
+
+ private:
+  SemaphoreHandle_t lock_;
+};
 }  // namespace
 #endif
 
@@ -171,6 +252,40 @@ void FrontlightManager::begin() {
   }
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
 
+  if (gatedPath(fl)) {
+    // Start from defined levels: the PWM pin inactive and colour select at cool,
+    // both push-pull with no pulls and any sleep hold released, and the LED
+    // monitor pin a plain input (a pull would skew its divider).
+    BoardConfig::driveParkedLevel(fl.gpio, darkLevel(fl));
+    if (fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED) {
+      BoardConfig::driveParkedLevel(fl.colorSelectGpio, fl.colorSelectWarmHigh ? LOW : HIGH);
+    }
+    _warmSelected = false;
+    _gatedLit = false;
+    _fault = false;
+    if (monitorConfigured(fl)) {
+      pinMode(fl.monitorAdc, INPUT);
+      // Both live for the life of the (singleton) manager. The monitor is the only
+      // code that runs concurrently with apply(), so boards without one allocate
+      // nothing here.
+      if (_gateLock == nullptr) _gateLock = xSemaphoreCreateMutex();
+      if (_monitorTimer == nullptr && _gateLock != nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = &FrontlightManager::monitorTick;
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "fl_monitor";
+        args.skip_unhandled_events = true;
+        if (esp_timer_create(&args, &_monitorTimer) != ESP_OK) _monitorTimer = nullptr;
+      }
+      if (_monitorTimer == nullptr) {
+        // Never run the light unwatched on a board that declares a monitor.
+        LOG_ERR("FrontlightMgr", "begin: LED monitor unavailable, light disabled");
+        return;
+      }
+    }
+  }
+
   bool attachOk = attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
     attachOk = attachChannel(fl.gpioWarm, LEDC_CH_WARM, fl.pwmFrequency, fl.pwmResolutionBits) || attachOk;
@@ -204,6 +319,12 @@ void FrontlightManager::begin() {
 #else
   (void)attachOk;
 #endif
+  if (!attachOk && gatedPath(fl)) {
+    // Without a carrier the enable pulse would leave the pin active: stay dark.
+    BoardConfig::driveParkedLevel(fl.gpio, darkLevel(fl));
+    LOG_ERR("FrontlightMgr", "begin: LEDC attach failed on gpio=%d, light disabled", fl.gpio);
+    return;
+  }
   _begun = true;
   setBrightness(0);
   LOG_INF("FrontlightMgr", "begin: attached gpio=%d warm=%d ok=%d", fl.gpio, fl.gpioWarm, attachOk ? 1 : 0);
@@ -323,6 +444,10 @@ void FrontlightManager::apply() {
   } else if (!_useLevel) {
     totalDuty = perceptualDuty(_brightness, full);
   }
+  if (gatedPath(fl)) {
+    applyGated(totalDuty, full);
+    return;
+  }
   uint32_t warmDuty = 0;
   uint32_t coolDuty = totalDuty;
   if (dual) {
@@ -339,6 +464,112 @@ void FrontlightManager::apply() {
   }
   LOG_INF("FrontlightMgr", "apply: brightness=%u level=%u totalDuty=%u coolDuty=%u warmDuty=%u lit=%d", _brightness,
            _brightnessLevel, totalDuty, coolDuty, warmDuty, totalDuty != 0 ? 1 : 0);
+}
+
+void FrontlightManager::applyGated(const uint32_t duty, const uint32_t full) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  const GateGuard guard(_gateLock);
+  if (duty == 0) {
+    _fault = false;  // switching the light off re-arms the monitor latch
+    goDark(full);
+    return;
+  }
+  if (_fault) return;  // tripped: stays dark until switched off or clearFault()
+  const bool warm = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED && _warmPercent >= 50;
+  if (_gatedLit && warm == _warmSelected) {
+    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(duty, full, fl.activeHigh));  // brightness only
+    return;
+  }
+  if (_gatedLit) goDark(full);  // colour change: switch strings only with the driver dark
+  lightUp(duty, full, warm);
+}
+
+void FrontlightManager::waitDarkDwell() const {
+  const int64_t dwellUs = static_cast<int64_t>(BoardConfig::ACTIVE.frontlight.offDwellMs) * 1000;
+  const int64_t darkUs = esp_timer_get_time() - _darkSinceUs;
+  if (darkUs < dwellUs) delayMicroseconds(static_cast<uint32_t>(dwellUs - darkUs));
+}
+
+void FrontlightManager::selectWarm(const bool warm) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (fl.colorSelectGpio == BoardConfig::PIN_UNASSIGNED) return;
+  gpio_set_level(static_cast<gpio_num_t>(fl.colorSelectGpio), warm == fl.colorSelectWarmHigh ? 1 : 0);
+  _warmSelected = warm;
+}
+
+// Caller holds _gateLock.
+void FrontlightManager::goDark(const uint32_t full) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  stopMonitor();
+  padToGpio(fl.gpio, darkLevel(fl));
+  writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(0, full, fl.activeHigh));
+  if (_gatedLit) {
+    _darkSinceUs = esp_timer_get_time();
+    LOG_DBG("FrontlightMgr", "gated: dark");
+  }
+  _gatedLit = false;
+  // Colour select rests at cool, its parked level (HIGH would cost current through
+  // its pull-down), but moves only once the driver has been dark for offDwellMs.
+  if (_warmSelected) {
+    waitDarkDwell();
+    selectWarm(false);
+  }
+}
+
+// Caller holds _gateLock; the pad is dark.
+void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const bool warm) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  waitDarkDwell();  // also clears a latched driver fault (TPS923610 OVP) before the enable
+  selectWarm(warm);
+  // Program the carrier while GPIO still holds the pad; the enable pulse is longer
+  // than a PWM period, so the channel has latched the duty by the handover.
+  writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(duty, full, fl.activeHigh));
+  const bool pulsed = fl.enablePulseUs != 0 && esp_timer_get_time() - _darkSinceUs >= REENABLE_AFTER_DARK_US;
+  if (pulsed) {
+    gpio_set_level(static_cast<gpio_num_t>(fl.gpio), darkLevel(fl) ^ 1u);
+    delayMicroseconds(fl.enablePulseUs);
+  }
+  padToLedc(fl.gpio, LEDC_CH_COOL);
+  _gatedLit = true;
+  startMonitor();
+  LOG_DBG("FrontlightMgr", "gated: lit duty=%u warm=%d pulse=%d", static_cast<unsigned>(duty), warm ? 1 : 0,
+          pulsed ? 1 : 0);
+}
+
+void FrontlightManager::startMonitor() {
+  if (_monitorTimer != nullptr) esp_timer_start_periodic(_monitorTimer, MONITOR_PERIOD_US);
+}
+
+void FrontlightManager::stopMonitor() {
+  if (_monitorTimer != nullptr) esp_timer_stop(_monitorTimer);  // ESP_ERR_INVALID_STATE when idle: fine
+}
+
+void FrontlightManager::monitorTick(void* self) { static_cast<FrontlightManager*>(self)->checkMonitor(); }
+
+// esp_timer task, every MONITOR_PERIOD_US while lit.
+void FrontlightManager::checkMonitor() {
+  // apply() mid-transition: skip this tick rather than block the timer task.
+  if (xSemaphoreTake(_gateLock, 0) != pdTRUE) return;
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (_gatedLit) {
+    uint32_t pinMv = 0;
+    bool sampled = false;
+    {
+      const freeink::adc::Lock adc(MONITOR_ADC_WAIT);
+      if (adc.held()) {
+        pinMv = analogReadMilliVolts(fl.monitorAdc);
+        sampled = true;
+      }
+    }
+    const uint32_t ledMv = pinMv * fl.monitorScaleX1000 / 1000u;
+    if (sampled && ledMv > fl.monitorTripMv) {
+      _fault = true;
+      goDark(maxDuty(fl.pwmResolutionBits));
+      LOG_ERR("FrontlightMgr", "LED rail %u mV > %u mV trip: light off until switched on again",
+              static_cast<unsigned>(ledMv), static_cast<unsigned>(fl.monitorTripMv));
+    }
+  }
+  xSemaphoreGive(_gateLock);
 }
 
 #ifdef FREEINK_FRONTLIGHT_LS
@@ -435,6 +666,19 @@ void FrontlightManager::setBrightnessLevel(uint8_t level) {
   apply();
 #else
   (void)level;
+#endif
+}
+
+void FrontlightManager::prepareForSleep() {
+#if FREEINK_CAP_FRONTLIGHT
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (!_begun || fl.gpio == BoardConfig::PIN_UNASSIGNED || !gatedPath(fl)) return;
+  const GateGuard guard(_gateLock);
+  goDark(maxDuty(fl.pwmResolutionBits));
+  detachChannel(fl.gpio, LEDC_CH_COOL);
+  padToGpio(fl.gpio, darkLevel(fl));  // the detached pad keeps the GPIO path; re-assert its level
+  _begun = false;                     // later apply() calls are ignored until the next begin()
+  LOG_DBG("FrontlightMgr", "prepareForSleep: dark, LEDC detached");
 #endif
 }
 

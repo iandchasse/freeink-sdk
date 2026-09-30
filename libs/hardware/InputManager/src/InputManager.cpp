@@ -1,5 +1,7 @@
 #include "InputManager.h"
 
+#include <SharedAdc.h>
+
 #include <algorithm>
 
 #include "MultiTouchGestureMath.h"
@@ -104,7 +106,7 @@ void InputManager::begin() {
     pinMode(BUTTON_ADC_PIN_1, INPUT);
     pinMode(BUTTON_ADC_PIN_2, INPUT);
     pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
-    analogSetAttenuation(ADC_11db);
+    freeink::adc::setAttenuation(ADC_11db);
     beginTouch();
     return;
   }
@@ -114,7 +116,7 @@ void InputManager::begin() {
     for (const BoardConfig::AdcLadder& ladder : BoardConfig::ACTIVE.adcLadders.ladders) {
       if (ladder.pin >= 0) pinMode(ladder.pin, INPUT);
     }
-    analogSetAttenuation(ADC_11db);
+    freeink::adc::setAttenuation(ADC_11db);
     if (BoardConfig::ACTIVE.input.power >= 0) pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
     beginTouch();
     return;
@@ -124,7 +126,7 @@ void InputManager::begin() {
     if (BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
       pinMode(BoardConfig::ACTIVE.input.adcLadderPin, INPUT);
     }
-    analogSetAttenuation(ADC_11db);
+    freeink::adc::setAttenuation(ADC_11db);
     if (BoardConfig::ACTIVE.input.up >= 0) pinMode(BoardConfig::ACTIVE.input.up, INPUT_PULLUP);
     if (BoardConfig::ACTIVE.input.down >= 0) pinMode(BoardConfig::ACTIVE.input.down, INPUT_PULLUP);
     if (BoardConfig::ACTIVE.input.power >= 0) {
@@ -167,6 +169,7 @@ int InputManager::getButtonFromADC(const int adcValue, const int ranges[], const
 // averaged: the upper ladder levels sit where the 11 dB curve compresses.
 void InputManager::sampleAdcLadder(const int8_t pin, const uint8_t oversample, int& raw, int& mv) {
   const uint8_t n = oversample == 0 ? 1 : oversample;
+  const freeink::adc::Lock lock;
   raw = analogRead(pin);
   int32_t mvSum = 0;
   for (uint8_t i = 0; i < n; ++i) {
@@ -197,10 +200,10 @@ void InputManager::readButtonAdc(ButtonAdcSample& group1, ButtonAdcSample& group
     return;
   }
 
-  group1.raw = analogRead(BUTTON_ADC_PIN_1);
+  group1.raw = freeink::adc::readRaw(BUTTON_ADC_PIN_1);
   group1.button = getButtonFromADC(group1.raw, ADC_RANGES_1, NUM_BUTTONS_1);
 
-  group2.raw = analogRead(BUTTON_ADC_PIN_2);
+  group2.raw = freeink::adc::readRaw(BUTTON_ADC_PIN_2);
   const int b2 = getButtonFromADC(group2.raw, ADC_RANGES_2, NUM_BUTTONS_2);
   group2.button = b2 >= 0 ? b2 + 4 : -1;  // map group-2 local 0/1 to BTN_UP / BTN_DOWN
 }
@@ -210,7 +213,7 @@ uint8_t InputManager::getState() {
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder) {
     if (BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
-      const int mv = analogReadMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
+      const int mv = freeink::adc::readMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
       if (mv >= 2400 && mv <= 2800)      state |= (1 << BTN_BACK);    // ~2592 mV
       else if (mv >= 1780 && mv <= 2140) state |= (1 << BTN_LEFT);    // ~1956 mV
       else if (mv >= 1140 && mv <= 1500) state |= (1 << BTN_RIGHT);   // ~1316 mV
@@ -249,14 +252,14 @@ uint8_t InputManager::getState() {
   }
 
   // Read GPIO1 buttons
-  const int adcValue1 = analogRead(BUTTON_ADC_PIN_1);
+  const int adcValue1 = freeink::adc::readRaw(BUTTON_ADC_PIN_1);
   const int button1 = getButtonFromADC(adcValue1, ADC_RANGES_1, NUM_BUTTONS_1);
   if (button1 >= 0) {
     state |= (1 << button1);
   }
 
   // Read GPIO2 buttons
-  const int adcValue2 = analogRead(BUTTON_ADC_PIN_2);
+  const int adcValue2 = freeink::adc::readRaw(BUTTON_ADC_PIN_2);
   const int button2 = getButtonFromADC(adcValue2, ADC_RANGES_2, NUM_BUTTONS_2);
   if (button2 >= 0) {
     state |= (1 << (button2 + 4));

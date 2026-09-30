@@ -693,6 +693,33 @@ struct FrontlightConfig {
   // on. pwmFrequency still applies (PM1 PWM_FREQ register); resolution is the
   // PM1's fixed 12 bits.
   bool viaPm1Pwm = false;
+  // Enable-gated LED driver (e.g. TI TPS923610, whose ADIM input is both the
+  // enable and the analog dimming input). Setting colorSelectGpio,
+  // enablePulseUs or monitorAdc moves the LEDC light onto the gated path in
+  // FrontlightManager: while dark, `gpio` is a plain GPIO output held at the
+  // inactive level instead of an LEDC output at duty 0.
+  //
+  // One push-pull GPIO that picks which LED string conducts (fixed warm/cool
+  // selection, never PWM'd). Warm when the colour temperature is >= 50%. It
+  // changes only while `gpio` is held dark, and rests at the cool level while
+  // the light is off.
+  int8_t colorSelectGpio = PIN_UNASSIGNED;
+  bool colorSelectWarmHigh = true;  // colorSelectGpio level that selects the warm string
+  // Enable pulse: when lighting from dark, `gpio` is driven active as a plain
+  // GPIO for this long before the PWM carrier starts. 0 = no pulse. Repeated
+  // whenever the light was dark for 2 ms or more (the TPS923610 shuts down
+  // after 2.5 ms LOW).
+  uint16_t enablePulseUs = 0;
+  // Minimum time `gpio` stays dark before the next enable, counted from when
+  // the light went dark (TPS923610: >= 3 ms also clears a latched OVP).
+  uint8_t offDwellMs = 0;
+  // LED supply over-voltage monitor: an ADC pin sensing the LED rail through a
+  // divider, read every 100 ms while lit. V_LED = mV * monitorScaleX1000 / 1000.
+  // Above monitorTripMv the light goes dark and FrontlightManager::fault()
+  // latches until the light is switched on again. Off when any is unset/0.
+  int8_t monitorAdc = PIN_UNASSIGNED;
+  uint16_t monitorScaleX1000 = 0;
+  uint16_t monitorTripMv = 0;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven
@@ -1955,9 +1982,20 @@ static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
 // rules: silkscreen-pcb docs/HARDWARE.md §13 (GPIO map) and §13.1 (firmware
 // contract). Panel VDDIO/VCI sit on the always-on 3V3 with no switch (§6.1), and
 // the LDO enable is tied to VIN, so there is no power latch (§3.5). The eight
-// keys are on two ADC ladders (IO1, IO4; §9.1). Touch (§8) and the front light
-// (§7) are optional parts and are not described here yet: IO42 (ADIM) and IO40
-// (COLOR_SEL) are parked LOW and IO11 (TP_RST) is held LOW in sleep.
+// keys are on two ADC ladders (IO1, IO4; §9.1). The front light (§7) is an
+// optional TPS923610 block driven only when the build sets FREEINK_CAP_FRONTLIGHT;
+// otherwise IO42 (ADIM) and IO40 (COLOR_SEL) stay parked LOW. Touch (§8) is
+// optional and not described here yet: IO11 (TP_RST) is held LOW in sleep.
+//
+// Software over-voltage trip on the front light's LED rail (LED_SW), in mV. 23 V
+// clears the bonded ~15 V panel light on J3 and an external J6 string of up to
+// 22 V Vf, and stays below the TPS923610's minimum OVP threshold (24.25 V,
+// SNVSCN8 §6.5) so the software trip acts before the driver's own OVP.
+#ifndef SILKSCREEN_FRONTLIGHT_TRIP_MV
+#define SILKSCREEN_FRONTLIGHT_TRIP_MV 23000
+#endif
+static_assert(SILKSCREEN_FRONTLIGHT_TRIP_MV < 24250,
+              "Silkscreen front-light trip must stay below the TPS923610 minimum OVP (24.25 V)");
 constexpr BoardProfile SILKSCREEN = {
     Board::Silkscreen,
     "silkscreen",
@@ -1983,7 +2021,13 @@ constexpr BoardProfile SILKSCREEN = {
     2.0f,            // batteryDividerMultiplier: R12/R10 1M/1M
     PIN_UNASSIGNED,  // usbDetect: no GPIO senses VBUS (§4)
     NO_TOUCH,
-    NO_FRONTLIGHT,
+    // Front light (§7, §13.1): TPS923610 ADIM on IO42 is both enable and analog dimming.
+    // 25 kHz carrier (TI: 10-200 kHz) at 10 bits: Arduino-ESP32 3.x clocks LEDC from the
+    // 40 MHz XTAL, and 40 MHz / 25 kHz = 1600 >= 2^10 (11 bits would need 2048).
+    // COLOR_SEL IO40 HIGH = warm (Q5), LOW = cool through the U12 inverter. Enable: dark
+    // >= 3 ms, IO42 HIGH 150 us (>= 100 us), then the carrier. LED_MONIT IO2 = LED_SW x
+    // 120k / 1.12M, so V_LED_SW = mV x 9.333.
+    {42, 25000, 10, true, PIN_UNASSIGNED, false, 40, true, 150, 3, 2, 9333, SILKSCREEN_FRONTLIGHT_TRIP_MV},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
@@ -1998,15 +2042,15 @@ constexpr BoardProfile SILKSCREEN = {
     // pull-ups (§10). 100 kHz until 400 kHz is measured on the board. EN32KHZ cleared;
     // the alternate U14 RV-8263-C7 (PCF85063-compatible) is probed at 0x51. No backup
     // cell, so time is fetched again whenever the RTC reports it lost.
-    {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None, false, false, false, true, RtcType::Pcf85063,
-     0x51, true},
+    {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None, false, false, false, true, RtcType::Pcf85063, 0x51,
+     true},
     1.0f,  // uiScale: button-navigated
     // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5). Sleep at
     // 3.4 V on P+, above the ~3.3 V "0%" point; the DW01A 2.4 V trip is a last resort.
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400},
-    0,                   // displayControllerVariant: SSD1677, not probed
-    {},                  // viewableInsets: X4 default until the bezel is measured
-    false,               // batteryChargeStatusActiveHigh: unused (no digital STAT)
+    0,      // displayControllerVariant: SSD1677, not probed
+    {},     // viewableInsets: X4 default until the bezel is measured
+    false,  // batteryChargeStatusActiveHigh: unused (no digital STAT)
     NO_I2C_FRONTLIGHT,
     // parkedPins {pin, boot, sleep}. EPD CS has no pull-up: HIGH before any SCLK edge
     // and through sleep (§6.1). ADIM and COLOR_SEL LOW (§7, §13.1). Touch reset LOW in
@@ -2052,6 +2096,8 @@ constexpr BoardProfile SILKSCREEN = {
 
 static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
+static_assert(40000000u / SILKSCREEN.frontlight.pwmFrequency >= (1u << SILKSCREEN.frontlight.pwmResolutionBits),
+              "Silkscreen front-light LEDC resolution is not reachable from the 40 MHz XTAL at this frequency");
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
@@ -2249,7 +2295,8 @@ inline bool hasHomeKey() { return ACTIVE.touch.hasHomeKey; }
 inline bool hasPwmFrontlight() { return ACTIVE.frontlight.gpio != PIN_UNASSIGNED || ACTIVE.frontlight.viaPm1Pwm; }
 inline bool hasI2cFrontlight() { return ACTIVE.i2cFrontlight.controller != I2cFrontlightController::None; }
 inline bool hasColorTemperatureFrontlight() {
-  return (ACTIVE.frontlight.gpio != PIN_UNASSIGNED && ACTIVE.frontlight.gpioWarm != PIN_UNASSIGNED) ||
+  return (ACTIVE.frontlight.gpio != PIN_UNASSIGNED &&
+          (ACTIVE.frontlight.gpioWarm != PIN_UNASSIGNED || ACTIVE.frontlight.colorSelectGpio != PIN_UNASSIGNED)) ||
          ACTIVE.i2cFrontlight.controller == I2cFrontlightController::Lm3630a;
 }
 inline bool hasAudio() { return ACTIVE.audio.output != AudioOutput::None; }

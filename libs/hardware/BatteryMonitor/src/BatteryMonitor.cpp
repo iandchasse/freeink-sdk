@@ -4,6 +4,7 @@
 #include <BoardConfig.h>
 #include <Logging.h>
 #include <M5Pm1.h>
+#include <SharedAdc.h>
 #include <esp_idf_version.h>
 #if ESP_IDF_VERSION_MAJOR < 5
 #include <esp_adc_cal.h>
@@ -508,7 +509,7 @@ uint16_t BatteryMonitor::readMillivolts() const {
   if (!hasAdcBackend()) return 0;
 #if ESP_IDF_VERSION_MAJOR < 5
   // ESP-IDF 4.x doesn't have analogReadMilliVolts, so calibrate manually.
-  const uint16_t raw = analogRead(_adcPin);
+  const uint16_t raw = freeink::adc::readRaw(_adcPin);
   esp_adc_cal_characteristics_t adc_chars;
   esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
   const uint16_t mv = esp_adc_cal_raw_to_voltage(raw, &adc_chars);
@@ -523,10 +524,10 @@ uint16_t BatteryMonitor::readMillivolts() const {
     pinMode(ce, OUTPUT);
     digitalWrite(ce, activeHigh ? LOW : HIGH);  // pause charging
     delay(5);
-    mv = analogReadMilliVolts(_adcPin);
+    mv = freeink::adc::readMilliVolts(_adcPin);
     digitalWrite(ce, activeHigh ? HIGH : LOW);  // resume charging
   } else {
-    mv = analogReadMilliVolts(_adcPin);
+    mv = freeink::adc::readMilliVolts(_adcPin);
   }
 #endif
 
@@ -607,7 +608,10 @@ uint16_t BatteryMonitor::readMillivoltsAveraged(const uint8_t samples) const {
     return readMillivolts();
   }
   uint32_t sum = 0;
-  for (uint8_t i = 0; i < samples; ++i) sum += analogReadMilliVolts(_adcPin);
+  {
+    const freeink::adc::Lock lock;
+    for (uint8_t i = 0; i < samples; ++i) sum += analogReadMilliVolts(_adcPin);
+  }
   return static_cast<uint16_t>(static_cast<float>(sum / samples) * _dividerMultiplier);
 #endif
 }
@@ -703,7 +707,10 @@ void BatteryMonitor::pollChargeStatus() {
     }
     const uint8_t n = ladder.oversample == 0 ? 1 : ladder.oversample;
     uint32_t sum = 0;
-    for (uint8_t i = 0; i < n; ++i) sum += analogReadMilliVolts(ladder.pin);
+    {
+      const freeink::adc::Lock lock;
+      for (uint8_t i = 0; i < n; ++i) sum += analogReadMilliVolts(ladder.pin);
+    }
     const uint32_t mv = sum / n;
     g_chargeSampled = true;
     g_chargeLastSampleMs = now;
