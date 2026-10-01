@@ -76,6 +76,7 @@ FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return _dev; }
 
 FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   if (!initialized || !_dev) return nullptr;
+  syncVolume();
   _vol.end();
   initialized = false;
   cachedTotalBytes = 0;
@@ -123,9 +124,13 @@ void SDCardManager::shutdown() {
   if (BoardConfig::ACTIVE.sdmmc.parkLowWhenOff) {
     // Park even when nothing is mounted: a failed mount, or the raw USB-MSC
     // handoff (host alive, filesystem detached), still leaves the pads to settle.
-    // Unmount, tear the host down, drive the bus LOW with pulls off, gate the
-    // card off, and keep the bus LOW while SD_VDD bleeds down (>= 20 ms).
-    if (initialized) _vol.end();
+    // Write the cached sectors back, unmount, tear the host down, drive the bus
+    // LOW with pulls off, gate the card off, and keep the bus LOW while SD_VDD
+    // bleeds down (>= 20 ms).
+    if (initialized) {
+      syncVolume();
+      _vol.end();
+    }
     if (_dev) _dev->end();
     BoardConfig::parkSdmmcBus();
     delay(20);
@@ -136,8 +141,9 @@ void SDCardManager::shutdown() {
     return;
   }
   if (!initialized || !_dev) return;
-  // FsVolume::end() flushes SdFat's cached FAT/directory sectors; SDMMC block
-  // writes are synchronous, so the card is consistent once it returns.
+  // FsVolume::end() writes nothing back, so sync first. SDMMC block writes are
+  // synchronous, so the card is consistent once the sync returns.
+  syncVolume();
   _vol.end();
   _dev->end();  // frees the card and runs sdmmc_host_deinit()
   // sdmmc_host_deinit() leaves the bus pads in their last GPIO-matrix state:
@@ -293,6 +299,7 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   // through. The card stays initialized and selected; remounting later goes
   // back through begin(), whose sd.begin() re-runs SdCard::begin() on the same
   // (factory-owned, statically allocated) card object.
+  syncVolume();
   sd.FsVolume::end();
   initialized = false;
   cachedTotalBytes = 0;
@@ -307,7 +314,19 @@ FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return nullptr; }
 FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() { return nullptr; }
 
 #endif  // USE_BLOCK_DEVICE_INTERFACE || HAS_SDIO_CLASS
+
+void SDCardManager::shutdown() {
+  if (initialized) syncVolume();
+}
 #endif  // FREEINK_SD_SDMMC
+
+void SDCardManager::syncVolume() {
+  if (!initialized) return;
+  FsFile root;
+  if (!root.openRoot(&vol()) || !root.sync()) {
+    if (Serial) Serial.printf("[%lu] [SD] Could not write the cached sectors back\n", millis());
+  }
+}
 
 bool SDCardManager::ready() const {
   return initialized;

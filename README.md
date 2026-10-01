@@ -392,7 +392,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_I2C_RECOVERY` | `SensorsConfig::i2cBusRecovery` (stuck-bus recovery, sleep release in `SharedI2c.h`) | on for Silkscreen |
 | `FREEINK_CAP_DISPLAY_PROBE_POLICY` | the `DisplayProbeConfig` probe policy and `DisplayPins::busyPullUp`, read through `BoardConfig::displayProbePolicy()` / `displayBusyPullUp()` (the X4-family defaults without it), `displayControllerSource()`, and the UltraChip deep sleep in `PowerManager::sleepPanelWithoutDriver()` | on for Silkscreen |
 | `FREEINK_CAP_PROBE_IDENTITY` | the identity checks of `TouchConfig::requireFocalTechId` and `SensorsConfig::rtcIdentityCheck`, read through `BoardConfig::touchIdentityCheck()` / `rtcIdentityCheck()` (false without it), the probe's refused-device record and `Rtc::rejectedAddress()` | on for Silkscreen |
-| `FREEINK_CAP_FRONTLIGHT_PROBE` | the front light's switch-on load probe (`FrontlightConfig::loadProbeMs` / `railSafeV`): `FrontlightManager::load()`, `stringMissing()` and `restoreAllowed()` (Unknown / false / true without it), the load record in RTC memory, and the wait for the LED rail before the colour select moves after a trip. Needs `FREEINK_CAP_FRONTLIGHT` | on for Silkscreen when its env compiles the light in |
+| `FREEINK_CAP_FRONTLIGHT_PROBE` | the front light's switch-on load probe (`FrontlightConfig::loadProbeWindowMs` / `loadProbePeriodMs` / `railSafeV`): `FrontlightManager::probing()`, `load()`, `stringMissing()` and `restoreAllowed()` (false / Unknown / false / true without it), the load record in RTC memory, and the wait for the LED rail before the colour select moves after a trip. Needs `FREEINK_CAP_FRONTLIGHT` | on for Silkscreen when its env compiles the light in |
 
 **Other flags:**
 
@@ -868,8 +868,12 @@ automatically as a dependency of `SDCardManager`.
    output; every SDK ADC read takes the `SharedAdc.h` lock, which fixes a race
    in which a render-task battery read made a concurrent key-ladder read return
    0 (a phantom RIGHT/DOWN on the Xteink ladders) or a battery sample read 0 mV;
-   and touch drivers on the sensor-bus pins run at `SensorsConfig::i2cHz`
-   (`busHz()`), which is the clock every existing board already used.
+   touch drivers on the sensor-bus pins run at `SensorsConfig::i2cHz`
+   (`busHz()`), which is the clock every existing board already used; and
+   `SDCardManager::shutdown()` and `detachFilesystemForRawAccess()` write
+   SdFat's cached directory/data and FAT sectors back before the volume is
+   dropped (`FsVolume::end()` writes nothing), so a sector a file left dirty is
+   not lost when the card's power is gated or a USB host takes the card.
 
 ### Optional and swappable parts
 
@@ -892,7 +896,7 @@ kinds, cheapest first:
     address (`requireFocalTechId`, `rtcIdentityCheck`).
 - **Detected on use.** The part shows itself only while it runs, as a front
   light's load does. Detect it inside the enable the user asks for
-  (`FrontlightConfig::loadProbeMs`), never on its own at a boot or a wake. Keep the
+  (`FrontlightConfig::loadProbeWindowMs`), never on its own at a boot or a wake. Keep the
   result where a restore-on-wake can ask for it (`restoreAllowed()`).
 - **A different screen or controller family.** A separate profile and env (step 3
   above), since nothing can be shown until the driver is right.
@@ -923,7 +927,7 @@ Leave a field out and the board keeps the old behaviour.
 | `FrontlightConfig` | `colorSelectGpio`, `colorSelectWarmHigh` (none, true) | One GPIO picks the warm or cool string (fixed choice at warmth ≥ 50 %, never PWM'd), switched only while the light is dark. |
 | `FrontlightConfig` | `enablePulseUs`, `offDwellMs` (0) | Enable-gated driver (e.g. TPS923610 `ADIM`): dark for `offDwellMs` before each enable, then the pin HIGH for `enablePulseUs`, then the PWM carrier. |
 | `FrontlightConfig` | `monitorAdc`, `monitorScaleX1000`, `monitorTripMv` (off) | LED-rail over-voltage monitor every 100 ms while lit; above the trip the light goes dark and `FrontlightManager::fault()` latches: the light stays dark at any brightness, `on()` included, until it is switched off (brightness 0) or `clearFault()` is called; the next non-zero brightness then runs the full enable sequence. The latch is RAM only, so a consumer that restores the light at boot should also clear its saved "on". |
-| `FrontlightConfig` | `loadProbeMs`, `railSafeV` (0) | For a light that may not be fitted. Each enable (a switch-on, or a colour change while lit) reads the monitor every 1 ms for `loadProbeMs` before the 100 ms ticks start; a reading above the trip means the selected string has no load and the light goes dark at once. With a colour select the other string is tried in the same call: if it lights, the first is recorded missing and later requests for it light the other one until a cold boot (a later no-light result keeps that mark); otherwise `load()` reads Absent and `fault()` latches as for a trip. A second try the rail blocks (it had not fallen in time) latches `fault()` without a no-light result. The record (`load()`, `stringMissing()`) lives in RTC memory, kept across deep sleep and software restarts, and a consumer that restores the light at boot asks `restoreAllowed()` first, so a wake never re-enables the boost into nothing. After any trip the colour select moves only once the rail reads `railSafeV` volts or less (waited for at most 4 s; a rail watch on the monitor timer, or `prepareForSleep()`), so the boost output's charge cannot discharge through a string on the other side. Probe trips are not in-use trips: they leave `monitorDiagnostics()` alone. Needs `FREEINK_CAP_FRONTLIGHT_PROBE`. |
+| `FrontlightConfig` | `loadProbeWindowMs`, `railSafeV`, `loadProbePeriodMs` (0, 0, 20) | For a light that may not be fitted. Each enable (a switch-on, or a colour change while lit) reads the monitor every `loadProbePeriodMs` for `loadProbeWindowMs` before the 100 ms ticks start, on the monitor's timer: the call that lit it returns at once, and `probing()` stays true until the switch-on has decided (brightness changes apply meanwhile, a colour change once it has decided). Any reading above the trip means the selected string has no load and the light goes dark at once. With a colour select the other string is then tried once the rail allows: if it lights, the first is recorded missing and later requests for it light the other one until a cold boot (a later no-light result keeps that mark); otherwise `load()` reads Absent and `fault()` latches as for a trip. A second try the rail blocks (it had not fallen in time) latches `fault()` without a no-light result. The record (`load()`, `stringMissing()`) lives in RTC memory, kept across deep sleep and software restarts, and a consumer that restores the light at boot asks `restoreAllowed()` first, so a wake never re-enables the boost into nothing. After any trip the colour select moves only once the rail reads `railSafeV` volts or less (waited for at most 4 s; a rail watch on the monitor timer, or `prepareForSleep()`), so the boost output's charge cannot discharge through a string on the other side. Probe trips are not in-use trips: they leave `monitorDiagnostics()` alone. Needs `FREEINK_CAP_FRONTLIGHT_PROBE`. |
 | `SensorsConfig` | `rtcLowPower` (false) | DS3231: clear `EN32KHZ`; PCF85063-class: `CLKOUT` off. |
 | `SensorsConfig` | `rtcFallbackType`/`rtcFallbackAddr` (none) | Second RTC footprint, probed when the first does not answer. |
 | `SensorsConfig` | `rtcResyncWhenInvalid` (false) | No RTC backup cell: the consumer re-fetches the time whenever the RTC reports it invalid. |
@@ -937,6 +941,7 @@ Leave a field out and the board keeps the old behaviour.
 | `PowerConfig` | `wakeNoInputTimeoutS`, `storageErrorSleepS`, `awakeInputCapMin` (0/0/0) | Data for the consumer, on battery: sleep again after a power-button wake with no input, leave a dead-end storage-error screen, and an awake cap that only input (not client traffic) extends. |
 | `PowerConfig` | `ladderPresenceProbe` (false) | `InputStyle::AdcLadders`: at every reset but a deep-sleep wake, `InputManager::begin()` reads each ladder pin with the internal pull-down, then the pull-up (about 2 ms each), and a pin that follows both from rail to rail (no pull-up fitted, `ProbeChecks.h`) is switched off for the session (its `ACTIVE` pin `PIN_UNASSIGNED`), so a floating ladder cannot report phantom keys. Both pulls end off; the result is kept in RTC memory for deep-sleep wakes. `InputManager::ladderPresence()` reports it. Needs `FREEINK_CAP_ADC_LADDERS` and `FREEINK_CAP_POWER_POLICY` (the field is read through `powerPolicy()`). |
 | `PowerConfig` | `powerPinIdleCheck` (false) | `PowerManager::checkPowerPinIdle()`, called early in `setup()` (radio off), reads the power pin on the ADC at every reset but a deep-sleep wake. Idling between the logic levels (0.25-0.75 x VDD), the pin is switched off for the session (`input.power` `PIN_UNASSIGNED`): nothing reads it, waits on it or arms it, and `deepSleepUntilPowerButton()` holds its pad with the input off and sleeps with no wake source, so a reset starts the board. `powerPinCheck()` reports the result for the consumer's message. |
+| `PowerConfig` | `noChargeableCellNotice` (false) | Data for the consumer: on external power with the battery reading below `BatteryMonitor::CELL_PRESENT_MIN_MV`, there is no cell or one too flat for the charger to start, and the UI says so instead of showing a charge state. |
 
 Helpers and hooks the consumer calls when a board sets these:
 `BoardConfig::holdPowerRails()` first in `setup()`; with `powerPinIdleCheck`,

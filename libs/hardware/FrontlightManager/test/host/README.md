@@ -2,7 +2,7 @@
 
 `test_load_policy.cpp` runs the rules in `FrontlightLoad.h` that
 `FrontlightManager` applies around its switch-on load probe
-(`FrontlightConfig::loadProbeMs`, `FREEINK_CAP_FRONTLIGHT_PROBE`): which string a
+(`FrontlightConfig::loadProbeWindowMs`, `FREEINK_CAP_FRONTLIGHT_PROBE`): which string a
 switch-on lights, when the other string is tried after a trip, when a string is
 recorded missing, when the record says no light (and Restore Light on Wake stays
 dark), what an in-use trip changes, and the RTC-memory form with its checks.
@@ -19,6 +19,6 @@ c++ -std=c++17 -Wall -Wextra -Werror \
 ```
 
 The header has no hardware dependency, so no stubs are needed. The probe itself
-(the 1 ms readings of `LED_MONIT` after the enable pulse, the rail wait before the
-colour select moves) runs only on a board: the Silkscreen test firmware's T9 and
+(the readings of `LED_MONIT` on the monitor timer after the enable pulse, the rail
+wait before the colour select moves) runs only on a board: the Silkscreen test firmware's T9 and
 T10 report it.

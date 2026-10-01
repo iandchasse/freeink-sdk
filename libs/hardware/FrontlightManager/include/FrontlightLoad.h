@@ -1,7 +1,7 @@
 #pragma once
 
 // FreeInk SDK — the front-light load record and its rules
-// (FrontlightConfig::loadProbeMs, FREEINK_CAP_FRONTLIGHT_PROBE).
+// (FrontlightConfig::loadProbeWindowMs, FREEINK_CAP_FRONTLIGHT_PROBE).
 //
 // Plain data and decisions with no hardware access, so a host test can run them
 // (test/host/test_load_policy.cpp). FrontlightManager owns the one record, updates

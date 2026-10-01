@@ -148,13 +148,13 @@ constexpr uint64_t MONITOR_PERIOD_US = 100000;  // LED-rail monitor rate while l
 constexpr int64_t REENABLE_AFTER_DARK_US = 2000;
 constexpr TickType_t MONITOR_ADC_WAIT = pdMS_TO_TICKS(10);
 #if FREEINK_CAP_FRONTLIGHT_PROBE
-// Load probe: one monitor reading per FreeRTOS tick (1 ms at the pinned 1 kHz).
-constexpr TickType_t PROBE_PERIOD = 1;
-// After a trip: the rail is read this often while the colour select waits for it,
-// for at most RAIL_WAIT_MAX_US. That bound covers a boost output that discharges
-// through its monitor divider alone (Silkscreen: 4.7 uF x 1.12 MOhm, 25.5 V down to
-// 15 V in 2.8 s at the nameplate capacitance).
-constexpr TickType_t RAIL_POLL = pdMS_TO_TICKS(20);
+// After a trip: the rail is read this often while the colour select waits for it
+// (on the monitor timer, or in waitRailSafe() at sleep entry), for at most
+// RAIL_WAIT_MAX_US. That bound covers a boost output that discharges through its
+// monitor divider alone (Silkscreen: 4.7 uF x 1.12 MOhm, 25.5 V down to 15 V in
+// 2.8 s at the nameplate capacitance).
+constexpr uint64_t RAIL_POLL_US = 20000;
+constexpr TickType_t RAIL_POLL = pdMS_TO_TICKS(RAIL_POLL_US / 1000);
 constexpr int64_t RAIL_WAIT_MAX_US = 4000000;
 
 // The load record across deep sleep and software restarts (FrontlightLoad.h). A
@@ -303,6 +303,7 @@ void FrontlightManager::begin() {
       }
 #if FREEINK_CAP_FRONTLIGHT_PROBE
       _railCharged = false;
+      endProbe();
       restoreRecord();
 #endif
     }
@@ -493,11 +494,21 @@ void FrontlightManager::applyGated(const uint32_t duty, const uint32_t full) {
   const GateGuard guard(_gateLock);
   if (duty == 0) {
     _fault = false;  // switching the light off re-arms the monitor latch
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+    endProbe();  // and abandons a switch-on still deciding its load
+#endif
     goDark(full);
     return;
   }
   if (_fault) return;  // tripped: stays dark until switched off or clearFault()
 #if FREEINK_CAP_FRONTLIGHT_PROBE
+  if (_probe.phase != ProbePhase::Idle) {
+    // A switch-on still deciding its load: the brightness applies now, a colour
+    // change once it has decided (probePassed()).
+    _probe.duty = duty;
+    if (_gatedLit) writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(duty, full, fl.activeHigh));
+    return;
+  }
   const bool colourSelect = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
   const bool warm = freeink::frontlight::targetWarm(_loadRecord, colourSelect, colourSelect && _warmPercent >= 50);
 #else
@@ -509,60 +520,6 @@ void FrontlightManager::applyGated(const uint32_t duty, const uint32_t full) {
   }
   if (_gatedLit) goDark(full);  // colour change: switch strings only with the driver dark
   lightUp(duty, full, warm);
-#if FREEINK_CAP_FRONTLIGHT_PROBE
-  if (_probeLit) {
-    freeink::frontlight::noteLit(_loadRecord, warm);
-    saveRecord();
-    return;
-  }
-  if (_railBlocked) {
-    // Never tried: the colour select could not move. The record stays as it was.
-    _fault = true;
-    LOG_ERR("FrontlightMgr", "LED rail did not fall after the last trip: light off until switched on again");
-    return;
-  }
-  // No load on that string. Try the other one in this same switch-on, unless it is
-  // known to be missing.
-  if (freeink::frontlight::noteTripped(_loadRecord, colourSelect, warm, false)) {
-#if FREEINK_DIAGNOSTICS
-    ++_probeDiag.secondTries;
-#endif
-    lightUp(duty, full, !warm);
-    if (_probeLit) {
-      freeink::frontlight::noteOtherLit(_loadRecord, warm);
-      saveRecord();
-      LOG_ERR("FrontlightMgr", "No %s string: the %s one is used until a cold boot", warm ? "warm" : "cool",
-              warm ? "cool" : "warm");
-      return;
-    }
-    if (_railBlocked) {
-      // The other string was never tried: the rail did not fall in time, so the
-      // colour select could not move. As for a blocked first try, this is not a
-      // no-light result and the record stays as the first trip left it; the
-      // switch-off that clears the fault (goDark) rests the select at cool.
-      _fault = true;
-      LOG_ERR("FrontlightMgr", "LED rail did not fall after the %s trip: the %s string was not tried; light off",
-              warm ? "warm" : "cool", warm ? "cool" : "warm");
-      return;
-    }
-    freeink::frontlight::noteTripped(_loadRecord, colourSelect, !warm, true);
-  }
-  saveRecord();
-  _fault = true;  // no light: dark at any brightness until switched off or clearFault()
-#if FREEINK_DIAGNOSTICS
-  ++_probeDiag.absent;
-#endif
-  LOG_ERR("FrontlightMgr", "No front light answered the switch-on: dark until switched on again");
-  // The colour select rests at cool once the rail allows; the monitor tick watches it.
-  if (_warmSelected) {
-    waitDarkDwell();
-    if (railSafeNow()) {
-      selectWarm(false);
-    } else {
-      startMonitor();
-    }
-  }
-#endif
 }
 
 void FrontlightManager::waitDarkDwell() const {
@@ -597,7 +554,7 @@ void FrontlightManager::goDark(const uint32_t full) {
     // After a trip the boost output is still charged: the monitor tick moves the
     // colour select once the rail has fallen.
     if (!railSafeNow()) {
-      startMonitor();
+      startMonitor(MONITOR_PERIOD_US);
       return;
     }
 #endif
@@ -605,17 +562,21 @@ void FrontlightManager::goDark(const uint32_t full) {
   }
 }
 
-// Caller holds _gateLock; the pad is dark.
-void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const bool warm) {
+// Caller holds _gateLock; the pad is dark. With a load probe, the switch-on decides
+// on the monitor timer (probing() until then).
+void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const bool warm, const bool secondTry) {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   waitDarkDwell();  // also clears a latched driver fault (TPS923610 OVP) before the enable
 #if FREEINK_CAP_FRONTLIGHT_PROBE
-  _probeLit = false;
   // The colour select never moves onto a string while a trip's charge is still on
-  // the boost output.
-  _railBlocked = warm != _warmSelected && !waitRailSafe();
-  if (_railBlocked) return;
+  // the boost output: the monitor timer waits for the rail, then lights.
+  if (warm != _warmSelected && !railSafeNow()) {
+    beginRailWait(duty, warm, secondTry);
+    return;
+  }
   stopMonitor();  // a rail watch may be running
+#else
+  (void)secondTry;
 #endif
   selectWarm(warm);
   // Program the carrier while GPIO still holds the pad; the enable pulse is longer
@@ -628,17 +589,26 @@ void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const 
   }
   padToLedc(fl.gpio, LEDC_CH_COOL);
   _gatedLit = true;
-#if FREEINK_CAP_FRONTLIGHT_PROBE
-  _probeLit = probeLoad(warm);  // dark again when it tripped
-  if (!_probeLit) return;
-#endif
-  startMonitor();
   LOG_DBG("FrontlightMgr", "gated: lit duty=%u warm=%d pulse=%d", static_cast<unsigned>(duty), warm ? 1 : 0,
           pulsed ? 1 : 0);
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+  if (fl.loadProbeWindowMs != 0 && monitorConfigured(fl)) {
+    beginWindow(duty, warm, secondTry);  // dark again if it trips
+    return;
+  }
+  freeink::frontlight::noteLit(_loadRecord, warm);
+  saveRecord();
+  endProbe();
+#endif
+  startMonitor(MONITOR_PERIOD_US);
 }
 
-void FrontlightManager::startMonitor() {
-  if (_monitorTimer != nullptr) esp_timer_start_periodic(_monitorTimer, MONITOR_PERIOD_US);
+// Runs the monitor timer at `periodUs`, restarting it if it runs (also from its
+// own callback).
+void FrontlightManager::startMonitor(const uint64_t periodUs) {
+  if (_monitorTimer == nullptr) return;
+  esp_timer_stop(_monitorTimer);  // ESP_ERR_INVALID_STATE when idle: fine
+  esp_timer_start_periodic(_monitorTimer, periodUs);
 }
 
 void FrontlightManager::stopMonitor() {
@@ -647,11 +617,24 @@ void FrontlightManager::stopMonitor() {
 
 void FrontlightManager::monitorTick(void* self) { static_cast<FrontlightManager*>(self)->checkMonitor(); }
 
-// esp_timer task, every MONITOR_PERIOD_US while lit, and (load probe) while dark
-// after a trip until the colour select can rest at cool.
+// esp_timer task, every MONITOR_PERIOD_US while lit, and (load probe) every
+// loadProbePeriodMs in a switch-on's probe window, every RAIL_POLL_US while it
+// waits for the rail, and while dark after a trip until the colour select can rest
+// at cool.
 void FrontlightManager::checkMonitor() {
   // apply() mid-transition: skip this tick rather than block the timer task.
   if (xSemaphoreTake(_gateLock, 0) != pdTRUE) return;
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+  if (_probe.phase != ProbePhase::Idle) {
+    if (_probe.phase == ProbePhase::Window) {
+      probeTick();
+    } else {
+      railWaitTick();
+    }
+    xSemaphoreGive(_gateLock);
+    return;
+  }
+#endif
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (_gatedLit) {
     uint32_t pinMv = 0;
@@ -707,77 +690,206 @@ void FrontlightManager::checkMonitor() {
 }
 
 #if FREEINK_CAP_FRONTLIGHT_PROBE
-// Caller holds _gateLock, with the light just enabled on `warm`. Reads the monitor
-// once a tick for loadProbeMs; true when no reading went above the trip (or the
-// board has no probe). A reading above it means that string has no load: the light
-// goes dark at once and the rail counts as charged. The colour select stays put.
-bool FrontlightManager::probeLoad(const bool warm) {
+// Caller holds _gateLock, with the light just enabled on `warm`: the monitor timer
+// reads the probe window from now on (probeTick()).
+void FrontlightManager::beginWindow(const uint32_t duty, const bool warm, const bool secondTry) {
+  _probe.phase = ProbePhase::Window;
+  _probe.warm = warm;
+  _probe.secondTry = secondTry;
+  _probe.duty = duty;
+  _probe.startUs = esp_timer_get_time();
+  _probe.peakLedMv = 0;
+  _probe.samples = 0;
+  _probing.store(true, std::memory_order_release);
+  const uint8_t periodMs = BoardConfig::ACTIVE.frontlight.loadProbePeriodMs;
+  startMonitor(static_cast<uint64_t>(periodMs != 0 ? periodMs : 1) * 1000u);
+}
+
+// Caller holds _gateLock, dark after a trip: the monitor timer lights `warm` once
+// the rail allows the colour select to move (railWaitTick()).
+void FrontlightManager::beginRailWait(const uint32_t duty, const bool warm, const bool secondTry) {
+  _probe.phase = ProbePhase::RailWait;
+  _probe.warm = warm;
+  _probe.secondTry = secondTry;
+  _probe.duty = duty;
+  _probe.startUs = esp_timer_get_time();
+  _probing.store(true, std::memory_order_release);
+  startMonitor(RAIL_POLL_US);
+}
+
+// The switch-on has decided (or was abandoned). Last, so probing() reads false
+// only once the record and fault() say what it found.
+void FrontlightManager::endProbe() {
+  _probe.phase = ProbePhase::Idle;
+  _probing.store(false, std::memory_order_release);
+}
+
+// Monitor timer, every loadProbePeriodMs in a probe window. Any reading above the
+// trip means the string has no load.
+void FrontlightManager::probeTick() {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
-  if (fl.loadProbeMs == 0 || !monitorConfigured(fl)) return true;
-  const int64_t startUs = esp_timer_get_time();
-  const int64_t endUs = startUs + static_cast<int64_t>(fl.loadProbeMs) * 1000;
-  uint32_t peakMv = 0;
-  uint32_t samples = 0;
-  int64_t tripAtUs = -1;
-  for (;;) {
-    uint32_t pinMv = 0;
-    bool sampled = false;
-    {
-      const freeink::adc::Lock adc(MONITOR_ADC_WAIT);
-      if (adc.held()) {
-        pinMv = analogReadMilliVolts(fl.monitorAdc);
-        sampled = true;
-      }
+  uint32_t pinMv = 0;
+  bool sampled = false;
+  {
+    const freeink::adc::Lock adc(MONITOR_ADC_WAIT);
+    if (adc.held()) {
+      pinMv = analogReadMilliVolts(fl.monitorAdc);
+      sampled = true;
     }
-    const int64_t nowUs = esp_timer_get_time();
-    if (sampled) {
-      ++samples;
-      const uint32_t ledMv = pinMv * fl.monitorScaleX1000 / 1000u;
-      if (ledMv > peakMv) peakMv = ledMv;
-      if (ledMv > fl.monitorTripMv) {
-        tripAtUs = nowUs;
-        break;
-      }
-    }
-    if (nowUs >= endUs) break;
-    vTaskDelay(PROBE_PERIOD);
   }
-  const bool tripped = tripAtUs >= 0;
-  if (tripped) {
-    padToGpio(fl.gpio, darkLevel(fl));
+  const int64_t nowUs = esp_timer_get_time();
+  if (sampled) {
+    ++_probe.samples;
+    const uint32_t ledMv = pinMv * fl.monitorScaleX1000 / 1000u;
+    if (ledMv > _probe.peakLedMv) _probe.peakLedMv = ledMv;
+    if (ledMv > fl.monitorTripMv) {
+      probeTripped(nowUs);
+      return;
+    }
+  }
+  if (nowUs - _probe.startUs >= static_cast<int64_t>(fl.loadProbeWindowMs) * 1000) probePassed();
+}
+
+// No load on the probed string: dark at once, and the rail counts as charged. The
+// other string follows once the rail allows, unless this was it (or it is known
+// to be missing): then no light answered.
+void FrontlightManager::probeTripped(const int64_t tripAtUs) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  padToGpio(fl.gpio, darkLevel(fl));
 #if FREEINK_DIAGNOSTICS
-    _probeDiag.lastDarkAfterTripUs = static_cast<uint32_t>(esp_timer_get_time() - tripAtUs);
+  _probeDiag.lastDarkAfterTripUs = static_cast<uint32_t>(esp_timer_get_time() - tripAtUs);
 #endif
-    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(0, maxDuty(fl.pwmResolutionBits), fl.activeHigh));
-    _gatedLit = false;
-    _darkSinceUs = esp_timer_get_time();
-    markRailCharged();
-  } else {
-    _railCharged = false;  // the rail sits at the lit string's forward voltage
+  writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(0, maxDuty(fl.pwmResolutionBits), fl.activeHigh));
+  _gatedLit = false;
+  _darkSinceUs = esp_timer_get_time();
+  markRailCharged();
+  noteProbeEnd(true, tripAtUs);
+  const bool colourSelect = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
+  const bool warm = _probe.warm;
+  if (freeink::frontlight::noteTripped(_loadRecord, colourSelect, warm, _probe.secondTry)) {
+#if FREEINK_DIAGNOSTICS
+    ++_probeDiag.secondTries;
+#endif
+    beginRailWait(_probe.duty, !warm, true);
+    return;
   }
+  saveRecord();
+  _fault = true;  // no light: dark at any brightness until switched off or clearFault()
+#if FREEINK_DIAGNOSTICS
+  ++_probeDiag.absent;
+#endif
+  LOG_ERR("FrontlightMgr", "No front light answered the switch-on: dark until switched on again");
+  restColourSelectAfterTrip();
+  endProbe();
+}
+
+// The window ended with no reading above the trip: the string is lit, and the 100 ms
+// monitor takes over. A colour asked for meanwhile is a new switch-on on that string.
+void FrontlightManager::probePassed() {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  _railCharged = false;  // the rail sits at the lit string's forward voltage
+  noteProbeEnd(false, 0);
+  const bool warm = _probe.warm;
+  if (_probe.secondTry) {
+    freeink::frontlight::noteOtherLit(_loadRecord, !warm);
+    LOG_ERR("FrontlightMgr", "No %s string: the %s one is used until a cold boot", warm ? "cool" : "warm",
+            warm ? "warm" : "cool");
+  } else {
+    freeink::frontlight::noteLit(_loadRecord, warm);
+  }
+  saveRecord();
+  const bool colourSelect = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
+  const bool target = freeink::frontlight::targetWarm(_loadRecord, colourSelect, colourSelect && _warmPercent >= 50);
+  if (target != _warmSelected) {
+    const uint32_t full = maxDuty(fl.pwmResolutionBits);
+    goDark(full);
+    lightUp(_probe.duty, full, target);  // probing() stays true through it
+    return;
+  }
+  startMonitor(MONITOR_PERIOD_US);
+  endProbe();
+}
+
+// Monitor timer, every RAIL_POLL_US while a switch-on waits for the rail before the
+// colour select moves to its string.
+void FrontlightManager::railWaitTick() {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  const int64_t nowUs = esp_timer_get_time();
+  const int64_t dwellUs = static_cast<int64_t>(fl.offDwellMs) * 1000;
+  if (nowUs - _darkSinceUs >= dwellUs && railSafeNow()) {
+    noteRailWait(_probe.startUs, true);
+    lightUp(_probe.duty, maxDuty(fl.pwmResolutionBits), _probe.warm, _probe.secondTry);
+    return;
+  }
+  if (nowUs - _railChargedAtUs < RAIL_WAIT_MAX_US) return;
+  noteRailWait(_probe.startUs, false);
+  // That string was never tried: the colour select could not move. Not a no-light
+  // result, so the record stays as it was; the switch-off that clears the fault
+  // (goDark) rests the colour select at cool.
+  _fault = true;
+  if (_probe.secondTry) {
+    LOG_ERR("FrontlightMgr", "LED rail did not fall after the %s trip: the %s string was not tried; light off",
+            _probe.warm ? "cool" : "warm", _probe.warm ? "warm" : "cool");
+  } else {
+    LOG_ERR("FrontlightMgr", "LED rail did not fall after the last trip: light off until switched on again");
+  }
+  stopMonitor();
+  endProbe();
+}
+
+// After a no-light result: the colour select rests at cool once the rail allows;
+// until then the monitor timer watches the rail (checkMonitor()).
+void FrontlightManager::restColourSelectAfterTrip() {
+  if (_warmSelected && !railSafeNow()) {
+    startMonitor(MONITOR_PERIOD_US);
+    return;
+  }
+  stopMonitor();
+  if (!_warmSelected) return;
+  waitDarkDwell();
+  selectWarm(false);
+}
+
+void FrontlightManager::noteProbeEnd(const bool tripped, const int64_t tripAtUs) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
 #if FREEINK_DIAGNOSTICS
   ++_probeDiag.probes;
   if (tripped) ++_probeDiag.trips;
-  _probeDiag.lastWarm = warm;
+  _probeDiag.lastWarm = _probe.warm;
   _probeDiag.lastTripped = tripped;
-  _probeDiag.lastTripAfterUs = tripped ? static_cast<uint32_t>(tripAtUs - startUs) : 0;
+  _probeDiag.lastTripAfterUs = tripped ? static_cast<uint32_t>(tripAtUs - _probe.startUs) : 0;
   if (!tripped) _probeDiag.lastDarkAfterTripUs = 0;
-  _probeDiag.lastPeakLedMv = peakMv;
-  _probeDiag.lastSamples = samples;
+  _probeDiag.lastPeakLedMv = _probe.peakLedMv;
+  _probeDiag.lastSamples = _probe.samples;
   _probeDiag.lastMs = millis();
 #endif
   if (tripped) {
-    LOG_INF("FrontlightMgr", "load probe: %s string %u mV > %u mV after %u us: no load", warm ? "warm" : "cool",
-            static_cast<unsigned>(peakMv), static_cast<unsigned>(fl.monitorTripMv),
-            static_cast<unsigned>(tripAtUs - startUs));
-  } else if (samples == 0) {
+    LOG_INF("FrontlightMgr", "load probe: %s string %u mV > %u mV after %u us: no load", _probe.warm ? "warm" : "cool",
+            static_cast<unsigned>(_probe.peakLedMv), static_cast<unsigned>(fl.monitorTripMv),
+            static_cast<unsigned>(tripAtUs - _probe.startUs));
+  } else if (_probe.samples == 0) {
     LOG_ERR("FrontlightMgr", "load probe: ADC busy for %u ms, the 100 ms monitor takes over",
-            static_cast<unsigned>(fl.loadProbeMs));
+            static_cast<unsigned>(fl.loadProbeWindowMs));
   } else {
-    LOG_DBG("FrontlightMgr", "load probe: %s string lit, peak %u mV over %u readings", warm ? "warm" : "cool",
-            static_cast<unsigned>(peakMv), static_cast<unsigned>(samples));
+    LOG_DBG("FrontlightMgr", "load probe: %s string lit, peak %u mV over %u readings", _probe.warm ? "warm" : "cool",
+            static_cast<unsigned>(_probe.peakLedMv), static_cast<unsigned>(_probe.samples));
   }
-  return !tripped;
+}
+
+void FrontlightManager::noteRailWait(const int64_t sinceUs, const bool safe) {
+  const auto waitedMs = static_cast<uint32_t>((esp_timer_get_time() - sinceUs) / 1000);
+#if FREEINK_DIAGNOSTICS
+  ++_probeDiag.railWaits;
+  _probeDiag.lastRailWaitMs = waitedMs;
+  if (!safe) ++_probeDiag.railTimeouts;
+#endif
+  if (safe) {
+    LOG_INF("FrontlightMgr", "LED rail down to %u V after %u ms: colour select free",
+            static_cast<unsigned>(BoardConfig::ACTIVE.frontlight.railSafeV), static_cast<unsigned>(waitedMs));
+  } else {
+    LOG_ERR("FrontlightMgr", "LED rail still above %u V after %u ms",
+            static_cast<unsigned>(BoardConfig::ACTIVE.frontlight.railSafeV), static_cast<unsigned>(waitedMs));
+  }
 }
 
 void FrontlightManager::markRailCharged() {
@@ -809,8 +921,8 @@ bool FrontlightManager::railSafeNow() {
   return true;
 }
 
-// railSafeNow(), polling until RAIL_WAIT_MAX_US after the trip. Blocks the caller
-// (never the esp_timer task) for that long at most.
+// railSafeNow(), polling until RAIL_WAIT_MAX_US after the trip, for the sleep entry.
+// Blocks the caller (never the esp_timer task) for that long at most.
 bool FrontlightManager::waitRailSafe() {
   if (railSafeNow()) return true;
   const int64_t startUs = esp_timer_get_time();
@@ -818,19 +930,7 @@ bool FrontlightManager::waitRailSafe() {
   while (!(safe = railSafeNow()) && esp_timer_get_time() - _railChargedAtUs < RAIL_WAIT_MAX_US) {
     vTaskDelay(RAIL_POLL);
   }
-  const auto waitedMs = static_cast<uint32_t>((esp_timer_get_time() - startUs) / 1000);
-#if FREEINK_DIAGNOSTICS
-  ++_probeDiag.railWaits;
-  _probeDiag.lastRailWaitMs = waitedMs;
-  if (!safe) ++_probeDiag.railTimeouts;
-#endif
-  if (safe) {
-    LOG_INF("FrontlightMgr", "LED rail down to %u V after %u ms: colour select free",
-            static_cast<unsigned>(BoardConfig::ACTIVE.frontlight.railSafeV), static_cast<unsigned>(waitedMs));
-  } else {
-    LOG_ERR("FrontlightMgr", "LED rail still above %u V after %u ms",
-            static_cast<unsigned>(BoardConfig::ACTIVE.frontlight.railSafeV), static_cast<unsigned>(waitedMs));
-  }
+  noteRailWait(startUs, safe);
   return safe;
 }
 
@@ -957,6 +1057,9 @@ void FrontlightManager::prepareForSleep() {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (!_begun || fl.gpio == BoardConfig::PIN_UNASSIGNED || !gatedPath(fl)) return;
   const GateGuard guard(_gateLock);
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+  endProbe();  // a switch-on still deciding its load is abandoned
+#endif
   goDark(maxDuty(fl.pwmResolutionBits));
 #if FREEINK_CAP_FRONTLIGHT_PROBE
   // A rail watch may still hold the colour select on warm: wait for the rail here

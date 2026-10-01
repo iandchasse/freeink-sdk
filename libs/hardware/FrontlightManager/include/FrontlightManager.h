@@ -21,21 +21,24 @@
 // change while lit goes dark first. An optional LED-rail monitor switches the light
 // off and latches fault() on over-voltage.
 //
-// Load probe (FrontlightConfig::loadProbeMs, FREEINK_CAP_FRONTLIGHT_PROBE), for a
-// light that may not be fitted: every enable (a switch-on, or a colour change while
-// lit) reads the monitor every 1 ms for loadProbeMs after the enable pulse. A
-// reading above the trip there means the selected string has no load: the light
-// goes dark at once. With a colour select the other string is tried in the same
-// call; if it lights, the first is recorded missing and never selected again until
-// a cold boot (a later no-light result keeps the mark), and if it does not (or
-// there is none), load() reads Absent and fault() latches as for a trip. A second
-// try the rail blocks latches fault() with the record unchanged. The record
-// (load(), stringMissing()) is kept in RTC memory across deep sleep and software
-// restarts. The consumer enables such a
-// light only when the user asks, or at boot once restoreAllowed() agrees. After
-// any trip the colour select moves only once the LED rail has fallen to railSafeV,
-// so the charge left on the boost output cannot discharge through a string on the
-// other side.
+// Load probe (FrontlightConfig::loadProbeWindowMs, FREEINK_CAP_FRONTLIGHT_PROBE),
+// for a light that may not be fitted: every enable (a switch-on, or a colour change
+// while lit) reads the monitor every loadProbePeriodMs for loadProbeWindowMs after
+// the enable pulse, on the monitor's timer, so the call that lit it returns at
+// once and probing() stays true until the switch-on has decided. Any reading above
+// the trip there means the selected string has no load: the light goes dark at
+// once. With a colour select the other string is then tried, once the LED rail
+// allows; if it lights, the first is recorded missing and never selected again
+// until a cold boot (a later no-light result keeps the mark), and if it does not
+// (or there is none), load() reads Absent and fault() latches as for a trip. A
+// second try the rail blocks latches fault() with the record unchanged. While a
+// switch-on decides, brightness changes apply at once and a colour change waits
+// for its result. The record (load(), stringMissing()) is kept in RTC memory
+// across deep sleep and software restarts. The consumer enables such a light only
+// when the user asks, or at boot once restoreAllowed() agrees. After any trip the
+// colour select moves only once the LED rail has fallen to railSafeV, so the
+// charge left on the boost output cannot discharge through a string on the other
+// side.
 
 #include <Arduino.h>
 #include <BoardConfig.h>
@@ -44,6 +47,9 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#endif
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+#include <atomic>
 #endif
 
 class FrontlightManager {
@@ -105,6 +111,18 @@ class FrontlightManager {
   // runs the full enable sequence.
   bool fault() const { return _fault; }
   void clearFault() { _fault = false; }
+
+  // A switch-on (or a colour change while lit) is still deciding its load: its
+  // probe window, or the wait for the LED rail before the other string. load(),
+  // stringMissing() and fault() then still describe the last decided one. Any
+  // task may call it. Always false without FREEINK_CAP_FRONTLIGHT_PROBE.
+  bool probing() const {
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+    return _probing.load(std::memory_order_acquire);
+#else
+    return false;
+#endif
+  }
 
   // What the load probe found (see the top of this file). Unknown, and no string
   // missing, without FREEINK_CAP_FRONTLIGHT_PROBE or before any probe since a
@@ -169,13 +187,13 @@ class FrontlightManager {
     uint32_t lastTripAfterUs = 0;  // carrier start to that reading
     // that reading to the PWM pad held at its dark level (ADIM LOW), 0 when it lit
     uint32_t lastDarkAfterTripUs = 0;
-    uint32_t lastPeakLedMv = 0;    // highest reading in the last probe window
-    uint32_t lastSamples = 0;      // readings in the last probe window
-    uint32_t lastMs = 0;           // millis() of the last probe
-    uint32_t railWaits = 0;        // colour-select moves that waited for the rail after a trip
-    uint32_t lastRailWaitMs = 0;   // how long the last one waited
-    uint32_t lastRailMv = 0;       // the rail when it ended
-    uint32_t railTimeouts = 0;     // waits that ran out
+    uint32_t lastPeakLedMv = 0;   // highest reading in the last probe window
+    uint32_t lastSamples = 0;     // readings in the last probe window
+    uint32_t lastMs = 0;          // millis() of the last probe's end
+    uint32_t railWaits = 0;       // colour-select moves that waited for the rail after a trip
+    uint32_t lastRailWaitMs = 0;  // how long the last one waited
+    uint32_t lastRailMv = 0;      // the rail when it ended
+    uint32_t railTimeouts = 0;    // waits that ran out
   };
   ProbeDiagnostics probeDiagnostics() const;
 #endif
@@ -234,26 +252,51 @@ class FrontlightManager {
   // against the monitor, which runs on the esp_timer task.
   void applyGated(uint32_t duty, uint32_t full);
   void goDark(uint32_t full);
-  void lightUp(uint32_t duty, uint32_t full, bool warm);
+  // secondTry: the other string, after `warm`'s opposite tripped in the same switch-on.
+  void lightUp(uint32_t duty, uint32_t full, bool warm, bool secondTry = false);
   void waitDarkDwell() const;
   void selectWarm(bool warm);
-  void startMonitor();
+  void startMonitor(uint64_t periodUs);
   void stopMonitor();
   void checkMonitor();
   static void monitorTick(void* self);
 #if FREEINK_CAP_FRONTLIGHT_PROBE
-  // Load probe (see the top of this file). Callers hold _gateLock.
-  bool probeLoad(bool warm);
+  // Load probe (see the top of this file). Callers hold _gateLock; the ticks run
+  // on the monitor's timer.
+  enum class ProbePhase : uint8_t {
+    Idle,
+    Window,    // lit on `warm`, reading the monitor every loadProbePeriodMs
+    RailWait,  // dark, waiting for the rail before the colour select moves to `warm`
+  };
+  struct Probe {
+    ProbePhase phase = ProbePhase::Idle;
+    bool warm = false;       // the string being probed, or the one to light after the rail wait
+    bool secondTry = false;  // the other string, after the first tripped in this switch-on
+    uint32_t duty = 0;       // the duty to light at (brightness changes while deciding land here)
+    int64_t startUs = 0;     // carrier start (Window) or wait start (RailWait)
+    uint32_t peakLedMv = 0;
+    uint32_t samples = 0;
+  };
+  void beginWindow(uint32_t duty, bool warm, bool secondTry);
+  void beginRailWait(uint32_t duty, bool warm, bool secondTry);
+  void endProbe();
+  void probeTick();
+  void railWaitTick();
+  void probeTripped(int64_t tripAtUs);
+  void probePassed();
+  void noteProbeEnd(bool tripped, int64_t tripAtUs);
+  void noteRailWait(int64_t sinceUs, bool safe);
+  void restColourSelectAfterTrip();
   void markRailCharged();
   bool railSafeNow();
   bool waitRailSafe();
   void restoreRecord();
   void saveRecord() const;
   freeink::frontlight::LoadRecord _loadRecord;
-  bool _probeLit = false;        // the last lightUp() lit (and passed its probe)
-  bool _railBlocked = false;     // the last lightUp() could not move the colour select
-  bool _railCharged = false;     // a trip left the boost output charged
-  int64_t _railChargedAtUs = 0;  // esp_timer time of that trip
+  Probe _probe;
+  std::atomic<bool> _probing{false};  // _probe.phase != Idle, for probing()
+  bool _railCharged = false;          // a trip left the boost output charged
+  int64_t _railChargedAtUs = 0;       // esp_timer time of that trip
 #if FREEINK_DIAGNOSTICS
   ProbeDiagnostics _probeDiag;  // written under _gateLock
 #endif

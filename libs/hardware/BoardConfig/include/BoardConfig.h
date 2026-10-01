@@ -342,7 +342,7 @@
 //   DISPLAY_PROBE_POLICY: BoardProfile::displayProbe and DisplayPins::busyPullUp
 //                  (the display-controller probe policy, and the BUSY_N pull-up and
 //                  driver-free deep sleep of an UltraChip panel the probe picked)
-//   FRONTLIGHT_PROBE: FrontlightConfig::loadProbeMs / railSafeV (the switch-on
+//   FRONTLIGHT_PROBE: FrontlightConfig::loadProbeWindowMs / railSafeV (the switch-on
 //                  load probe, its record kept across deep sleep, and the wait for
 //                  the LED rail before the colour select moves after a trip)
 //   PROBE_IDENTITY: TouchConfig::requireFocalTechId and SensorsConfig::rtcIdentityCheck
@@ -816,17 +816,20 @@ struct FrontlightConfig {
   uint16_t monitorScaleX1000 = 0;
   uint16_t monitorTripMv = 0;
   // Load probe (needs the monitor and FREEINK_CAP_FRONTLIGHT_PROBE): after every
-  // enable pulse the monitor is read every 1 ms for this many ms before its
-  // 100 ms ticks start. A reading above monitorTripMv in that window means the
-  // selected string has no load: the light goes dark at once and
-  // FrontlightManager::load() / stringMissing() record it, apart from a trip in
-  // use. With a colour select, the other string is then tried. 0 = no probe.
-  uint8_t loadProbeMs = 0;
+  // enable pulse the monitor is read every loadProbePeriodMs for this many ms,
+  // on its timer (the caller does not wait), before its 100 ms ticks start. Any
+  // reading above monitorTripMv in that window means the selected string has no
+  // load: the light goes dark at once and FrontlightManager::load() /
+  // stringMissing() record it, apart from a trip in use. With a colour select,
+  // the other string is then tried. 0 = no probe.
+  uint16_t loadProbeWindowMs = 0;
   // After a trip leaves the boost output charged near its over-voltage level,
   // the colour select moves only once the LED rail reads this many volts or
   // less (waited for at most 4 s), so that charge does not discharge through a
   // string on the other side. 0 = no wait.
   uint8_t railSafeV = 0;
+  // Reading interval inside the load-probe window (loadProbeWindowMs).
+  uint8_t loadProbePeriodMs = 20;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven
@@ -1010,6 +1013,10 @@ struct PowerConfig {
   // it is switched off for the session (input.power PIN_UNASSIGNED), so no
   // sleep arms it and the board sleeps with no wake source (reset starts it).
   bool powerPinIdleCheck = false;
+  // Data for the consumer: on external power with the battery reading below
+  // BatteryMonitor::CELL_PRESENT_MIN_MV, there is no cell, or one too flat for
+  // the charger to start, so the UI says so instead of showing a charge state.
+  bool noChargeableCellNotice = false;
 };
 
 // Panel rows/columns the device's bezel physically overlaps, in the panel's
@@ -2299,13 +2306,14 @@ constexpr BoardProfile SILKSCREEN = {
     // COLOR_SEL IO40 HIGH = warm (Q5), LOW = cool through the U12 inverter. Enable: dark
     // >= 3 ms, IO42 HIGH 150 us (>= 100 us), then the carrier. LED_MONIT IO2 = LED_SW x
     // 120k / 1.12M, so V_LED_SW = mV x 9.333.
-    // Load probe, 60 ms after each enable: with no string on the selected side, LED_SW
-    // reaches U10's OVP (24.25-25.5 V) within a few ms, and LED_MONIT (10.7 ms RC)
-    // crosses the 23 V trip 25-30 ms later, usually before U10's first retry (a 1 V
-    // sag through R39/R41 takes about 50 ms). After a trip, COLOR_SEL moves only once
+    // Load probe, a reading every 20 ms for 500 ms after each enable: with no string on
+    // the selected side, LED_SW reaches U10's OVP (24.25-25.5 V) within a few ms and
+    // LED_MONIT follows it (10.7 ms RC). Through U10's retries LED_SW sags only slowly
+    // (C9 x R39+R41, about 5.3 s), to about 23.25 V, 1 % above the 23 V trip, so any
+    // one reading above the trip decides. After a trip, COLOR_SEL moves only once
     // LED_SW is at 15 V or less, the bonded string's forward voltage at 13 mA: C9 left
     // near the OVP level would otherwise discharge through the other string (§13.1).
-    {42, 25000, 10, true, PIN_UNASSIGNED, false, 40, true, 150, 3, 2, 9333, SILKSCREEN_FRONTLIGHT_TRIP_MV, 60, 15},
+    {42, 25000, 10, true, PIN_UNASSIGNED, false, 40, true, 150, 3, 2, 9333, SILKSCREEN_FRONTLIGHT_TRIP_MV, 500, 15, 20},
     NO_AUDIO,
     NO_LEDS,
     NO_FLIP,
@@ -2344,12 +2352,16 @@ constexpr BoardProfile SILKSCREEN = {
     //   that floats is switched off at boot. IO18 idles at ~1.76 V with R36 and R72 both
     //   fitted (§9.2), a wake storm or a dead button: that is found at boot and IO18 is
     //   then never armed.
+    // - On USB, P+ below 2.5 V is no cell, or one too flat to charge (the charger is
+    //   enabled only while the cell shows above about 1-1.8 V, §3.3): the UI says so
+    //   instead of showing a charge state.
     // {latch0, latch1, chargeEnable, chargeEnableActiveHigh, lowBatteryCutoffMv,
     //  releaseWaitMaxMs, earlyWakeDecision, abnormalResetLimit, cutoffRadioAllowanceMv,
     //  firmwareUpdateMinMv, awakeCeilingMin, radioOffWhenIdle, wakeNoInputTimeoutS,
-    //  storageErrorSleepS, awakeInputCapMin, ladderPresenceProbe, powerPinIdleCheck}
+    //  storageErrorSleepS, awakeInputCapMin, ladderPresenceProbe, powerPinIdleCheck,
+    //  noChargeableCellNotice}
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400, 5000, true, 3, 100, 3600, 15, true, 180, 60, 60, true,
-     true},
+     true, true},
     0,             // displayControllerVariant: a UC8279's LUT_VER, filled by the boot probe
     {0, 0, 0, 0},  // viewableInsets: every measured case window is the active area + 0.5-0.7 mm
     false,         // batteryChargeStatusActiveHigh: unused (no digital STAT)
@@ -2423,6 +2435,9 @@ static_assert(!FREEINK_DEVICE_SILKSCREEN || !FREEINK_CAP_FRONTLIGHT || FREEINK_C
               "Silkscreen with the front light needs FREEINK_CAP_FRONTLIGHT_PROBE: the boost may be enabled unloaded");
 static_assert(SILKSCREEN.frontlight.railSafeV * 1000u < SILKSCREEN.frontlight.monitorTripMv,
               "Silkscreen front-light rail-safe level must sit below the trip level");
+static_assert(SILKSCREEN.frontlight.loadProbePeriodMs != 0 &&
+                  SILKSCREEN.frontlight.loadProbePeriodMs * 10u <= SILKSCREEN.frontlight.loadProbeWindowMs,
+              "Silkscreen front-light probe needs a reading period and at least 10 readings in its window");
 static_assert(SILKSCREEN.input.power >= 0 && SILKSCREEN.input.power <= 21,
               "Silkscreen wakes only by ext1 on the power button, which must be an RTC GPIO (0-21, §13.1)");
 // J4 touch VDD is unswitched (§8): a fitted tail must get its sleep command, which

@@ -90,8 +90,9 @@ class SDCardManager {
   // second driver is needed for the SPI path).
   FsBlockDeviceInterface* rawBlockDevice();
   // End the FsVolume mount while keeping the block device alive for a raw
-  // USB-MSC owner. The caller must reinitialize the manager (begin()) after the
-  // owner releases the card. Returns null when nothing is mounted.
+  // USB-MSC owner, after writing SdFat's cached sectors back (syncVolume()). The
+  // caller must reinitialize the manager (begin()) after the owner releases the
+  // card. Returns null when nothing is mounted.
   FsBlockDeviceInterface* detachFilesystemForRawAccess();
 
 #if FREEINK_DIAGNOSTICS
@@ -122,21 +123,31 @@ class SDCardManager {
   CardInfo cardInfo();
 #endif
 #if FREEINK_SD_SDMMC
-  // Stop the card for deep sleep: unmount the volume, stop the SDMMC host, and
-  // float the bus pads so their pull-ups stop back-feeding the card's VDD net
-  // through sleep. Idempotent; call only after all file users have stopped. A
-  // deep-sleep wake resets the MCU and remounts through begin().
+  // Stop the card for deep sleep: write SdFat's cached sectors back
+  // (syncVolume()), unmount the volume, stop the SDMMC host, and float the bus
+  // pads so their pull-ups stop back-feeding the card's VDD net through sleep.
+  // Idempotent; call only after all file users have stopped. A deep-sleep wake
+  // resets the MCU and remounts through begin().
   void shutdown();
 #else
   // SPI/SdFat boards: sleep either cuts power entirely (C3 Xteink) or gates the
-  // SD rail in powerDownRailsForSleep(); there is no host to stop.
-  void shutdown() {}
+  // SD rail in powerDownRailsForSleep(); there is no host to stop, so this only
+  // writes SdFat's cached sectors back (syncVolume()) before the power goes.
+  void shutdown();
 #endif
 
  static SDCardManager& getInstance() { return instance; }
 
  private:
   static SDCardManager instance;
+
+  // SdFat keeps one directory/data sector and, with USE_SEPARATE_FAT_CACHE, one
+  // FAT sector in RAM, written back only when a file is synced or closed or
+  // another sector takes the cache; FsVolume::end() drops the volume without
+  // writing either. Syncing any file of the volume writes both back (its
+  // partition's cacheSync()), so this syncs the root directory. A file still open
+  // for writing keeps its own size and first cluster until it is closed.
+  void syncVolume();
 
   bool initialized = false;
   PowerHook _powerHook = nullptr;
