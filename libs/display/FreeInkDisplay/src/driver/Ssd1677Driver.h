@@ -64,8 +64,13 @@ struct Ssd1677Config {
   // Boards with a per-module voltage tail (Metalio) point this at their copy.
   const unsigned char* factoryGrayLut = nullptr;
   // Run the HALF waveform wherever FULL is requested, for boards whose FULL
-  // waveform is unusable on their panel (Silkscreen's GDEQ0426T82).
+  // waveform is unusable on their panel (Silkscreen's X4-sequence fallback).
   bool fullUsesHalfWaveform = false;
+  // Incremental path only: run HALF on the full waveform (0x34) instead of the
+  // temperature-spoofed 0xD4. On a panel-driven charge pump that under-drives the
+  // spoofed waveform, HALF leaves grey/stuck pixels and flickers; the full one
+  // completes. (de-link, bfe3880.)
+  bool halfUsesFullWaveform = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT

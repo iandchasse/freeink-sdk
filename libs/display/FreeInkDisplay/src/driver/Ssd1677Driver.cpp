@@ -362,9 +362,13 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   if (mode == RefreshMode::Full) {
     displayMode |= 0x34;
   } else if (mode == RefreshMode::Half) {
-    bus.cmd(CMD_WRITE_TEMP);
-    bus.data(_cfg.halfRefreshTemp);
-    displayMode |= 0xD4;
+    if (_cfg.halfUsesFullWaveform) {
+      displayMode |= 0x34;  // full waveform: no temperature spoof (see the field)
+    } else {
+      bus.cmd(CMD_WRITE_TEMP);
+      bus.data(_cfg.halfRefreshTemp);
+      displayMode |= 0xD4;
+    }
   } else if (_customLutActive) {
     // External-LUT (AA grayscale) activation is the absolute 0xCC sequence per the
     // vendor reference — clock/analog enable + display, WITHOUT the OTP LUT reload
@@ -770,12 +774,33 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 // follows the -DFREEINK_DEVICE_<NAME> selection (ACTIVE.board). Boards not listed
 // use the X4/GDEQ0426T82 defaults.
 #if FREEINK_DEVICE_SILKSCREEN
-// Silkscreen: the GDEQ0426T82's FULL waveform is unusable on this board, so every
-// FULL request runs the HALF waveform.
+// Silkscreen. Same GDEQ0426T82 as the X4, but on the de-link-family panel-driven
+// charge pump, where the X4's values under-drive full-swing refreshes: FULL/HALF
+// leave grey/stuck pixels and flicker while FAST and grayscale are clean. These
+// are de-link's values (iandchasse/freeink-sdk de-link, bfe3880), each reached on
+// that hardware:
+//   * booster 5th byte 0xC0, not 0x80: a longer boost on-time;
+//   * FULL and HALF on the incremental 0x34 path, which keeps the rails powered,
+//     instead of the X4's absolute 0xF7/0xD7 sequences that re-ramp the booster on
+//     every refresh;
+//   * HALF on the full waveform, not the temperature spoof;
+//   * FAST keeps the X4's absolute 0xFC sequence.
+// -DSILKSCREEN_SSD1677_X4_SEQUENCES=1 falls back to the X4 values with every FULL
+// request run as HALF.
+#ifndef SILKSCREEN_SSD1677_X4_SEQUENCES
+#define SILKSCREEN_SSD1677_X4_SEQUENCES 0
+#endif
 static const Ssd1677Config& ssd1677SilkscreenConfig() {
   static const Ssd1677Config cfg = [] {
     Ssd1677Config c = ssd1677DefaultConfig();
+#if SILKSCREEN_SSD1677_X4_SEQUENCES
     c.fullUsesHalfWaveform = true;
+#else
+    c.booster[4] = 0xC0;
+    c.fullSeqOverride = 0x00;
+    c.halfSeqOverride = 0x00;
+    c.halfUsesFullWaveform = true;
+#endif
     return c;
   }();
   return cfg;
