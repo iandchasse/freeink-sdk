@@ -319,6 +319,21 @@ class InputManager {
   // other boards.
   bool adcLadderContact();
 
+#if FREEINK_CAP_ADC_LADDERS
+  // PowerConfig::ladderPresenceProbe: what begin() found. A floating ladder (no
+  // pull-up fitted) is switched off for the session: its ACTIVE pin is
+  // PIN_UNASSIGNED, so its keys never decode.
+  struct LadderPresence {
+    bool probed;             // the dual-pull test ran this boot (any reset but a deep-sleep wake)
+    bool cached;             // the result came from RTC memory (a deep-sleep wake)
+    uint8_t absentMask;      // bit i: ladder i floats and is off
+    int8_t pin[2];           // the profile's ladder pins
+    uint16_t pullDownMv[2];  // this boot's test readings (probed only)
+    uint16_t pullUpMv[2];
+  };
+  static LadderPresence ladderPresence();
+#endif
+
   // Touch mounting and range (BoardConfig::ACTIVE.touch), for calibrating a
   // panel at runtime. setTouchMapping() changes RAM only (the profile is
   // restored at the next boot) and takes effect at the next poll; call it with
@@ -377,6 +392,11 @@ class InputManager {
     // 0xA5 power mode, 0xA6 firmware, 0xA7, 0xA8 panel id).
     bool idRead;
     uint8_t id[6];
+    // TouchConfig::requireFocalTechId: a device answered at the address with a
+    // chip id that is not FocalTech's (id[0]), so it was left alone and the
+    // probe went on as if nothing answered. A deep-sleep wake keeps this from
+    // the cached probe (probeCached), with no id read.
+    bool idRejected;
     uint16_t longPressMs;  // contact held this long, still, is a long press
   };
   TouchDiagnostics touchDiagnostics() const;
@@ -505,6 +525,9 @@ class InputManager {
   // declared primary when none answered.
   BoardConfig::TouchController touchSleepController = BoardConfig::TouchController::None;
   uint8_t touchSleepAddr = 0;
+#if FREEINK_CAP_PROBE_IDENTITY
+  bool touchIdRejected = false;  // TouchConfig::requireFocalTechId: the primary answered with a foreign chip id
+#endif
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll
   unsigned long touchReleaseAt = 0;
@@ -581,6 +604,7 @@ class InputManager {
   bool diagPreviousSleepRetried = false;
   bool diagIdRead = false;
   uint8_t diagId[6] = {};
+  bool diagIdRejected = false;
 #endif
 
 #if FREEINK_CAP_ADC_LADDERS

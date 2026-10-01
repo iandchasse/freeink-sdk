@@ -345,6 +345,9 @@
 //   FRONTLIGHT_PROBE: FrontlightConfig::loadProbeMs / railSafeV (the switch-on
 //                  load probe, its record kept across deep sleep, and the wait for
 //                  the LED rail before the colour select moves after a trip)
+//   PROBE_IDENTITY: TouchConfig::requireFocalTechId and SensorsConfig::rtcIdentityCheck
+//                  (a device at the touch or RTC address is identified before
+//                  anything is written to it)
 #ifndef FREEINK_CAP_ADC_LADDERS
 #define FREEINK_CAP_ADC_LADDERS (FREEINK_DEVICE_SILKSCREEN)
 #endif
@@ -365,6 +368,9 @@
 #endif
 #if FREEINK_CAP_FRONTLIGHT_PROBE && !FREEINK_CAP_FRONTLIGHT
 #error "FREEINK_CAP_FRONTLIGHT_PROBE needs FREEINK_CAP_FRONTLIGHT"
+#endif
+#ifndef FREEINK_CAP_PROBE_IDENTITY
+#define FREEINK_CAP_PROBE_IDENTITY (FREEINK_DEVICE_SILKSCREEN)
 #endif
 // Bring-up diagnostics: the managers also record what they observe (BUSY waits
 // and the refresh mode a driver ran, SD mount attempts, charge-ladder samples,
@@ -749,6 +755,13 @@ struct TouchConfig {
   // The board keeps its physical navigation keys when touch is present, so the
   // key-only UI (button hints, front-button remap) stays. See hasFrontButtons().
   bool buttonsAlongsideTouch = false;
+  // A FocalTech controller counts as found only when its chip id (0xA3) is one
+  // (ProbeChecks.h). The id is read before anything is written, and a device
+  // that answers with another id is left alone: no probe writes, no sleep
+  // command. For a bus where another device may sit at the touch address (an
+  // expansion header). Needs FREEINK_CAP_PROBE_IDENTITY; read through
+  // BoardConfig::touchIdentityCheck().
+  bool requireFocalTechId = false;
 };
 
 // PWM frontlight description (gpio == PIN_UNASSIGNED disables it).
@@ -910,6 +923,11 @@ struct SensorsConfig {
   // releaseSensorBusForSleep() ends it and leaves SDA/SCL released before deep
   // sleep. A line held LOW costs 3.3 V / R_pull-up for as long as it stays LOW.
   bool i2cBusRecovery = false;
+  // A DS3231 counts as found only when its registers show the DS3231 pattern
+  // (ProbeChecks.h), read before its control and status registers are written;
+  // another device at its address is left alone and the fallback RTC is tried.
+  // Needs FREEINK_CAP_PROBE_IDENTITY; read through BoardConfig::rtcIdentityCheck().
+  bool rtcIdentityCheck = false;
 };
 
 // How the panel is mounted relative to the driver's native scan. Any board injects
@@ -979,6 +997,19 @@ struct PowerConfig {
   // input, whatever else keeps it awake (network client traffic included).
   // Minutes, 0 = no cap.
   uint8_t awakeInputCapMin = 0;
+  // A key ladder may be built without its pull-up (no keys on it), and a
+  // floating ladder pin reads phantom keys that hold the board awake. At every
+  // reset but a deep-sleep wake, InputManager::begin() reads each ladder pin
+  // with the internal pull-down and then the pull-up, and switches a floating
+  // one off for the session (its pin PIN_UNASSIGNED), then turns both pulls
+  // off. The result is kept in RTC memory for deep-sleep wakes.
+  bool ladderPresenceProbe = false;
+  // The power pin must idle at a valid logic level, or its wake fires at once
+  // or never. PowerManager::checkPowerPinIdle() reads it on the ADC at every
+  // reset but a deep-sleep wake (radio off); idling between the logic levels,
+  // it is switched off for the session (input.power PIN_UNASSIGNED), so no
+  // sleep arms it and the board sleeps with no wake source (reset starts it).
+  bool powerPinIdleCheck = false;
 };
 
 // Panel rows/columns the device's bezel physically overlaps, in the panel's
@@ -2162,6 +2193,15 @@ static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
 #endif
 static_assert(SILKSCREEN_FRONTLIGHT_TRIP_MV < 24250,
               "Silkscreen front-light trip must stay below the TPS923610 minimum OVP (24.25 V)");
+// Touch tail on J4's alternate jumpers (R43/R66 fitted, HARDWARE.md §8), for a GT911
+// tail: -DSILKSCREEN_TOUCH_ALT_JUMPERS=1 adds the GT911 fallback, whose probe drives
+// TP_INT (IO41) through its address-strap reset. Off by default: the standard tail
+// is the FT6336U on the default jumpers, and a touchless board then never drives IO41.
+#ifndef SILKSCREEN_TOUCH_ALT_JUMPERS
+#define SILKSCREEN_TOUCH_ALT_JUMPERS 0
+#endif
+static_assert(SILKSCREEN_TOUCH_ALT_JUMPERS == 0 || SILKSCREEN_TOUCH_ALT_JUMPERS == 1,
+              "SILKSCREEN_TOUCH_ALT_JUMPERS is 0 (default jumpers, FT6336U) or 1 (alternate jumpers, GT911 fallback)");
 // Panel controller override for a unit whose probe misbehaves:
 // -DSILKSCREEN_DISPLAY_CONTROLLER=ssd1677 or =uc8279 runs that controller and
 // skips the probe. UC8179 is not linked into this build, so it cannot be named.
@@ -2209,14 +2249,17 @@ constexpr BoardProfile SILKSCREEN = {
     // FT5x06 path (INT-gated polling, G_MODE set at begin). SDA 38 / SCL 39 are the shared
     // sensor bus, so the touch runs at the sensor-bus clock. INT IO41 has no board
     // pull-up, so the FT path uses INPUT_PULLUP while awake. RST IO11: >= 5 ms LOW, then
-    // >= 300 ms before the first transaction. A GT911 at 0x5D (0x14 via i2cAddressAlt) is
-    // the fallback, reset through its INT strap sequence. The orientation (swapXY, flipY,
+    // >= 300 ms before the first transaction. J6 exposes the bus, so 0x38 counts as touch
+    // only with a FocalTech chip id (requireFocalTechId). A GT911 at 0x5D (0x14 via
+    // i2cAddressAlt), reset through its INT strap sequence, is the fallback only on the
+    // alternate jumpers (SILKSCREEN_TOUCH_ALT_JUMPERS). The orientation (swapXY, flipY,
     // raw 0-799 / 0-479 after the swap) is an UNVERIFIED guess carried over from the
     // first port; map the corners at bring-up. Asleep in deep sleep (hibernateInSleep),
     // and the eight keys stay the primary input when touch is fitted.
     // {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,synthConfirm,altAddr,irqActiveLow,
     //  coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh,optional,resetPulseMs,
-    //  resetSettleMs,fallbackController,fallbackAddr,hibernateInSleep,buttonsAlongsideTouch}
+    //  resetSettleMs,fallbackController,fallbackAddr,hibernateInSleep,buttonsAlongsideTouch,
+    //  requireFocalTechId}
     {TouchController::Ft5x06,
      38,
      39,
@@ -2240,8 +2283,9 @@ constexpr BoardProfile SILKSCREEN = {
      true,
      5,
      300,
-     TouchController::Gt911,
-     0x5D,
+     SILKSCREEN_TOUCH_ALT_JUMPERS ? TouchController::Gt911 : TouchController::None,
+     static_cast<uint8_t>(SILKSCREEN_TOUCH_ALT_JUMPERS ? 0x5D : 0),
+     true,
      true,
      true},
     // Front light (§7, §13.1): TPS923610 ADIM on IO42 is both enable and analog dimming.
@@ -2273,9 +2317,10 @@ constexpr BoardProfile SILKSCREEN = {
     // (PCF85063-compatible) is probed at 0x51. No backup cell, so time is fetched again
     // whenever the RTC reports it lost. The pull-ups are on the always-on 3V3 and J6
     // exposes the bus, so a stuck bus is freed at boot and the bus is released before
-    // deep sleep (1.5 mA per line held LOW).
+    // deep sleep (1.5 mA per line held LOW), and 0x68 is written only once its registers
+    // show the DS3231 pattern (rtcIdentityCheck): a J6 device there is left alone.
     {38, 39, 100000, 0x68, 0, 0, 0, RtcType::Ds3231, ImuType::None, false, false, false, true, RtcType::Pcf85063, 0x51,
-     true, true},
+     true, true, true},
     1.0f,  // uiScale: button-navigated
     // power: no latch, 3V3 is live whenever USB or a cell is present (§3.5), so "off" is
     // deep sleep and every awake minute comes out of the cell.
@@ -2290,11 +2335,16 @@ constexpr BoardProfile SILKSCREEN = {
     //   on battery ends any screen, and network screens drop the radio when done.
     // - On battery: a wake with no input sleeps after 3 min, the SD-error screen after
     //   60 s, and 60 min without input ends any screen, client traffic or not.
+    // - A ladder may be built without its pull-up (R4/R28, no keys on it, §9.1): one
+    //   that floats is switched off at boot. IO18 idles at ~1.76 V with R36 and R72 both
+    //   fitted (§9.2), a wake storm or a dead button: that is found at boot and IO18 is
+    //   then never armed.
     // {latch0, latch1, chargeEnable, chargeEnableActiveHigh, lowBatteryCutoffMv,
     //  releaseWaitMaxMs, earlyWakeDecision, abnormalResetLimit, cutoffRadioAllowanceMv,
     //  firmwareUpdateMinMv, awakeCeilingMin, radioOffWhenIdle, wakeNoInputTimeoutS,
-    //  storageErrorSleepS, awakeInputCapMin}
-    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400, 5000, true, 3, 100, 3600, 15, true, 180, 60, 60},
+    //  storageErrorSleepS, awakeInputCapMin, ladderPresenceProbe, powerPinIdleCheck}
+    {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 3400, 5000, true, 3, 100, 3600, 15, true, 180, 60, 60, true,
+     true},
     0,             // displayControllerVariant: a UC8279's LUT_VER, filled by the boot probe
     {0, 0, 0, 0},  // viewableInsets: every measured case window is the active area + 0.5-0.7 mm
     false,         // batteryChargeStatusActiveHigh: unused (no digital STAT)
@@ -2377,6 +2427,10 @@ static_assert(FREEINK_CAP_TOUCH || !FREEINK_DEVICE_SILKSCREEN || !SILKSCREEN.tou
 // The eight keys exist only as ADC-ladder data.
 static_assert(FREEINK_CAP_ADC_LADDERS || !FREEINK_DEVICE_SILKSCREEN,
               "Silkscreen needs FREEINK_CAP_ADC_LADDERS: its keys are two ADC ladders");
+// J6 exposes the touch and RTC addresses (§11), and the ladder and power-pin checks
+// are power-policy data.
+static_assert(!FREEINK_DEVICE_SILKSCREEN || (FREEINK_CAP_PROBE_IDENTITY && FREEINK_CAP_POWER_POLICY),
+              "Silkscreen needs FREEINK_CAP_PROBE_IDENTITY and FREEINK_CAP_POWER_POLICY: its boot checks use them");
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
@@ -2788,6 +2842,15 @@ inline bool displayBusyPullUp() { return ACTIVE.display.busyPullUp; }
 #else
 constexpr DisplayProbeConfig displayProbePolicy() { return DisplayProbeConfig{}; }
 constexpr bool displayBusyPullUp() { return false; }
+#endif
+// Read TouchConfig::requireFocalTechId and SensorsConfig::rtcIdentityCheck
+// through these: false without FREEINK_CAP_PROBE_IDENTITY, so the checks fold away.
+#if FREEINK_CAP_PROBE_IDENTITY
+inline bool touchIdentityCheck() { return ACTIVE.touch.requireFocalTechId; }
+inline bool rtcIdentityCheck() { return ACTIVE.sensors.rtcIdentityCheck; }
+#else
+constexpr bool touchIdentityCheck() { return false; }
+constexpr bool rtcIdentityCheck() { return false; }
 #endif
 static_assert(!FREEINK_DEVICE_SILKSCREEN || FREEINK_DRIVER_UC8279_X4,
               "Silkscreen's probe maps every UltraChip answer to the UC8279 driver, which must be linked");

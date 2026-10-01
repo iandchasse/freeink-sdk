@@ -1,11 +1,16 @@
 #include "InputManager.h"
 
+#include <ProbeChecks.h>
 #include <SharedAdc.h>
 
 #include <algorithm>
 
 #include "MultiTouchGestureMath.h"
 
+#if FREEINK_CAP_ADC_LADDERS
+#include <driver/gpio.h>
+#include <esp_system.h>
+#endif
 #if FREEINK_CAP_TOUCH
 #include <SharedI2c.h>
 #include <Wire.h>
@@ -69,7 +74,14 @@ uint8_t powerPinMode() {
 // deep-sleep wake skips the reset and probe of a panel that is not fitted, and
 // starts with the controller that answered last time. RTC data survives only
 // deep sleep; the reset-reason check and the magic word reject anything else.
-enum class TouchProbe : uint8_t { Unknown, Primary, Fallback, Absent };
+// Foreign (TouchConfig::requireFocalTechId): a device that is not a FocalTech
+// controller answered at the primary address, and nothing answered as touch.
+enum class TouchProbe : uint8_t { Unknown, Primary, Fallback, Absent, Foreign };
+#if FREEINK_CAP_PROBE_IDENTITY
+constexpr TouchProbe LAST_TOUCH_PROBE = TouchProbe::Foreign;
+#else
+constexpr TouchProbe LAST_TOUCH_PROBE = TouchProbe::Absent;
+#endif
 constexpr uint32_t TOUCH_PROBE_MAGIC = 0x54434850;  // "TCHP"
 RTC_DATA_ATTR uint32_t touchProbeMagic = 0;
 RTC_DATA_ATTR uint8_t touchProbeResult = 0;
@@ -83,7 +95,7 @@ RTC_DATA_ATTR bool touchSleepRecordRetried = false;
 
 TouchProbe cachedTouchProbe() {
   if (esp_reset_reason() != ESP_RST_DEEPSLEEP || touchProbeMagic != TOUCH_PROBE_MAGIC) return TouchProbe::Unknown;
-  if (touchProbeResult > static_cast<uint8_t>(TouchProbe::Absent)) return TouchProbe::Unknown;
+  if (touchProbeResult > static_cast<uint8_t>(LAST_TOUCH_PROBE)) return TouchProbe::Unknown;
   return static_cast<TouchProbe>(touchProbeResult);
 }
 
@@ -122,6 +134,96 @@ constexpr uint16_t GT911_REG_COMMAND = 0x8040;
 constexpr uint8_t GT911_CMD_SLEEP = 0x05;
 constexpr uint32_t GT911_SLEEP_INT_LOW_MS = 5;
 constexpr uint32_t GT911_SLEEP_SETTLE_MS = 58;
+
+// TouchProbe::Foreign is only ever stored with FREEINK_CAP_PROBE_IDENTITY.
+constexpr bool foreignProbe(const TouchProbe probe) {
+  return FREEINK_CAP_PROBE_IDENTITY && probe == TouchProbe::Foreign;
+}
+
+#if FREEINK_CAP_PROBE_IDENTITY
+// TouchConfig::requireFocalTechId: the device at `addr` reads back a FocalTech
+// chip id. One register read; only the register pointer is written.
+bool focalTechIdentified(const uint8_t addr) {
+  if (!BoardConfig::touchIdentityCheck()) return true;
+  Wire.beginTransmission(addr);
+  Wire.write(freeink::probe::FT_REG_CIPHER);
+  if (Wire.endTransmission(false) != 0) return false;
+  const uint8_t got = Wire.requestFrom(addr, static_cast<uint8_t>(1), static_cast<uint8_t>(true));
+  if (got != 1) {
+    while (Wire.available()) Wire.read();
+    return false;
+  }
+  return freeink::probe::focalTechChipId(static_cast<uint8_t>(Wire.read()));
+}
+#else
+constexpr bool focalTechIdentified(uint8_t) { return true; }
+#endif
+#endif
+
+#if FREEINK_CAP_ADC_LADDERS
+// PowerConfig::ladderPresenceProbe. The last test's result, for deep-sleep wakes
+// (RTC data survives deep sleep only; the reset-reason check and the magic word
+// reject anything else), and this boot's record.
+constexpr uint32_t LADDER_PRESENCE_MAGIC = 0x4C414450;  // "LADP"
+RTC_DATA_ATTR uint32_t ladderPresenceMagic = 0;
+RTC_DATA_ATTR uint8_t ladderAbsentMask = 0;
+InputManager::LadderPresence ladderPresenceRecord{false, false, 0, {-1, -1}, {0, 0}, {0, 0}};
+// An internal pull (about 45 kOhm) charges the ladder's 2.2 nF in about 0.1 ms;
+// 2 ms is ample and covers delay()'s tick.
+constexpr uint32_t LADDER_PULL_SETTLE_MS = 2;
+constexpr uint8_t LADDER_PROBE_OVERSAMPLE = 4;
+
+uint16_t readLadderWithPull(const int8_t pin, const bool pullUp) {
+  const auto g = static_cast<gpio_num_t>(pin);
+  if (pullUp) {
+    gpio_pulldown_dis(g);
+    gpio_pullup_en(g);
+  } else {
+    gpio_pullup_dis(g);
+    gpio_pulldown_en(g);
+  }
+  delay(LADDER_PULL_SETTLE_MS);
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < LADDER_PROBE_OVERSAMPLE; ++i) sum += analogReadMilliVolts(pin);
+  return static_cast<uint16_t>(sum / LADDER_PROBE_OVERSAMPLE);
+}
+
+// The dual-pull test of each ladder pin (ProbeChecks.h) at any reset but a
+// deep-sleep wake, which reuses the last result. A floating ladder is switched
+// off for the session; both pulls end off on every pin.
+void applyLadderPresence() {
+  auto& ladders = BoardConfig::ACTIVE.adcLadders.ladders;
+  for (uint8_t i = 0; i < 2; ++i) ladderPresenceRecord.pin[i] = ladders[i].pin;
+  uint8_t absent = 0;
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP && ladderPresenceMagic == LADDER_PRESENCE_MAGIC) {
+    absent = static_cast<uint8_t>(ladderAbsentMask & 0x03u);
+    ladderPresenceRecord.cached = true;
+  } else {
+    const freeink::adc::Lock lock;
+    for (uint8_t i = 0; i < 2; ++i) {
+      const int8_t pin = ladders[i].pin;
+      if (pin < 0 || ladders[i].count == 0) continue;
+      // The first conversion sets the pad up for the ADC (input and both pulls
+      // off), so the pulls go on after it.
+      analogReadMilliVolts(pin);
+      const uint16_t down = readLadderWithPull(pin, /*pullUp=*/false);
+      const uint16_t up = readLadderWithPull(pin, /*pullUp=*/true);
+      gpio_pullup_dis(static_cast<gpio_num_t>(pin));
+      gpio_pulldown_dis(static_cast<gpio_num_t>(pin));
+      ladderPresenceRecord.pullDownMv[i] = down;
+      ladderPresenceRecord.pullUpMv[i] = up;
+      if (freeink::probe::ladderFloats(down, up)) absent = static_cast<uint8_t>(absent | (1u << i));
+    }
+    ladderPresenceRecord.probed = true;
+    ladderAbsentMask = absent;
+    ladderPresenceMagic = LADDER_PRESENCE_MAGIC;
+  }
+  ladderPresenceRecord.absentMask = absent;
+  // An absent ladder's pad stays as the ADC left it (input and pulls off).
+  for (uint8_t i = 0; i < 2; ++i) {
+    if ((absent & (1u << i)) != 0) ladders[i].pin = BoardConfig::PIN_UNASSIGNED;
+  }
+}
 #endif
 
 #if defined(TOUCH_PROBE_DEBUG)
@@ -191,11 +293,14 @@ void InputManager::begin(const bool startTouch) {
   }
 
   if (BoardConfig::hasAdcLadders()) {
+    freeink::adc::setAttenuation(ADC_11db);
+#if FREEINK_CAP_ADC_LADDERS
+    if (BoardConfig::powerPolicy().ladderPresenceProbe) applyLadderPresence();
+#endif
     // Ladder pins carry external pull-ups that define idle, so no internal pulls.
     for (const BoardConfig::AdcLadder& ladder : BoardConfig::ACTIVE.adcLadders.ladders) {
       if (ladder.pin >= 0) pinMode(ladder.pin, INPUT);
     }
-    freeink::adc::setAttenuation(ADC_11db);
     if (BoardConfig::ACTIVE.input.power >= 0) pinMode(BoardConfig::ACTIVE.input.power, powerPinMode());
     if (startTouch) beginTouch();
     return;
@@ -307,6 +412,10 @@ bool InputManager::adcLadderContact() {
   return false;
 }
 
+#if FREEINK_CAP_ADC_LADDERS
+InputManager::LadderPresence InputManager::ladderPresence() { return ladderPresenceRecord; }
+#endif
+
 #if FREEINK_DIAGNOSTICS
 InputManager::TouchDiagnostics InputManager::touchDiagnostics() const {
   TouchDiagnostics d{};
@@ -336,6 +445,7 @@ InputManager::TouchDiagnostics InputManager::touchDiagnostics() const {
   }
   d.idRead = diagIdRead;
   memcpy(d.id, diagId, sizeof(d.id));
+  d.idRejected = diagIdRejected;
   d.longPressMs = static_cast<uint16_t>(TOUCH_LONG_PRESS_MS);
   return d;
 }
@@ -1470,7 +1580,7 @@ void InputManager::beginTouch() {
   const TouchProbe cached = t.optional ? cachedTouchProbe() : TouchProbe::Unknown;
   bool found = false;
   bool onFallback = false;
-  if (cached != TouchProbe::Absent) {
+  if (cached != TouchProbe::Absent && !foreignProbe(cached)) {
     auto tryController = [&](const BoardConfig::TouchController controller, const uint8_t addr) {
       if (controller == BoardConfig::TouchController::None || addr == 0) return false;
       t.controller = controller;
@@ -1489,11 +1599,19 @@ void InputManager::beginTouch() {
     }
   }
 
+#if FREEINK_CAP_PROBE_IDENTITY
+  // TouchConfig::requireFocalTechId: a foreign device at the primary address, met
+  // by this probe or by the one before the deep sleep, never gets a write.
+  const bool foreign = !found && (touchIdRejected || foreignProbe(cached));
+#else
+  constexpr bool foreign = false;
+#endif
 #if FREEINK_DIAGNOSTICS
   diagProbeRan = true;
   diagProbeCached = cached != TouchProbe::Unknown;
   diagProbeFound = found;
   diagProbeOnFallback = onFallback;
+  diagIdRejected = foreign;
 #endif
   if (found) {
     touchSleepController = t.controller;
@@ -1505,9 +1623,10 @@ void InputManager::beginTouch() {
     // An optional panel that did not answer is no touch panel for this session,
     // so BoardConfig::hasTouch() and hasTouch() agree.
     if (t.optional) t.controller = BoardConfig::TouchController::None;
+    if (foreign) touchSleepAddr = 0;
   }
   if (t.optional) {
-    storeTouchProbe(!found       ? TouchProbe::Absent
+    storeTouchProbe(!found       ? (foreign ? TouchProbe::Foreign : TouchProbe::Absent)
                     : onFallback ? TouchProbe::Fallback
                                  : TouchProbe::Primary,
                     onFallback && t.controller == BoardConfig::TouchController::Gt911 ? gt911Addr : 0);
@@ -1607,7 +1726,9 @@ InputManager::TouchSleepResult InputManager::prepareTouchForSleep() {
   freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
   Wire.setTimeOut(10);
   if (gt911) return gt911Sleep() ? TouchSleepResult::Asleep : TouchSleepResult::NoAnswer;
-  bool asleep = focaltechHibernate(touchSleepAddr);
+  // With requireFocalTechId, a write to a controller the probe did not find goes
+  // only to a device that reads back a FocalTech chip id.
+  bool asleep = (touchDataEnabled || focalTechIdentified(touchSleepAddr)) && focaltechHibernate(touchSleepAddr);
   // Only a controller found at boot is worth the reset and settle time: with
   // none found, the single write above is the whole (cheap) attempt.
   if (!asleep && touchDataEnabled && pulseTouchReset()) asleep = focaltechHibernate(touchSleepAddr);
@@ -1627,14 +1748,35 @@ InputManager::TouchSleepResult InputManager::resetAndHibernateTouch() {
 #if FREEINK_CAP_TOUCH
   const auto& t = BoardConfig::ACTIVE.touch;
   const bool focaltech =
-      t.controller == BoardConfig::TouchController::Ft5x06 || t.controller == BoardConfig::TouchController::Ft6336u;
-  if (!t.hibernateInSleep || !focaltech || t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) {
+      (t.controller == BoardConfig::TouchController::Ft5x06 || t.controller == BoardConfig::TouchController::Ft6336u) &&
+      t.i2cAddress != 0;
+  // A GT911 fallback may be what is fitted. TP_RST without its INT address strap
+  // would restart a GT911 awake, so with one possible the bus gets no reset.
+  const bool gt911 = t.fallbackController == BoardConfig::TouchController::Gt911 && t.fallbackAddr != 0 && t.irq >= 0;
+  if (!t.hibernateInSleep || !(focaltech || gt911) || t.sda < 0 || t.scl < 0) {
     return TouchSleepResult::NotApplicable;
   }
-  pulseTouchReset();  // out of whatever state a crash left it in, into Active
+  if (!gt911) pulseTouchReset();  // out of whatever state a crash left it in, into Active
   freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
   Wire.setTimeOut(10);
-  return focaltechHibernate(t.i2cAddress) ? TouchSleepResult::Asleep : TouchSleepResult::NoAnswer;
+  if (focaltech && focalTechIdentified(t.i2cAddress) && focaltechHibernate(t.i2cAddress)) {
+    return TouchSleepResult::Asleep;
+  }
+  if (!gt911) return TouchSleepResult::NoAnswer;
+  // The GT911's sleep command at either strap address (INT LOW first, then held
+  // LOW through sleep). A GT911 asleep already does not answer; INT held LOW
+  // keeps it so. The next deep-sleep wake starts from the cached GT911.
+  for (const uint8_t addr : {t.fallbackAddr, t.i2cAddressAlt}) {
+    if (addr == 0) continue;
+    gt911Addr = addr;
+    if (gt911Sleep()) {
+      if (t.optional) storeTouchProbe(TouchProbe::Fallback, addr);
+      return TouchSleepResult::Asleep;
+    }
+  }
+  gt911Addr = 0;
+  driveGt911IntLow(/*hold=*/true);
+  return TouchSleepResult::NoAnswer;
 #else
   return TouchSleepResult::NotApplicable;
 #endif
@@ -1892,19 +2034,44 @@ void InputManager::beginFt5x06() {
   // probe races the controller's boot and leaves touch dead for the session.
   // Gate on the transactions succeeding, NOT on the ID contents: Paper Mono
   // units ACK and serve the whole 0xA3..0xA8 window as zeros, so a vendor-byte
-  // check reads as "absent" on a perfectly working controller.
+  // check reads as "absent" on a perfectly working controller. A board that sets
+  // TouchConfig::requireFocalTechId reads the window first and writes nothing
+  // to a device whose chip id is not FocalTech's.
   uint8_t id[6] = {};
   bool wrMode = false, rdId = false, wrIrq = false;
+#if FREEINK_CAP_PROBE_IDENTITY
+  const bool checkId = BoardConfig::touchIdentityCheck();
+  touchIdRejected = false;
+#else
+  constexpr bool checkId = false;
+#endif
   const int attempts = wasReset ? 3 : 12;
   for (int attempt = 0; attempt < attempts && !rdId; ++attempt) {
     if (attempt) delay(50);
-    wrMode = ft5x06WriteReg(0x00, 0x00);
-    rdId = wrMode && ft5x06ReadReg(0xA3, id, sizeof(id));
+    if (checkId) {
+      const bool idOk = ft5x06ReadReg(0xA3, id, sizeof(id));
+#if FREEINK_CAP_PROBE_IDENTITY
+      if (idOk && !freeink::probe::focalTechChipId(id[0])) {
+        touchIdRejected = true;
+        break;
+      }
+#endif
+      wrMode = idOk && ft5x06WriteReg(0x00, 0x00);
+      rdId = wrMode;
+    } else {
+      wrMode = ft5x06WriteReg(0x00, 0x00);
+      rdId = wrMode && ft5x06ReadReg(0xA3, id, sizeof(id));
+    }
     wrIrq = rdId && ft5x06WriteReg(0xA4, 0x00);
   }
   touchDataEnabled = wrMode && rdId && wrIrq;
 #if FREEINK_DIAGNOSTICS
-  if (rdId) {
+#if FREEINK_CAP_PROBE_IDENTITY
+  const bool idSeen = rdId || touchIdRejected;
+#else
+  const bool idSeen = rdId;
+#endif
+  if (idSeen) {
     diagIdRead = true;
     memcpy(diagId, id, sizeof(diagId));
   }

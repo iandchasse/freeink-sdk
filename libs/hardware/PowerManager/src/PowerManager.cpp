@@ -10,6 +10,10 @@
 #if FREEINK_DEVICE_WS397
 #include <Axp2101.h>
 #endif
+#if FREEINK_CAP_POWER_POLICY
+#include <ProbeChecks.h>
+#include <SharedAdc.h>
+#endif
 
 namespace freeink {
 namespace {
@@ -62,6 +66,18 @@ RTC_NOINIT_ATTR uint32_t abnormalResets;
 #if FREEINK_DIAGNOSTICS
 // This boot's reads of the two records above (bootResetRecord()); plain RAM.
 static PowerManager::BootResetRecord bootRecord;
+#endif
+#if FREEINK_CAP_POWER_POLICY
+// This boot's checkPowerPinIdle() (PowerConfig::powerPinIdleCheck); plain RAM.
+static PowerManager::PowerPinCheck powerPinCheckResult;
+
+namespace {
+// The power pin read between the logic levels at this boot's check.
+bool powerPinUndefined() {
+  return BoardConfig::powerPolicy().powerPinIdleCheck &&
+         powerPinCheckResult.idle == PowerManager::PowerPinIdle::Undefined;
+}
+}  // namespace
 #endif
 
 void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
@@ -295,6 +311,14 @@ void PowerManager::deepSleep() {
 }
 
 void PowerManager::deepSleepUntilPowerButton() {
+#if FREEINK_CAP_POWER_POLICY
+  if (powerPinUndefined()) {
+    // checkPowerPinIdle() took the pin out of service (input.power is unassigned),
+    // so nothing below waits on it or arms it. Its pad stays as the ADC left it,
+    // input and pulls off, held so the mid-rail node draws no input current.
+    gpio_hold_en(static_cast<gpio_num_t>(powerPinCheckResult.pin));
+  }
+#endif
   const int8_t pin = powerPin();
   if (!waitForPowerButtonRelease() && pin >= 0) {
     // Still pressed after PowerConfig::releaseWaitMaxMs (a stuck key, a press in
@@ -309,6 +333,52 @@ void PowerManager::deepSleepUntilPowerButton() {
   armPowerButtonWakeup();
   deepSleep();
 }
+
+#if FREEINK_CAP_POWER_POLICY
+PowerManager::PowerPinCheck PowerManager::checkPowerPinIdle() {
+  const int8_t pin = powerPin();
+  if (!BoardConfig::powerPolicy().powerPinIdleCheck || pin < 0 || esp_reset_reason() == ESP_RST_DEEPSLEEP) {
+    return powerPinCheckResult;
+  }
+  // Readings spread over 15 ms: a press or release during the check gives a
+  // defined level in at least one of them, so only a pin that stays between the
+  // levels fails.
+  constexpr uint8_t READINGS = 4;
+  constexpr uint32_t READING_GAP_MS = 5;
+  constexpr uint8_t OVERSAMPLE = 8;
+  const auto g = static_cast<gpio_num_t>(pin);
+  gpio_hold_dis(g);  // a previous fault's sleep hold, if a software reset kept it
+  powerPinCheckResult.pin = pin;
+  bool allUndefined = true;
+  probe::PinLevel lastDefined = probe::PinLevel::Low;
+  {
+    const adc::Lock lock;
+    for (uint8_t r = 0; r < READINGS; ++r) {
+      if (r > 0) delay(READING_GAP_MS);
+      uint32_t sum = 0;
+      for (uint8_t i = 0; i < OVERSAMPLE; ++i) sum += analogReadMilliVolts(pin);
+      powerPinCheckResult.mv = static_cast<uint16_t>(sum / OVERSAMPLE);
+      const probe::PinLevel level = probe::pinLevel(powerPinCheckResult.mv);
+      if (level != probe::PinLevel::Undefined) {
+        allUndefined = false;
+        lastDefined = level;
+      }
+    }
+  }
+  if (allUndefined) {
+    // Left as the ADC set it: input and both pulls off. Nothing reads it, waits
+    // on it or arms it for the rest of the session.
+    powerPinCheckResult.idle = PowerPinIdle::Undefined;
+    BoardConfig::ACTIVE.input.power = BoardConfig::PIN_UNASSIGNED;
+  } else {
+    powerPinCheckResult.idle = lastDefined == probe::PinLevel::High ? PowerPinIdle::High : PowerPinIdle::Low;
+    pinMode(pin, powerPinMode());
+  }
+  return powerPinCheckResult;
+}
+
+PowerManager::PowerPinCheck PowerManager::powerPinCheck() { return powerPinCheckResult; }
+#endif
 
 bool PowerManager::takeReleaseWake() {
   const bool releaseWake = releaseWakeMagic == RELEASE_WAKE_MAGIC && esp_reset_reason() == ESP_RST_DEEPSLEEP;

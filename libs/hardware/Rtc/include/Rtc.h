@@ -36,6 +36,13 @@ class Rtc {
   // or when none answered) and the profile's RtcType for that address.
   uint8_t address() const { return addr_; }
   BoardConfig::RtcType type() const { return static_cast<BoardConfig::RtcType>(type_); }
+  // SensorsConfig::rtcIdentityCheck: the address that answered but did not show
+  // its RTC's register pattern, so begin() wrote nothing to it (0 = none).
+#if FREEINK_CAP_PROBE_IDENTITY
+  uint8_t rejectedAddress() const { return rejected_; }
+#else
+  uint8_t rejectedAddress() const { return 0; }
+#endif
 
   // Reads the current time. Returns false on I2C error or if the RTC reports its
   // oscillator stopped (low voltage / never set) — the time is then unreliable.
@@ -55,6 +62,9 @@ class Rtc {
   bool begun_ = false;
   uint8_t addr_ = 0;  // resolved by begin(): primary or fallback
   uint8_t type_ = 0;  // BoardConfig::RtcType of addr_
+#if FREEINK_CAP_PROBE_IDENTITY
+  uint8_t rejected_ = 0;
+#endif
 };
 
 }  // namespace freeink

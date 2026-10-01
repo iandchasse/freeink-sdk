@@ -139,7 +139,7 @@ so the SD manager itself stays device-agnostic.
 | **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
-| **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot) | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip, and a load probe at every switch-on, since the light may not be fitted), optional FT6336U touch tail probed at boot (keys kept, GT911 fallback), native 4-bit SDMMC behind a gated card rail, DS3231MZ or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
+| **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot) | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip, and a load probe at every switch-on, since the light may not be fitted), optional FT6336U touch tail probed at boot (keys kept; 0x38 counts as touch only with a FocalTech chip id; a GT911 fallback only in an alternate-jumper build), key ladders checked for their pull-up and the power button for a valid idle level at boot, native 4-bit SDMMC behind a gated card rail, DS3231MZ (identified before it is written) or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -380,6 +380,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_POWER_POLICY` | the `PowerConfig` policy fields, read through `BoardConfig::powerPolicy()` (all zero without it) | on for Silkscreen |
 | `FREEINK_CAP_I2C_RECOVERY` | `SensorsConfig::i2cBusRecovery` (stuck-bus recovery, sleep release in `SharedI2c.h`) | on for Silkscreen |
 | `FREEINK_CAP_DISPLAY_PROBE_POLICY` | the `DisplayProbeConfig` probe policy and `DisplayPins::busyPullUp`, read through `BoardConfig::displayProbePolicy()` / `displayBusyPullUp()` (the X4-family defaults without it), `displayControllerSource()`, and the UltraChip deep sleep in `PowerManager::sleepPanelWithoutDriver()` | on for Silkscreen |
+| `FREEINK_CAP_PROBE_IDENTITY` | the identity checks of `TouchConfig::requireFocalTechId` and `SensorsConfig::rtcIdentityCheck`, read through `BoardConfig::touchIdentityCheck()` / `rtcIdentityCheck()` (false without it), the probe's refused-device record and `Rtc::rejectedAddress()` | on for Silkscreen |
 | `FREEINK_CAP_FRONTLIGHT_PROBE` | the front light's switch-on load probe (`FrontlightConfig::loadProbeMs` / `railSafeV`): `FrontlightManager::load()`, `stringMissing()` and `restoreAllowed()` (Unknown / false / true without it), the load record in RTC memory, and the wait for the LED rail before the colour select moves after a trip. Needs `FREEINK_CAP_FRONTLIGHT` | on for Silkscreen when its env compiles the light in |
 
 **Other flags:**
@@ -846,8 +847,8 @@ automatically as a dependency of `SDCardManager`.
    and every other board behaves as before. Generic code reads the field; it never
    keys off the device. The fields below were added this way (for Silkscreen) and
    are available to any board; a board that sets the ladder, power-policy,
-   bus-recovery or display-probe fields also needs the matching `FREEINK_CAP_*`
-   flag (on by default for its device).
+   bus-recovery, display-probe or identity-check fields also needs the matching
+   `FREEINK_CAP_*` flag (on by default for its device).
 
    A few generic changes from the same work apply to every board, as fixes:
    the EPD bus presets CS HIGH before SPI starts and RESET HIGH before its output
@@ -875,7 +876,8 @@ Leave a field out and the board keeps the old behaviour.
 | `BoardProfile` | `parkedPins[8]` (empty) | `PinPark` boot and sleep levels (`Low`, `High`, `InputNoPull`) for pins no driver owns then: applied by `holdPowerRails()` at boot and held through sleep by `powerDownRailsForSleep()`. |
 | `TouchConfig` | `optional`, `fallbackController`/`fallbackAddr` (off) | Probe the panel at boot, then `fallbackController`/`fallbackAddr` if set. With `optional`, a board where neither answers switches to controller `None` for the session and caches the result in RTC memory (trusted after a deep-sleep wake only). Without `optional`, the primary controller is kept and nothing is cached. |
 | `TouchConfig` | `resetPulseMs`/`resetSettleMs` (0) | Hardware reset before the first transaction (FT5x06 path). |
-| `TouchConfig` | `hibernateInSleep` (false) | `InputManager::prepareTouchForSleep()` sends the controller's sleep command (FocalTech `0xA5 = 0x03` with a reset-and-retry on NACK; GT911 `0x8040 = 0x05` with `INT` held LOW). A GT911 cached by the probe is put back to sleep (or its `INT` re-held, `holdTouchIntForSleep()`) on a sleep entry before the probe, since an S3 digital pad drops its hold at the wake. `resetAndHibernateTouch()` resets a FocalTech controller first, for a sleep entry that cannot trust its state. For a touch panel on an always-on rail. |
+| `TouchConfig` | `hibernateInSleep` (false) | `InputManager::prepareTouchForSleep()` sends the controller's sleep command (FocalTech `0xA5 = 0x03` with a reset-and-retry on NACK; GT911 `0x8040 = 0x05` with `INT` held LOW). A GT911 cached by the probe is put back to sleep (or its `INT` re-held, `holdTouchIntForSleep()`) on a sleep entry before the probe, since an S3 digital pad drops its hold at the wake. `resetAndHibernateTouch()`, for a sleep entry that cannot trust the controller's state, resets a FocalTech controller first; with a GT911 `fallbackController` it never pulses the reset (a reset without the `INT` address strap restarts a GT911 awake), tries FocalTech hibernate without it, then the GT911's sleep command at `fallbackAddr` and `i2cAddressAlt`, holds `INT` LOW either way, and caches an answering GT911 for the next deep-sleep wake. For a touch panel on an always-on rail. |
+| `TouchConfig` | `requireFocalTechId` (false) | A FocalTech controller counts as found only when `0xA3` reads a FocalTech chip id (`0x06`, `0x36` or `0x64`, `ProbeChecks.h`). The probe reads the ID window before its first write; a device with another id gets nothing written (no probe writes, no sleep command, none after a deep-sleep wake, which keeps the refusal in RTC memory), and a best-effort sleep write to an unfound controller first reads the id. For a bus where another device can sit at the touch address. Not for a board whose controller serves a zero ID window (Paper Mono's FT6336). Needs `FREEINK_CAP_PROBE_IDENTITY`. |
 | `TouchConfig` | `buttonsAlongsideTouch` (false) | The board keeps its keys with touch fitted: `BoardConfig::hasFrontButtons()` stays true. |
 | `FrontlightConfig` | `colorSelectGpio`, `colorSelectWarmHigh` (none, true) | One GPIO picks the warm or cool string (fixed choice at warmth ≥ 50 %, never PWM'd), switched only while the light is dark. |
 | `FrontlightConfig` | `enablePulseUs`, `offDwellMs` (0) | Enable-gated driver (e.g. TPS923610 `ADIM`): dark for `offDwellMs` before each enable, then the pin HIGH for `enablePulseUs`, then the PWM carrier. |
@@ -884,6 +886,7 @@ Leave a field out and the board keeps the old behaviour.
 | `SensorsConfig` | `rtcLowPower` (false) | DS3231: clear `EN32KHZ`; PCF85063-class: `CLKOUT` off. |
 | `SensorsConfig` | `rtcFallbackType`/`rtcFallbackAddr` (none) | Second RTC footprint, probed when the first does not answer. |
 | `SensorsConfig` | `rtcResyncWhenInvalid` (false) | No RTC backup cell: the consumer re-fetches the time whenever the RTC reports it invalid. |
+| `SensorsConfig` | `rtcIdentityCheck` (false) | `Rtc::begin()` reads a DS3231's registers `0x00`-`0x12` before writing its control and status registers, and refuses a device without the DS3231 pattern (bits the datasheet fixes at 0, day of week 1-7, BCD seconds and minutes; `ProbeChecks.h`; read twice, since the first access after the chip's first power-up resets its time). The fallback RTC is tried next; `Rtc::rejectedAddress()` names the refused address. Needs `FREEINK_CAP_PROBE_IDENTITY`. |
 | `SensorsConfig` | `i2cBusRecovery` (false) | Pull-ups on an always-on rail: the first bus start in a boot clocks a stuck bus free; `freeink::i2c::releaseSensorBusForSleep()` ends the bus and leaves the lines released before sleep. |
 | `PowerConfig` | `lowBatteryCutoffMv` (0), `cutoffRadioAllowanceMv` (0) | `BatteryMonitor::isBelowCutoff(known, mv, radioOn)`: 3 consecutive once-a-second readings at or below the cutoff (less the allowance while the radio is on), never on external power or with no cell. |
 | `PowerConfig` | `releaseWaitMaxMs` (0 = unbounded) | A power button still held after this long at sleep entry: sleep until its release instead of spinning, and `PowerManager::takeReleaseWake()` tells the next boot to sleep again at once. |
@@ -891,16 +894,21 @@ Leave a field out and the board keeps the old behaviour.
 | `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (a panel on an always-on rail: reset, then SSD1677 `0x10`/`0x03` or, with `FREEINK_CAP_DISPLAY_PROBE_POLICY`, UltraChip DSLP `0x07`/`0xA5` bit-banged, by the controller `ACTIVE` names) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
 | `PowerConfig` | `firmwareUpdateMinMv`, `awakeCeilingMin`, `radioOffWhenIdle` (0/0/false) | Data for the consumer: battery floor for firmware writes, awake ceiling on battery with no input or client traffic, and screens whose work has ended stop spinning the loop and drop the radio. |
 | `PowerConfig` | `wakeNoInputTimeoutS`, `storageErrorSleepS`, `awakeInputCapMin` (0/0/0) | Data for the consumer, on battery: sleep again after a power-button wake with no input, leave a dead-end storage-error screen, and an awake cap that only input (not client traffic) extends. |
+| `PowerConfig` | `ladderPresenceProbe` (false) | `InputStyle::AdcLadders`: at every reset but a deep-sleep wake, `InputManager::begin()` reads each ladder pin with the internal pull-down, then the pull-up (about 2 ms each), and a pin that follows both from rail to rail (no pull-up fitted, `ProbeChecks.h`) is switched off for the session (its `ACTIVE` pin `PIN_UNASSIGNED`), so a floating ladder cannot report phantom keys. Both pulls end off; the result is kept in RTC memory for deep-sleep wakes. `InputManager::ladderPresence()` reports it. Needs `FREEINK_CAP_ADC_LADDERS`. |
+| `PowerConfig` | `powerPinIdleCheck` (false) | `PowerManager::checkPowerPinIdle()`, called early in `setup()` (radio off), reads the power pin on the ADC at every reset but a deep-sleep wake. Idling between the logic levels (0.25-0.75 x VDD), the pin is switched off for the session (`input.power` `PIN_UNASSIGNED`): nothing reads it, waits on it or arms it, and `deepSleepUntilPowerButton()` holds its pad with the input off and sleeps with no wake source, so a reset starts the board. `powerPinCheck()` reports the result for the consumer's message. |
 
 Helpers and hooks the consumer calls when a board sets these:
-`BoardConfig::holdPowerRails()` first in `setup()`; `BoardConfig::powerPolicy()` for the
+`BoardConfig::holdPowerRails()` first in `setup()`; with `powerPinIdleCheck`,
+`PowerManager::checkPowerPinIdle()` right after it, before any sleep entry can arm the
+wake; `BoardConfig::powerPolicy()` for the
 `PowerConfig` policy fields; `InputManager::adcLadderContact()` as a one-sample idle wake test
 on `AdcLadders` boards; `PowerManager::powerDownRailsForSleep()`
 then `deepSleepUntilPowerButton()` at every sleep entry, after
 `InputManager::prepareTouchForSleep()`, `freeink::i2c::releaseSensorBusForSleep()` and
 `FrontlightManager::prepareForSleep()` (dark, LEDC detached); `BoardConfig::hasFrontButtons()`
 and `hasChargeStatusLadder()` for UI and policy. Two header-only helpers sit in the
-BoardConfig include directory: `SharedAdc.h` (one recursive lock around every SDK ADC
+BoardConfig include directory (with `ProbeChecks.h`, the pure rules of the boot-time
+checks above, host-tested under `libs/hardware/BoardConfig/test/host/`): `SharedAdc.h` (one recursive lock around every SDK ADC
 read, since Arduino-ESP32 3.x only try-locks the ADC unit and returns 0 to the loser;
 use its `freeink::adc::` readers for your own ADC reads) and `SharedI2c.h` (`busHz()` /
 `beginBus()` give every driver on the sensor-bus pins one clock, plus stuck-bus recovery
@@ -923,7 +931,7 @@ the flag.)
 | `SDCardManager::cardInfo()` | native SDMMC: card type (SDSC/SDHC/SDXC/MMC), CSD capacity, bus width, host cap, card max and real clock, CID name/MID/OID/revision/serial/date, power cycles the last mount used and its last error (SPI: mounted and type only) |
 | `FrontlightManager::monitorDiagnostics()` | LED-rail monitor trips (count, LED mV, limit, time) and the last reading (pin and LED mV), kept after the light is switched off, which clears `fault()` |
 | `FrontlightManager::probeDiagnostics()` | the load record (`load()` and both strings), the switch-on probes, their trips, the second tries and the switch-ons that found no light since boot, and the last probe's string, result, peak LED mV, reading count and time to the trip; the waits for the rail after a trip (count, last wait, the rail then, timeouts). With `FREEINK_CAP_FRONTLIGHT_PROBE` |
-| `InputManager::touchDiagnostics()` | whether touch is active and the address the controller answered at, the last raw contact before any mapping (FT5x06, FT6336U, GT911), the boot probe (cached, found, fallback) and the FocalTech ID window it read (`0xA3`-`0xA8`), reset pulses, the long-press threshold, and `prepareTouchForSleep()`'s result and reset-retry for this boot and for the last sleep entry before this wake that did something (a ghost wake's re-sleep, which runs before `startTouch()` and does nothing, keeps the record) |
+| `InputManager::touchDiagnostics()` | whether touch is active and the address the controller answered at, the last raw contact before any mapping (FT5x06, FT6336U, GT911), the boot probe (cached, found, fallback) and the FocalTech ID window it read (`0xA3`-`0xA8`), whether `requireFocalTechId` refused the device there, reset pulses, the long-press threshold, and `prepareTouchForSleep()`'s result and reset-retry for this boot and for the last sleep entry before this wake that did something (a ghost wake's re-sleep, which runs before `startTouch()` and does nothing, keeps the record) |
 | `PowerManager::peekAbnormalResets()` / `peekAbortedSleepInfo()` / `bootResetRecord()` | the RTC records without consuming them, and what this boot's `countAbnormalResets()` and `takeAbortedSleepInfo()` returned, kept after the consumer has cleared or taken them |
 
 One control, also only with the flag, for a clock trial on the bench:
@@ -940,6 +948,7 @@ Header-only helpers, available in every build (not emitted unless called):
 | `InputManager::touchMapping()` / `setTouchMapping()` | read or change, in RAM, `swapXY`/`flipX`/`flipY` and the raw ranges of `ACTIVE.touch`, for calibration (used from the next poll) |
 | `ChargeLadderDecoder::candidate()` / `candidateRun()` / `completeRun()` / `unknownRun()` | the decoder's debounce progress |
 | `Rtc::address()` / `type()` | the address `begin()` found the RTC at (primary or fallback, 0 when none) and the profile's `RtcType` for it |
+| `Rtc::rejectedAddress()` | the address `begin()` refused under `SensorsConfig::rtcIdentityCheck` (0 when none, and always without `FREEINK_CAP_PROBE_IDENTITY`) |
 
 ### Devices backed by external libraries
 

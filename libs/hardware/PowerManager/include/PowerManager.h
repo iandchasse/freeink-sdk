@@ -73,8 +73,29 @@ class PowerManager {
   // With PowerConfig::releaseWaitMaxMs set, a button still pressed after that
   // long arms the wake on its release instead (the only wake source, so a stuck
   // key costs a sleeping chip, not a spinning one); takeReleaseWake() then tells
-  // the next boot to sleep again at once.
+  // the next boot to sleep again at once. After checkPowerPinIdle() found the
+  // pin between the logic levels, nothing is armed and the pad keeps its input
+  // off through sleep: only a reset wakes the chip.
   [[noreturn]] static void deepSleepUntilPowerButton();
+
+  // PowerConfig::powerPinIdleCheck (with FREEINK_CAP_POWER_POLICY). What the
+  // power pin read at this boot's check: Low (released), High (held at boot), or
+  // Undefined, between the logic levels, so the ext1 wake would fire at once or
+  // never. NotChecked: a deep-sleep wake, no power pin, or the policy off.
+  enum class PowerPinIdle : uint8_t { NotChecked, Low, High, Undefined };
+  struct PowerPinCheck {
+    PowerPinIdle idle = PowerPinIdle::NotChecked;
+    int8_t pin = -1;  // the profile's power pin
+    uint16_t mv = 0;  // the last of the averaged readings
+  };
+  // Reads the power pin on the ADC (radio off; ADC2 on an S3 IO18) at any reset
+  // but a deep-sleep wake, before anything arms a wake. On Undefined it leaves
+  // the pad as the ADC set it (input and pulls off) and sets
+  // ACTIVE.input.power to PIN_UNASSIGNED for the session; otherwise it puts the
+  // pin back to its input mode. Call once, early in setup().
+  static PowerPinCheck checkPowerPinIdle();
+  // This boot's result (NotChecked before checkPowerPinIdle()).
+  static PowerPinCheck powerPinCheck();
 
   // True once, on the boot that follows a release wake (see
   // deepSleepUntilPowerButton()). The consumer calls it first thing and, when

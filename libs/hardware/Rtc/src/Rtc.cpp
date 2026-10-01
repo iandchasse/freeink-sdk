@@ -9,6 +9,9 @@
 #include <SharedI2c.h>
 #include <Wire.h>
 #include <soc/soc_caps.h>
+#if FREEINK_CAP_PROBE_IDENTITY
+#include <ProbeChecks.h>
+#endif
 
 namespace freeink {
 namespace {
@@ -91,7 +94,35 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   return true;
 }
 
-// Probe and initialise one RTC. Returns false when it does not ACK.
+#if FREEINK_CAP_PROBE_IDENTITY
+// SensorsConfig::rtcIdentityCheck: the address this begin() refused (0 = none).
+uint8_t g_rejectedAddr = 0;
+// The first access after a DS3231's first power-up resets its time registers,
+// so a mismatch is read once more after this long.
+constexpr uint32_t DS3231_RECHECK_MS = 20;
+
+// The DS3231 status register. With rtcIdentityCheck, the whole register file is
+// read first, and a device without the DS3231 pattern (ProbeChecks.h) is refused
+// before anything is written to it.
+bool readDs3231Status(const uint8_t addr, uint8_t& status) {
+  if (!BoardConfig::rtcIdentityCheck()) return readRegs(addr, DS3231_REG_STATUS, &status, 1);
+  uint8_t regs[probe::DS3231_REGISTER_COUNT] = {};
+  if (!readRegs(addr, 0x00, regs, sizeof(regs))) return false;
+  if (probe::ds3231Mismatch(regs) != 0) {
+    delay(DS3231_RECHECK_MS);
+    if (!readRegs(addr, 0x00, regs, sizeof(regs))) return false;
+    if (probe::ds3231Mismatch(regs) != 0) {
+      g_rejectedAddr = addr;
+      return false;
+    }
+  }
+  status = regs[DS3231_REG_STATUS];
+  return true;
+}
+#endif
+
+// Probe and initialise one RTC. Returns false when it does not ACK (or, with
+// SensorsConfig::rtcIdentityCheck, is not the part named).
 bool beginDevice(const uint8_t addr, const BoardConfig::RtcType type) {
   if (addr == 0) return false;
   const bool lowPower = BoardConfig::ACTIVE.sensors.rtcLowPower;
@@ -114,7 +145,11 @@ bool beginDevice(const uint8_t addr, const BoardConfig::RtcType type) {
       }
       return true;
     case BoardConfig::RtcType::Ds3231:
+#if FREEINK_CAP_PROBE_IDENTITY
+      if (!readDs3231Status(addr, status)) return false;
+#else
       if (!readRegs(addr, DS3231_REG_STATUS, &status, 1)) return false;
+#endif
       writeReg(addr, DS3231_REG_CONTROL, DS3231_CONTROL_INTCN);  // disable square-wave output
       if (lowPower && (status & DS3231_STATUS_EN32KHZ)) {
         // EN32KHZ powers up set; the VBAT timekeeping current assumes it clear.
@@ -138,6 +173,14 @@ bool Rtc::begin() {
   if (s.rtcAddr == 0) return false;
   if (s.i2cSda < 0 || s.i2cScl < 0 || s.i2cHz == 0) return false;
   ensureWire();
+#if FREEINK_CAP_PROBE_IDENTITY
+  // rejectedAddress() is this begin()'s, on every return below.
+  g_rejectedAddr = 0;
+  struct NoteRejected {
+    Rtc& rtc;
+    ~NoteRejected() { rtc.rejected_ = g_rejectedAddr; }
+  } noteRejected{*this};
+#endif
   if (beginDevice(s.rtcAddr, s.rtcType)) {
     addr_ = s.rtcAddr;
     type_ = static_cast<uint8_t>(s.rtcType);
