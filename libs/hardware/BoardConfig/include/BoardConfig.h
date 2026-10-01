@@ -471,7 +471,7 @@ enum class Board : uint8_t {
   OnePage,    // OnePage: ESP32-C61, SSD1677 800x480 SPI panel, 4-key ADC ladder + 3 side keys
   WsEpaper397,  // Waveshare ESP32-S3-ePaper-3.97: SSD1677 800x480, 3 keys + BOOT, AXP2101 PMIC
   MetalioEInk4,  // ESP32-S3, GDEM0397T81, CST816S, TCA9555
-  Silkscreen,   // Silkscreen open-hardware reader: ESP32-S3, SSD1677 800x480, 4-bit SDMMC, DS3231 RTC
+  Silkscreen,    // Silkscreen open-hardware reader: ESP32-S3, SSD1677 800x480, 4-bit SDMMC, DS3231 RTC
 };
 
 // How the board reports button presses.
