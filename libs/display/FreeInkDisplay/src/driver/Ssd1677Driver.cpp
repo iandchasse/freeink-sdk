@@ -285,6 +285,7 @@ void Ssd1677Driver::writeRam(EpdBus& bus, uint8_t ramCmd, const uint8_t* data, u
 
 void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool async) {
   _pendingPowerOff = false;
+  if (mode == RefreshMode::Full && _cfg.fullUsesHalfWaveform) mode = RefreshMode::Half;
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   const uint32_t dbgStart = millis();
   const char* dbgMode = (mode == RefreshMode::Full) ? "FULL" : (mode == RefreshMode::Half) ? "HALF" : "FAST";
@@ -768,8 +769,25 @@ static const Ssd1677Config& ssd1677ActiveConfig() { return FREEINK_SSD1677_CONFI
 // Select the per-board config from the active profile — no extra build flag, it
 // follows the -DFREEINK_DEVICE_<NAME> selection (ACTIVE.board). Boards not listed
 // use the X4/GDEQ0426T82 defaults.
+#if FREEINK_DEVICE_SILKSCREEN
+// Silkscreen: the GDEQ0426T82's FULL waveform is unusable on this board, so every
+// FULL request runs the HALF waveform.
+static const Ssd1677Config& ssd1677SilkscreenConfig() {
+  static const Ssd1677Config cfg = [] {
+    Ssd1677Config c = ssd1677DefaultConfig();
+    c.fullUsesHalfWaveform = true;
+    return c;
+  }();
+  return cfg;
+}
+#endif
+
 static const Ssd1677Config& ssd1677ActiveConfig() {
   switch (BoardConfig::ACTIVE.board) {
+#if FREEINK_DEVICE_SILKSCREEN
+    case BoardConfig::Board::Silkscreen:
+      return ssd1677SilkscreenConfig();
+#endif
 #if FREEINK_DEVICE_METALIO_EINK4
     case BoardConfig::Board::MetalioEInk4: return ssd1677MetalioConfig();
 #endif

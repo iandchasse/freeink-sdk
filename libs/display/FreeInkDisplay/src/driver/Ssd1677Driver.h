@@ -63,6 +63,9 @@ struct Ssd1677Config {
   // Factory absolute 4-level LUT override; nullptr selects lut_factory_quality.
   // Boards with a per-module voltage tail (Metalio) point this at their copy.
   const unsigned char* factoryGrayLut = nullptr;
+  // Run the HALF waveform wherever FULL is requested, for boards whose FULL
+  // waveform is unusable on their panel (Silkscreen's GDEQ0426T82).
+  bool fullUsesHalfWaveform = false;
 };
 
 // Standard config (Xteink X4 / GDEQ0426T82). Panel mounting (mirror/180°) is NOT
