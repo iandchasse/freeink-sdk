@@ -137,6 +137,7 @@ so the SD manager itself stays device-agnostic.
 | **Xteink X4 Pro** | ESP32-S3 | SSD1677, UC8179, **or UC8279** (per batch) | 800×480 B/W | GT911 touch, dual warm/cold frontlight, native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
 | **Xteink X4 Classic** (X4C) | ESP32-S3 | SSD1677, UC8179, **or UC8279** (per unit) | 800×480 B/W | same board/glass as the X4 Pro but **no touch, no frontlight** — those pins become four extra discrete front buttons (8 buttons total); native 1-bit SDMMC, BM8563 RTC, CW2017 battery gauge; controller auto-detected at boot |
 | **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
+| **Metalio E-Ink 4** | ESP32-S3 | SSD1677 | 800×480 B/W | CST816S touch and cover keys, TCA9555 buttons/power, 1-bit SDMMC, BQ27220 battery gauge, PCF8563 RTC; [bring-up notes and source conflicts](docs/metalio-eink4-support.md), hardware validation pending |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
 | **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot) | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip, and a load probe at every switch-on, since the light may not be fitted), optional FT6336U touch tail probed at boot (keys kept; 0x38 counts as touch only with a FocalTech chip id; a GT911 fallback only in an alternate-jumper build, `-DSILKSCREEN_TOUCH_ALT_JUMPERS=1`), key ladders checked for their pull-up and the power button for a valid idle level at boot, native 4-bit SDMMC behind a gated card rail, DS3231MZ (identified before it is written) or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
@@ -352,6 +353,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 |---|---|
 | `-DFREEINK_DEVICE_X4` | X4 only — links just SSD1677 (tightest) |
 | `-DFREEINK_DEVICE_X3 -DFREEINK_DEVICE_X4` | X3 **and** X4 in one C3 binary, runtime-selected via `setDisplayX3()` |
+| `-DFREEINK_DEVICE_METALIO_EINK4` | Metalio E-Ink 4 (S3, SSD1677, CST816S touch, TCA9555, 1-bit SDMMC) |
 | `-DFREEINK_DEVICE_ONEPAGE` | OnePage (C61, SSD1677 800×480 + 4-key ADC ladder + 3 side keys + shared SD) |
 | `-DFREEINK_DEVICE_DELINK` | de-link (S3, SSD1677 + frontlight) |
 | `-DFREEINK_DEVICE_M5` | M5 PaperColor (S3, ED2208 + color) |
@@ -383,6 +385,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_RTC` | real-time clock (Rtc lib: PCF8563 / DS3231 / RX8130 over I²C, per profile) | on for X3, Sticky, X4 Pro, X4 Classic, and Paper Mono |
 | `FREEINK_CAP_TEMP_HUMIDITY` | temperature + humidity (EnvironmentSensor lib: SHT40 over I²C) | on for Sticky |
 | `FREEINK_CAP_IMU` | 6-axis IMU (Imu lib: LSM6DS3TR-C over I²C) | on for Sticky |
+| `FREEINK_CAP_HAPTIC` | consumer-controlled vibration ([HapticManager](docs/haptics.md): intensity, pulses, patterns) | on for Metalio E-Ink 4 |
 | `FREEINK_CAP_BUZZER` | LEDC PWM tone buzzer (Buzzer lib: tone/beep on `audio.buzzer`) | on for Sticky, Murphy, and Paper Mono |
 | `FREEINK_CAP_LED` | RGB LEDs (LedManager: addressable chains, or the Paper Mono's discrete PMIC/expander-driven LED) | on for M5 and Paper Mono |
 | `FREEINK_CAP_NET_TLS13` | wolfSSL TLS 1.3 (≡ `FREEINK_NET_WOLFSSL`) | off |
@@ -860,7 +863,9 @@ automatically as a dependency of `SDCardManager`.
    keys off the device. The fields below were added this way (for Silkscreen) and
    are available to any board; a board that sets the ladder, power-policy,
    bus-recovery, display-probe or identity-check fields also needs the matching
-   `FREEINK_CAP_*` flag (on by default for its device).
+   `FREEINK_CAP_*` flag (on by default for its device). A profile that sets
+   appended fields is written with C++20 designated initializers, in declaration
+   order (as `SILKSCREEN` is), so a field appended later cannot shift its values.
 
    A few generic changes from the same work apply to every board, as fixes:
    the EPD bus presets CS HIGH before SPI starts and RESET HIGH before its output
@@ -1040,6 +1045,7 @@ libs/
   hardware/SDCardManager/   SD storage (SdFat-over-SPI or native SDMMC)
   hardware/PowerManager/    per-SoC deep-sleep wake-on-power-button
   hardware/MemoryManager/   on-demand cache-sink reclaim + heap reporting
+  hardware/HapticManager/     Consumer-controlled PWM vibration and patterns
   hardware/FrontlightManager/  PWM frontlight (LEDC or PMIC-PWM)
   hardware/LedManager/      RGB LEDs (M5 PaperColor addressable, Paper Mono discrete)
   hardware/AudioManager/    I2S codec WAV playback (Murphy, M5 PaperColor)
