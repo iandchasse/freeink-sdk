@@ -119,6 +119,20 @@ class InputManager {
   // True if this board has a touch controller configured.
   bool hasTouch() const;
 
+  // TouchConfig::requireFocalTechId: this boot's probe met a device at the
+  // primary touch address whose chip id (refusedTouchId(), the 0xA3 byte) is not
+  // FocalTech's, and no controller was found, so that device got no writes and
+  // gets no sleep command. A genuine tail refused this way is never hibernated.
+  // A deep-sleep wake that reuses the refusal reads no id and reports false.
+  // False (and 0) without FREEINK_CAP_PROBE_IDENTITY.
+#if FREEINK_CAP_PROBE_IDENTITY
+  bool touchIdRefused() const { return touchIdRejected && !touchDataEnabled; }
+  uint8_t refusedTouchId() const { return touchIdRejected ? refusedTouchIdByte : 0; }
+#else
+  bool touchIdRefused() const { return false; }
+  uint8_t refusedTouchId() const { return 0; }
+#endif
+
   // Deep-sleep entry for a touch panel on an always-on rail
   // (TouchConfig::hibernateInSleep; NotApplicable elsewhere). A FocalTech
   // controller gets hibernate (0xA5 = 0x03); when one found at boot does not
@@ -526,7 +540,8 @@ class InputManager {
   BoardConfig::TouchController touchSleepController = BoardConfig::TouchController::None;
   uint8_t touchSleepAddr = 0;
 #if FREEINK_CAP_PROBE_IDENTITY
-  bool touchIdRejected = false;  // TouchConfig::requireFocalTechId: the primary answered with a foreign chip id
+  bool touchIdRejected = false;    // TouchConfig::requireFocalTechId: the primary answered with a foreign chip id
+  uint8_t refusedTouchIdByte = 0;  // ...and that id (0xA3)
 #endif
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll

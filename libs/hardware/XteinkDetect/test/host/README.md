@@ -48,6 +48,9 @@ done
 ```
 
 It covers a UC8279 found on a cold boot and kept across a deep sleep with the bus
-silent, a floating bus (SSD1677) after every other reset reason, LUT_VER values
-that must not select UC8179 (not linked for Silkscreen), an inconclusive probe
-that is not kept, and a forced build that never touches the bus.
+silent, the vendor 50 ms reset on the screening pass, a dropped verdict that the
+next wake probes again, a floating bus (SSD1677) after every other reset reason,
+LUT_VER values that must not select UC8179 (not linked for Silkscreen), a
+UC8279d that drives only a stable FLG (VER floating or all zero, blank MTP), an
+inconclusive probe (FLG on one pass only) that is not kept, and a forced build
+that never touches the bus.

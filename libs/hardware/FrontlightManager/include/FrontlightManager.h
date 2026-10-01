@@ -27,9 +27,11 @@
 // reading above the trip there means the selected string has no load: the light
 // goes dark at once. With a colour select the other string is tried in the same
 // call; if it lights, the first is recorded missing and never selected again until
-// a cold boot, and if it does not (or there is none), load() reads Absent and
-// fault() latches as for a trip. The record (load(), stringMissing()) is kept in
-// RTC memory across deep sleep and software restarts. The consumer enables such a
+// a cold boot (a later no-light result keeps the mark), and if it does not (or
+// there is none), load() reads Absent and fault() latches as for a trip. A second
+// try the rail blocks latches fault() with the record unchanged. The record
+// (load(), stringMissing()) is kept in RTC memory across deep sleep and software
+// restarts. The consumer enables such a
 // light only when the user asks, or at boot once restoreAllowed() agrees. After
 // any trip the colour select moves only once the LED rail has fallen to railSafeV,
 // so the charge left on the boost output cannot discharge through a string on the
@@ -165,6 +167,8 @@ class FrontlightManager {
     bool lastWarm = false;         // the string of the last probe
     bool lastTripped = false;      // it read above the trip
     uint32_t lastTripAfterUs = 0;  // carrier start to that reading
+    // that reading to the PWM pad held at its dark level (ADIM LOW), 0 when it lit
+    uint32_t lastDarkAfterTripUs = 0;
     uint32_t lastPeakLedMv = 0;    // highest reading in the last probe window
     uint32_t lastSamples = 0;      // readings in the last probe window
     uint32_t lastMs = 0;           // millis() of the last probe

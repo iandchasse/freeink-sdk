@@ -52,11 +52,16 @@ inline void noteLit(LoadRecord& r, const bool warm) {
 // The probe on `warm` tripped. Returns true when the other string is to be tried
 // in the same switch-on: a colour select, this was not already that second try,
 // and the other string is not known to be missing. Otherwise nothing could light,
-// so the record says Absent and forgets both strings: the next switch-on the user
-// asks for tries them again.
+// so the record says Absent and forgets what it knew of the strings, except a
+// string already recorded missing: that one is never selected again until a cold
+// boot, and the next switch-on the user asks for tries the other one.
 inline bool noteTripped(LoadRecord& r, const bool colourSelect, const bool warm, const bool secondTry) {
   if (colourSelect && !secondTry && r.string(!warm) != StringState::Missing) return true;
-  r = LoadRecord{};
+  const auto keepMissing = [](const StringState s) {
+    return s == StringState::Missing ? StringState::Missing : StringState::Unknown;
+  };
+  r.cool = keepMissing(r.cool);
+  r.warm = keepMissing(r.warm);
   r.load = Load::Absent;
   return false;
 }

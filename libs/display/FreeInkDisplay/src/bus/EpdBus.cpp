@@ -11,6 +11,17 @@
 #if FREEINK_DEVICE_WS397
 #include <Axp2101.h>
 #endif
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+#include <esp_system.h>
+// XteinkDetect's display-probe policy (XteinkDetect.h), declared here instead of
+// included: PlatformIO's library finder does not read #if, so the include would
+// make XteinkDetect a dependency of this library on every board and reorder
+// their link.
+namespace freeink {
+bool displayControllerCached();
+void forgetCachedDisplayController();
+}  // namespace freeink
+#endif
 
 // Consumer escape hatch for boards whose EPD power/reset live behind glue the
 // SDK doesn't know. Weak REFERENCES only — an SDK-internal implementation
@@ -46,6 +57,45 @@ void boardEpdReset(bool high) {
   if (freeink_board_epd_reset) freeink_board_epd_reset(high);
 #endif
 }
+
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+// The bound on the idle check below: the X3 stock protocol's bounded BUSY wait
+// after its reset.
+constexpr unsigned long CACHED_IDLE_WAIT_MS = 300;
+// A UC BUSY_N wait this long is no refresh (a FULL takes seconds): the panel is
+// not the UC part the driver was chosen for.
+constexpr unsigned long UC_WAIT_CAP_MS = 60000;
+
+// DisplayProbeConfig::cacheAcrossDeepSleep: a deep-sleep wake takes the
+// controller from RTC memory with no bus traffic, so a panel swapped while the
+// board slept (3V3 stays live through deep sleep) would meet the wrong driver,
+// and an SSD1677 never ends a UC8279 BUSY_N wait. The first panel reset of such a
+// boot checks the controller: a UC8279 idles BUSY_N HIGH and an SSD1677 idles
+// BUSY LOW (a missing panel reads idle through the driver's pull). One read when
+// it matches; a level that stays wrong for CACHED_IDLE_WAIT_MS drops the cached
+// verdict and restarts, and the restart probes the panel before any command
+// reaches it.
+void checkCachedController(const int8_t busyPin, const freeink::BusyPolarity p) {
+  static bool checked = false;
+  if (checked || busyPin < 0 || !freeink::displayControllerCached()) return;
+  checked = true;
+  if (p != freeink::BusyPolarity::UcIdleHigh && p != freeink::BusyPolarity::ActiveHigh) return;
+  const int idle = p == freeink::BusyPolarity::UcIdleHigh ? HIGH : LOW;
+  const unsigned long start = millis();
+  while (digitalRead(busyPin) != idle) {
+    if (millis() - start >= CACHED_IDLE_WAIT_MS) {
+      if (Serial) {
+        Serial.printf("[%lu] [EPD] BUSY stays %s after the reset: not the %s probed before the sleep; restarting\n",
+                      millis(), idle == HIGH ? "LOW" : "HIGH",
+                      BoardConfig::controllerPartName(BoardConfig::ACTIVE.displayController));
+      }
+      freeink::forgetCachedDisplayController();
+      esp_restart();
+    }
+    delay(1);
+  }
+}
+#endif
 }  // namespace
 
 namespace freeink {
@@ -202,6 +252,9 @@ void EpdBus::reset(uint16_t extraSettleMs) {
   if (extraSettleMs) {
     delay(extraSettleMs);
   }
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+  checkCachedController(_pins.busy, _busy);
+#endif
 }
 
 void EpdBus::cmd(uint8_t c) {
@@ -330,7 +383,9 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
     // command to take effect, then wait only for the documented idle level.
     // There is deliberately no fixed millisecond timeout on this controller
     // path; issuing the next command while BUSY_N is still LOW can make the UC
-    // controller discard plane or LUT writes.
+    // controller discard plane or LUT writes. The display-probe policy alone caps
+    // it far beyond any refresh: a panel that is not the UC part (an SSD1677
+    // idles LOW) would otherwise hold the CPU awake until the cell is flat.
     delay(1);
     while (digitalRead(_pins.busy) == LOW) {
       busyIdle(longWait, LOW, 1);
@@ -341,6 +396,16 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
           _busyWaitBeginHook();
         }
       }
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+      if (millis() - start > UC_WAIT_CAP_MS) {
+        if (Serial) {
+          Serial.printf("[%lu] [EPD] BUSY_N still LOW after %lu ms%s: not a UC panel?\n", millis(), UC_WAIT_CAP_MS,
+                        tag ? tag : "");
+        }
+        freeink::forgetCachedDisplayController();
+        break;
+      }
+#endif
     }
   } else {  // X3TwoPhase: wait for the LOW edge, then wait back to HIGH
     while (digitalRead(_pins.busy) == HIGH) {
@@ -365,10 +430,13 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
 
   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
 #if FREEINK_DIAGNOSTICS
-  // Every loop above ends on its idle level unless it gave up (UcIdleHigh never does).
+  // Every loop above ends on its idle level unless it gave up (UcIdleHigh only
+  // with the display-probe policy's cap).
   const int busyLevel = digitalRead(_pins.busy);
   recordWait(start,
-             p == BusyPolarity::ActiveHigh ? busyLevel == HIGH : p != BusyPolarity::UcIdleHigh && busyLevel == LOW,
+             p == BusyPolarity::ActiveHigh
+                 ? busyLevel == HIGH
+                 : (p != BusyPolarity::UcIdleHigh || FREEINK_CAP_DISPLAY_PROBE_POLICY) && busyLevel == LOW,
              tag);
 #endif
   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;

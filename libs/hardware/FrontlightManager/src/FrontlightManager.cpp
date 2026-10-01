@@ -535,6 +535,16 @@ void FrontlightManager::applyGated(const uint32_t duty, const uint32_t full) {
               warm ? "cool" : "warm");
       return;
     }
+    if (_railBlocked) {
+      // The other string was never tried: the rail did not fall in time, so the
+      // colour select could not move. As for a blocked first try, this is not a
+      // no-light result and the record stays as the first trip left it; the
+      // switch-off that clears the fault (goDark) rests the select at cool.
+      _fault = true;
+      LOG_ERR("FrontlightMgr", "LED rail did not fall after the %s trip: the %s string was not tried; light off",
+              warm ? "warm" : "cool", warm ? "cool" : "warm");
+      return;
+    }
     freeink::frontlight::noteTripped(_loadRecord, colourSelect, !warm, true);
   }
   saveRecord();
@@ -735,6 +745,9 @@ bool FrontlightManager::probeLoad(const bool warm) {
   const bool tripped = tripAtUs >= 0;
   if (tripped) {
     padToGpio(fl.gpio, darkLevel(fl));
+#if FREEINK_DIAGNOSTICS
+    _probeDiag.lastDarkAfterTripUs = static_cast<uint32_t>(esp_timer_get_time() - tripAtUs);
+#endif
     writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(0, maxDuty(fl.pwmResolutionBits), fl.activeHigh));
     _gatedLit = false;
     _darkSinceUs = esp_timer_get_time();
@@ -748,6 +761,7 @@ bool FrontlightManager::probeLoad(const bool warm) {
   _probeDiag.lastWarm = warm;
   _probeDiag.lastTripped = tripped;
   _probeDiag.lastTripAfterUs = tripped ? static_cast<uint32_t>(tripAtUs - startUs) : 0;
+  if (!tripped) _probeDiag.lastDarkAfterTripUs = 0;
   _probeDiag.lastPeakLedMv = peakMv;
   _probeDiag.lastSamples = samples;
   _probeDiag.lastMs = millis();

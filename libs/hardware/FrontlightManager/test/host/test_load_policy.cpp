@@ -55,9 +55,14 @@ void coolOnlyStrip() {
   // The strip is unplugged: cool trips, and warm is known missing.
   check(!fl::noteTripped(r, true, COOL, false), "no second try onto a missing string");
   check(r.load == fl::Load::Absent, "no light");
-  check(r.warm == fl::StringState::Unknown && r.cool == fl::StringState::Unknown, "both strings forgotten");
+  check(r.warm == fl::StringState::Missing && r.cool == fl::StringState::Unknown,
+        "warm stays missing, cool is no longer confirmed");
   check(!fl::restoreAllowed(r), "no restore into nothing");
-  check(fl::targetWarm(r, true, WARM) == WARM, "the user's retry tries warm again");
+  check(fl::targetWarm(r, true, WARM) == COOL, "the user's retry tries cool, never the missing warm");
+
+  // The strip is plugged back in: the retry lights cool, and warm stays missing.
+  fl::noteLit(r, COOL);
+  check(r.load == fl::Load::Present && r.warm == fl::StringState::Missing, "cool lit again, warm still missing");
 }
 
 void noLightAtAll() {
@@ -65,6 +70,7 @@ void noLightAtAll() {
   check(fl::noteTripped(r, true, WARM, false), "warm tripped: try cool");
   check(!fl::noteTripped(r, true, COOL, true), "the second try tripped too");
   check(r.load == fl::Load::Absent, "no light");
+  check(r.warm == fl::StringState::Unknown && r.cool == fl::StringState::Unknown, "no string marked missing");
   check(!fl::restoreAllowed(r), "restore blocked");
   // The user's retry that finds a light clears it.
   fl::noteLit(r, WARM);

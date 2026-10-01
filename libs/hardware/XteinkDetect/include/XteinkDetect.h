@@ -130,6 +130,16 @@ enum class DisplayControllerSource : uint8_t {
   Forced,       // the build set the controller (DisplayProbeConfig::forced): no probe
 };
 DisplayControllerSource displayControllerSource();
+// displayControllerSource() == Cached. FreeInkDisplay's EpdBus declares this and
+// forgetCachedDisplayController() itself rather than include this header.
+bool displayControllerCached();
+
+// DisplayProbeConfig::cacheAcrossDeepSleep: drop the verdict kept for the next
+// deep-sleep wake, so that wake probes again. FreeInkDisplay calls it when the
+// panel contradicts a cached controller (its idle BUSY level after the driver's
+// reset, or a UC BUSY_N wait far beyond any refresh). Defined only with
+// FREEINK_CAP_DISPLAY_PROBE_POLICY.
+void forgetCachedDisplayController();
 
 // Convenience: run detectXteinkIsX3(), set BoardConfig::ACTIVE to the matching
 // profile via selectDevice(), and return whether an X3 was detected (so the

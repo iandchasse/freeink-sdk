@@ -264,18 +264,32 @@ DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t
 // Inconclusive; both-fail is PrimaryAssumed (the profile's default controller).
 //
 // Reset budget: pass 1 screens with the short (1 ms) reset that every benched
-// UC81xx answers fine; only if it matches does pass 2 confirm with the vendor
-// identification timing (RST low 50 ms), which also makes pass 2's VER the one
-// read under doc conditions. An SSD-family board (floating bus) therefore pays
-// two cheap passes (~66 ms total, as before the doc-timing change) instead of
-// two 50 ms resets on every boot and wake.
+// X4 Pro UC81xx answers fine; only if it matches does pass 2 confirm with the
+// vendor identification timing (RST low 50 ms), which also makes pass 2's VER
+// the one read under doc conditions. An SSD-family board (floating bus) therefore
+// pays two cheap passes (~66 ms total, as before the doc-timing change) instead
+// of two 50 ms resets on every boot and wake.
+//
+// DisplayProbeConfig::cacheAcrossDeepSleep (Silkscreen): a deep-sleep wake reuses
+// the verdict and never probes, so that saving does not apply. Pass 1 takes the
+// vendor reset as well: a UC8279d has read VER all-FF through the short screening
+// reset (see the fallback note below) while its stock 50 ms protocol reads its id.
+// About 49 ms more per probe, on a cold boot or an abnormal reset only.
 DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
   uint8_t ver1[5] = {0};
   uint8_t ver2[5] = {0};
   uint8_t flg1 = 0;
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+  const auto& policy = BoardConfig::displayProbePolicy();
+  uint8_t flg2 = 0;
+  const bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/policy.cacheAcrossDeepSleep ? 50 : 1);
+  delay(2);
+  const bool pass2 = runDisplayProbePass(p, ver2, &flg2, /*rstLowMs=*/pass1 ? 50 : 1);
+#else
   const bool pass1 = runDisplayProbePass(p, ver1, &flg1, /*rstLowMs=*/1);
   delay(2);
   const bool pass2 = runDisplayProbePass(p, ver2, nullptr, /*rstLowMs=*/pass1 ? 50 : 1);
+#endif
 
   const bool verAgree = memcmp(ver1, ver2, 5) == 0;
   bool confirmed = pass1 && pass2 && verAgree;
@@ -335,6 +349,18 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
       }
     }
   }
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY
+  // DisplayProbeConfig::ultraChipController == UC8279: the board carries an
+  // SSD1677 or a UC8279D and nothing else. An SSD1677 never drives 0x71 (the
+  // pulled-up line reads 0xFF), so a driven FLG that reads the same on both
+  // passes is itself the UltraChip answer, whatever VER and the MTP show. The
+  // stricter X4/X3 match above exists to tell the X3's UC8253, which also drives
+  // FLG, from its UC8279d; there is no UC8253 on such a board. A FLG that differs
+  // between the passes stays inconclusive.
+  if (!confirmed && flgDriven && flg1 == flg2 && policy.ultraChipController == BoardConfig::DisplayController::UC8279) {
+    confirmed = true;
+  }
+#endif
   releaseDisplayPins(p);
 
   if (verBytes) memcpy(verBytes, g_probeDiag.ver, 5);
@@ -509,6 +535,13 @@ void promoteToUc8279(const uint8_t lutVer) {
 
 #if FREEINK_CAP_DISPLAY_PROBE_POLICY
 DisplayControllerSource displayControllerSource() { return controllerSource; }
+bool displayControllerCached() { return controllerSource == DisplayControllerSource::Cached; }
+
+void forgetCachedDisplayController() {
+  if (controllerCache.magic != CONTROLLER_CACHE_MAGIC) return;
+  controllerCache.magic = 0;
+  if (Serial) Serial.printf("[%lu] [XTDET] controller verdict dropped: the next boot probes the panel\n", millis());
+}
 #endif
 
 bool applyXteinkDisplayController() {

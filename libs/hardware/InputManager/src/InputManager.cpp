@@ -2053,6 +2053,7 @@ void InputManager::beginFt5x06() {
 #if FREEINK_CAP_PROBE_IDENTITY
       if (idOk && !freeink::probe::focalTechChipId(id[0])) {
         touchIdRejected = true;
+        refusedTouchIdByte = id[0];
         break;
       }
 #endif

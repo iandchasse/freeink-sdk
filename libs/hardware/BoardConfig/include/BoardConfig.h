@@ -1033,10 +1033,15 @@ struct DisplayProbeConfig {
   // What an UltraChip probe answer selects. UC8179 (default): LUT_VER
   // 0x02/0x03/0x67/0x68/0x69 selects UC8279 and anything else UC8179. UC8279:
   // every UltraChip answer, whatever its LUT_VER, which is kept as
-  // displayControllerVariant (a board that links no UC8179 driver).
+  // displayControllerVariant (a board that links no UC8179 driver). Such a board
+  // carries no UC8253, so a FLG driven the same on both passes is an UltraChip
+  // answer on its own.
   DisplayController ultraChipController = DisplayController::UC8179;
   // Keep the verdict in RTC memory and reuse it on a deep-sleep wake instead of
   // probing again. Any other reset probes; an inconclusive verdict is not kept.
+  // Both probe passes then take the vendor 50 ms reset. The wake's first panel
+  // reset checks the cached controller against the idle BUSY level, and a UC
+  // BUSY_N wait is capped (FreeInkDisplay's EpdBus).
   bool cacheAcrossDeepSleep = false;
   // The panel is Xteink X4-class glass (4.26" 800x480) on whichever controller
   // the probe finds, so the consumer applies its X4 panel policies to it.
@@ -2401,10 +2406,11 @@ constexpr BoardProfile SILKSCREEN = {
      70,
      16,
      30},
-    // displayProbe: probe at every cold boot (~66 ms; the verdict is not stored in
-    // NVS, so a swapped panel is always found), reuse it on a deep-sleep wake, and
-    // take any UltraChip answer as a UC8279 (the custom panel's UC8279D). Both
-    // panels are X4-class glass. {forced, ultraChipController, cacheAcrossDeepSleep,
+    // displayProbe: probe at every cold boot (~115 ms with an SSD1677; the verdict
+    // is not stored in NVS, so a panel swapped with the power off is always found),
+    // reuse it on a deep-sleep wake, and take any UltraChip answer (a stable driven
+    // FLG included) as a UC8279 (the custom panel's UC8279D). Both panels are
+    // X4-class glass. {forced, ultraChipController, cacheAcrossDeepSleep,
     // x4ClassPanel}
     {silkscreen_display::FORCED, DisplayController::UC8279, true, true}};
 
