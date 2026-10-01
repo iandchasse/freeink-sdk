@@ -139,7 +139,7 @@ so the SD manager itself stays device-agnostic.
 | **M5Stack Paper Mono** | ESP32-S3 | SSD1677 | 800×480 B/W | non-flashing fast refresh + 3-level grayscale (host-authored LUTs), FT6336 touch, PMIC-PWM frontlight (AW9967), RX8130 RTC, PDM microphone, LEDC buzzer, discrete RGB LED, native 1-bit SDMMC, M5PM1 battery/charging telemetry; power/reset rails sequenced through the on-board M5PM1 PMIC + M5IOE1 expander |
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
-| **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot) | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip, and a load probe at every switch-on, since the light may not be fitted), optional FT6336U touch tail probed at boot (keys kept; 0x38 counts as touch only with a FocalTech chip id; a GT911 fallback only in an alternate-jumper build), key ladders checked for their pull-up and the power button for a valid idle level at boot, native 4-bit SDMMC behind a gated card rail, DS3231MZ (identified before it is written) or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
+| **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot) | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip, and a load probe at every switch-on, since the light may not be fitted), optional FT6336U touch tail probed at boot (keys kept; 0x38 counts as touch only with a FocalTech chip id; a GT911 fallback only in an alternate-jumper build, `-DSILKSCREEN_TOUCH_ALT_JUMPERS=1`), key ladders checked for their pull-up and the power button for a valid idle level at boot, native 4-bit SDMMC behind a gated card rail, DS3231MZ (identified before it is written) or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -205,6 +205,11 @@ or `=uc8279` forces the controller and skips the probe. `displayControllerSource
 reports whether this boot probed, reused the cached verdict or was forced. An
 UltraChip `BUSY_N` gets the internal pull-up while awake (`DisplayPins::busyPullUp`)
 where an SSD1677 `BUSY` gets the pull-down, and neither is held into deep sleep.
+The NVS step above decides only on an X4 Classic; on every other board, Silkscreen
+included, an `hw_calib` value is only logged and the probe decides. The custom panel
+runs the X4 Pro's `Uc8279X4Config` (addressed 800×600, visible rows from gate 120);
+a panel addressed differently gets its own config through
+`-DFREEINK_UC8279_X4_CONFIG` (step 2 of [Adding a new device](#adding-a-new-device)).
 
 Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
 Chip-specific code in a consumer's *own* layer (deep-sleep wakeup, panic
@@ -351,7 +356,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_X4CLASSIC` | Xteink X4 Classic / X4C (S3, SSD1677/UC8179/UC8279 auto-detect, buttons-only — no touch/frontlight, + SDMMC) |
 | `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |
 | `-DFREEINK_DEVICE_PAPERS3` | M5Stack PaperS3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX + GT911 touch) |
-| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677/UC8279 auto-detect + ADC-ladder keys + optional touch + 4-bit SDMMC; the env sets `FREEINK_CAP_FRONTLIGHT`/`FREEINK_CAP_WARMLIGHT` when a light is fitted) |
+| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677/UC8279 auto-detect + ADC-ladder keys + optional touch + 4-bit SDMMC; the env sets `FREEINK_CAP_FRONTLIGHT`/`FREEINK_CAP_WARMLIGHT` by default and the switch-on probe finds whether a light is fitted; `-DSILKSCREEN_DISPLAY_CONTROLLER=ssd1677` or `=uc8279` forces the controller, `-DSILKSCREEN_TOUCH_ALT_JUMPERS=1` adds the GT911 fallback) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
@@ -365,7 +370,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | Flag | Gates | Default |
 |---|---|---|
 | `FREEINK_CAP_TOUCH` | capacitive touch decoder (InputManager) | on if a device has touch |
-| `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight (Silkscreen's light is optional, so its env sets it) |
+| `FREEINK_CAP_FRONTLIGHT` | PWM frontlight (FrontlightManager) | on if a device has a frontlight (Silkscreen's light is optional: its env sets it by default, and a build for a board that will never have a light drops it) |
 | `FREEINK_CAP_COLOR` | color panel code | on for M5 |
 | `FREEINK_CAP_AUDIO` | audio output (AudioManager: ES8388/ES8311 codec + I2S WAV playback) | on for Murphy and M5 |
 | `FREEINK_CAP_MIC` | microphone capture (Microphone lib: PDM mic → 16-bit PCM via i2s_pdm RX) | on for Sticky and Paper Mono |
@@ -823,10 +828,11 @@ automatically as a dependency of `SDCardManager`.
    `selectDevice` case that points `ACTIVE` at it.
 2. If it uses an existing controller, reuse that driver — inject a tuned **config
    struct** (its own LUTs/waveforms) without editing the driver: define
-   `const Uc8253X3Config& yourConfig();` (or `Ssd1677Config`) in `namespace
-   freeink` and build with `-DFREEINK_UC8253_X3_CONFIG=yourConfig` (or
-   `-DFREEINK_SSD1677_CONFIG=...`). If it's a new controller, add a `PanelDriver`
-   in its own file + `FREEINK_DRIVER_*` flag.
+   `const Uc8253X3Config& yourConfig();` (or `Ssd1677Config`, or `Uc8279X4Config`)
+   in `namespace freeink` and build with `-DFREEINK_UC8253_X3_CONFIG=yourConfig` (or
+   `-DFREEINK_SSD1677_CONFIG=...`, or `-DFREEINK_UC8279_X4_CONFIG=...`, whose config
+   also carries the panel's addressing: `tresHeight`, `gateOffset`). If it's a new
+   controller, add a `PanelDriver` in its own file + `FREEINK_DRIVER_*` flag.
 
    **Resolution is always a `BoardProfile` field** — `displayWidth/Height`. Every
    driver reads its geometry from the active profile (and `getDisplayWidth()/
@@ -858,6 +864,35 @@ automatically as a dependency of `SDCardManager`.
    0 (a phantom RIGHT/DOWN on the Xteink ladders) or a battery sample read 0 mV;
    and touch drivers on the sensor-bus pins run at `SensorsConfig::i2cHz`
    (`busHz()`), which is the clock every existing board already used.
+
+### Optional and swappable parts
+
+A board whose parts are optional or swappable sorts each part into one of four
+kinds, cheapest first:
+
+- **Invisible.** The firmware cannot see the part and does not need to (an
+  unfitted key reads released). Nothing to do.
+- **Probed at boot.** The part answers on a bus or shows a level, and reading it
+  is harmless to it.
+  - Probe it at a reset and patch `BoardConfig::ACTIVE` before the first driver
+    reads it. `applyXteinkDisplayController()` does this for `displayController`,
+    the touch probe for `touch.controller` (`None` when nothing answers),
+    `ladderPresenceProbe` for a ladder's `pin`, and `powerPinIdleCheck` for
+    `input.power`.
+  - Keep the verdict in RTC memory with a magic word, and trust it after a
+    deep-sleep wake only. Never store it in NVS, where it outlives a swapped part
+    or a reflash.
+  - Identify a part before writing to it when another device can share its
+    address (`requireFocalTechId`, `rtcIdentityCheck`).
+- **Detected on use.** The part shows itself only while it runs, as a front
+  light's load does. Detect it inside the enable the user asks for
+  (`FrontlightConfig::loadProbeMs`), never on its own at a boot or a wake. Keep the
+  result where a restore-on-wake can ask for it (`restoreAllowed()`).
+- **A different screen or controller family.** A separate profile and env (step 3
+  above), since nothing can be shown until the driver is right.
+
+Silkscreen uses all four. Its CrossPoint port lists each part and its kind in
+`docs/silkscreen/MODULARITY.md`.
 
 ### Optional profile fields (all defaulted)
 
@@ -912,7 +947,10 @@ checks above, host-tested under `libs/hardware/BoardConfig/test/host/`): `Shared
 read, since Arduino-ESP32 3.x only try-locks the ADC unit and returns 0 to the loser;
 use its `freeink::adc::` readers for your own ADC reads) and `SharedI2c.h` (`busHz()` /
 `beginBus()` give every driver on the sensor-bus pins one clock, plus stuck-bus recovery
-and the sleep release).
+and the sleep release). The front light's switch-on probe keeps its pure rules (the load
+record, the fallback to the other string, when a restore is allowed) in the header-only
+`libs/hardware/FrontlightManager/include/FrontlightLoad.h`, host-tested under
+`libs/hardware/FrontlightManager/test/host/`.
 
 ### Bring-up diagnostics
 
