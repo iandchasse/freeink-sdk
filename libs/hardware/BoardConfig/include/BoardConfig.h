@@ -805,10 +805,10 @@ struct FrontlightConfig {
   // FrontlightManager: while dark, `gpio` is a plain GPIO output held at the
   // inactive level instead of an LEDC output at duty 0.
   //
-  // One push-pull GPIO that picks which LED string conducts (fixed warm/cool
-  // selection, never PWM'd). Warm when the colour temperature is >= 50%. It
-  // changes only while `gpio` is held dark, and rests at the cool level while
-  // the light is off.
+  // One push-pull GPIO that picks which LED string conducts. Without
+  // colorBlendHz it is a fixed warm/cool selection: warm when the colour
+  // temperature is >= 50%, changed only while `gpio` is held dark. It rests at
+  // the cool level while the light is off.
   int8_t colorSelectGpio = PIN_UNASSIGNED;
   bool colorSelectWarmHigh = true;  // colorSelectGpio level that selects the warm string
   // Enable pulse: when lighting from dark, `gpio` is driven active as a plain
@@ -843,6 +843,15 @@ struct FrontlightConfig {
   uint8_t railSafeV = 0;
   // Reading interval inside the load-probe window (loadProbeWindowMs).
   uint8_t loadProbePeriodMs = 20;
+  // Colour blending on colorSelectGpio (needs FREEINK_CAP_FRONTLIGHT_PROBE): a
+  // colour temperature strictly between 0 and 100% runs the colour select as an
+  // LEDC carrier at this frequency (pwmResolutionBits), its duty the warm share,
+  // with the light lit. The strings share the boost and its current setting, so
+  // the brightness holds while the mix moves. A blend runs only once each string
+  // has lit through a probe since the chip last reset; a string missing would
+  // leave the other one carrying the whole current for its share of each
+  // period, which the monitor cannot see. 0 = fixed selection.
+  uint32_t colorBlendHz = 0;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven
@@ -2257,6 +2266,13 @@ static_assert(ONEPAGE.displayWidth / 8 * ONEPAGE.displayHeight == 48000,
 #endif
 static_assert(SILKSCREEN_FRONTLIGHT_TRIP_MV < 24250,
               "Silkscreen front-light trip must stay below the TPS923610 minimum OVP (24.25 V)");
+// Warm/cool blend (§7): COLOR_SEL time-multiplexed at this frequency, its duty the
+// warm share, as the first port did. HARDWARE.md §7 leaves the blend frequency to
+// the bench (C9 re-slews LED_SW by the strings' Vf difference at each edge); 0 goes
+// back to the fixed warm/cool selection.
+#ifndef SILKSCREEN_FRONTLIGHT_BLEND_HZ
+#define SILKSCREEN_FRONTLIGHT_BLEND_HZ 10000
+#endif
 // Touch tail on J4's alternate jumpers (R43/R66 fitted, HARDWARE.md §8), for a GT911
 // tail: -DSILKSCREEN_TOUCH_ALT_JUMPERS=1 adds the GT911 fallback, whose probe drives
 // TP_INT (IO41) through its address-strap reset. Off by default: the standard tail
@@ -2388,6 +2404,8 @@ constexpr BoardProfile SILKSCREEN = {
     // one reading above the trip decides. After a trip, COLOR_SEL moves only once
     // LED_SW is at 15 V or less, the bonded string's forward voltage at 13 mA: C9 left
     // near the OVP level would otherwise discharge through the other string (§13.1).
+    // Warmth between the ends blends: COLOR_SEL on a 10 kHz / 10-bit carrier (40 MHz /
+    // 10 kHz = 4000), once both strings have lit through a probe since the last reset.
     .frontlight = {.gpio = 42,
                    .pwmFrequency = 25000,
                    .pwmResolutionBits = 10,
@@ -2403,7 +2421,8 @@ constexpr BoardProfile SILKSCREEN = {
                    .monitorTripMv = SILKSCREEN_FRONTLIGHT_TRIP_MV,
                    .loadProbeWindowMs = 500,
                    .railSafeV = 15,
-                   .loadProbePeriodMs = 20},
+                   .loadProbePeriodMs = 20,
+                   .colorBlendHz = SILKSCREEN_FRONTLIGHT_BLEND_HZ},
     .audio = NO_AUDIO,
     .leds = NO_LEDS,
     .orientation = NO_FLIP,
@@ -2567,6 +2586,9 @@ static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
 static_assert(40000000u / SILKSCREEN.frontlight.pwmFrequency >= (1u << SILKSCREEN.frontlight.pwmResolutionBits),
               "Silkscreen front-light LEDC resolution is not reachable from the 40 MHz XTAL at this frequency");
+static_assert(SILKSCREEN.frontlight.colorBlendHz == 0 ||
+                  40000000u / SILKSCREEN.frontlight.colorBlendHz >= (1u << SILKSCREEN.frontlight.pwmResolutionBits),
+              "Silkscreen colour-blend resolution is not reachable from the 40 MHz XTAL at this frequency");
 // A switch-on may find no light fitted (§13.1), so a build with the light needs the probe.
 static_assert(!FREEINK_DEVICE_SILKSCREEN || !FREEINK_CAP_FRONTLIGHT || FREEINK_CAP_FRONTLIGHT_PROBE,
               "Silkscreen with the front light needs FREEINK_CAP_FRONTLIGHT_PROBE: the boost may be enabled unloaded");

@@ -75,6 +75,10 @@ void pm1FrontlightWrite(uint32_t pct) {
 // user on a frontlight board takes these (the Buzzer uses the 3.x gpio-keyed API).
 constexpr uint8_t LEDC_CH_COOL = 0;
 constexpr uint8_t LEDC_CH_WARM = 1;
+// The colour select's blend carrier (FrontlightConfig::colorBlendHz). 2.x clocks
+// channel pairs from one timer, so it sits on the next pair to keep its own
+// frequency; 3.x gives a new frequency a free timer.
+constexpr uint8_t LEDC_CH_BLEND = 2;
 
 // Apply the board's output polarity to a logical 0..full LED duty.
 uint32_t physicalDuty(uint32_t logicalDuty, uint32_t full, bool activeHigh) {
@@ -303,6 +307,7 @@ void FrontlightManager::begin() {
       }
 #if FREEINK_CAP_FRONTLIGHT_PROBE
       _railCharged = false;
+      _litSinceReset[0] = _litSinceReset[1] = false;
       endProbe();
       restoreRecord();
 #endif
@@ -348,6 +353,21 @@ void FrontlightManager::begin() {
     LOG_ERR("FrontlightMgr", "begin: LEDC attach failed on gpio=%d, light disabled", fl.gpio);
     return;
   }
+#if FREEINK_CAP_FRONTLIGHT_PROBE && !defined(FREEINK_FRONTLIGHT_LS)
+  // Colour blending: the colour select gets its own carrier, and stays on its GPIO
+  // register at cool until a blend starts. Without one the selection stays fixed.
+  _blending = false;
+  _colourCarrier = false;
+  if (fl.colorBlendHz != 0 && fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED && monitorConfigured(fl)) {
+    _colourCarrier = attachChannel(fl.colorSelectGpio, LEDC_CH_BLEND, fl.colorBlendHz, fl.pwmResolutionBits);
+    if (_colourCarrier) writeChannel(fl.colorSelectGpio, LEDC_CH_BLEND, 0);
+    padToGpio(fl.colorSelectGpio, fl.colorSelectWarmHigh ? 0u : 1u);
+    if (!_colourCarrier) {
+      LOG_ERR("FrontlightMgr", "begin: no blend carrier on gpio=%d, warmth picks one string",
+              fl.colorSelectGpio);
+    }
+  }
+#endif
   _begun = true;
   setBrightness(0);
   LOG_INF("FrontlightMgr", "begin: attached gpio=%d warm=%d ok=%d", fl.gpio, fl.gpioWarm, attachOk ? 1 : 0);
@@ -501,25 +521,41 @@ void FrontlightManager::applyGated(const uint32_t duty, const uint32_t full) {
     return;
   }
   if (_fault) return;  // tripped: stays dark until switched off or clearFault()
+  const freeink::frontlight::ColourPlan plan = colourPlan();
 #if FREEINK_CAP_FRONTLIGHT_PROBE
   if (_probe.phase != ProbePhase::Idle) {
-    // A switch-on still deciding its load: the brightness applies now, a colour
-    // change once it has decided (probePassed()).
+    // A switch-on still deciding its load: the brightness applies now, and so does
+    // a new mix while it blends; any other colour change waits until it has decided
+    // (probePassed()).
     _probe.duty = duty;
     if (_gatedLit) writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(duty, full, fl.activeHigh));
+    if (_blending && plan.blend) blendColour(full);
     return;
   }
-  const bool colourSelect = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
-  const bool warm = freeink::frontlight::targetWarm(_loadRecord, colourSelect, colourSelect && _warmPercent >= 50);
-#else
-  const bool warm = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED && _warmPercent >= 50;
 #endif
-  if (_gatedLit && warm == _warmSelected) {
-    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(duty, full, fl.activeHigh));  // brightness only
+  // Lit: a blend moves its mix at once, and one that ends holds the colour select on
+  // a string while lit (one more of its own edges).
+  if (_gatedLit && (plan.blend || _blending || plan.warm == _warmSelected)) {
+    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(duty, full, fl.activeHigh));  // brightness
+    if (plan.blend) {
+      blendColour(full);
+    } else if (_blending) {
+      selectWarm(plan.warm);
+    }
     return;
   }
   if (_gatedLit) goDark(full);  // colour change: switch strings only with the driver dark
-  lightUp(duty, full, warm);
+  lightUp(duty, full, plan.warm, false, plan.blend);
+}
+
+freeink::frontlight::ColourPlan FrontlightManager::colourPlan() const {
+  const bool colourSelect = BoardConfig::ACTIVE.frontlight.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+  return freeink::frontlight::colourPlan(_loadRecord, colourSelect, _colourCarrier, _warmPercent,
+                                         litSinceReset(false), litSinceReset(true));
+#else
+  return {false, colourSelect && _warmPercent >= 50};
+#endif
 }
 
 void FrontlightManager::waitDarkDwell() const {
@@ -531,8 +567,30 @@ void FrontlightManager::waitDarkDwell() const {
 void FrontlightManager::selectWarm(const bool warm) {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (fl.colorSelectGpio == BoardConfig::PIN_UNASSIGNED) return;
-  gpio_set_level(static_cast<gpio_num_t>(fl.colorSelectGpio), warm == fl.colorSelectWarmHigh ? 1 : 0);
+  const uint32_t level = warm == fl.colorSelectWarmHigh ? 1u : 0u;
+  if (_blending) {
+    padToGpio(fl.colorSelectGpio, level);  // off the blend carrier, onto the GPIO register
+    writeChannel(fl.colorSelectGpio, LEDC_CH_BLEND, 0);
+    _blending = false;
+    LOG_DBG("FrontlightMgr", "gated: blend off, %s", warm ? "warm" : "cool");
+  } else {
+    gpio_set_level(static_cast<gpio_num_t>(fl.colorSelectGpio), level);
+  }
   _warmSelected = warm;
+}
+
+// Caller holds _gateLock, with the light lit and both strings lit since the reset
+// (colourPlan()). The carrier shares the PWM pin's resolution.
+void FrontlightManager::blendColour(const uint32_t full) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  const uint32_t warmDuty = (static_cast<uint32_t>(_warmPercent) * full + 50u) / 100u;
+  writeChannel(fl.colorSelectGpio, LEDC_CH_BLEND, fl.colorSelectWarmHigh ? warmDuty : full - warmDuty);
+  if (!_blending) {
+    padToLedc(fl.colorSelectGpio, LEDC_CH_BLEND);
+    _blending = true;
+    LOG_DBG("FrontlightMgr", "gated: blend on, warm %u%%", static_cast<unsigned>(_warmPercent));
+  }
+  _warmSelected = _warmPercent >= 50;
 }
 
 // Caller holds _gateLock.
@@ -546,6 +604,9 @@ void FrontlightManager::goDark(const uint32_t full) {
     LOG_DBG("FrontlightMgr", "gated: dark");
   }
   _gatedLit = false;
+  // A blend stops at the warm level. Both strings were on the rail through it, so
+  // the select then rests at cool as after a warm light.
+  if (_blending) selectWarm(true);
   // Colour select rests at cool, its parked level (HIGH would cost current through
   // its pull-down), but moves only once the driver has been dark for offDwellMs.
   if (_warmSelected) {
@@ -564,7 +625,8 @@ void FrontlightManager::goDark(const uint32_t full) {
 
 // Caller holds _gateLock; the pad is dark. With a load probe, the switch-on decides
 // on the monitor timer (probing() until then).
-void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const bool warm, const bool secondTry) {
+void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const bool warm, const bool secondTry,
+                                const bool blend) {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   waitDarkDwell();  // also clears a latched driver fault (TPS923610 OVP) before the enable
 #if FREEINK_CAP_FRONTLIGHT_PROBE
@@ -589,14 +651,16 @@ void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const 
   }
   padToLedc(fl.gpio, LEDC_CH_COOL);
   _gatedLit = true;
-  LOG_DBG("FrontlightMgr", "gated: lit duty=%u warm=%d pulse=%d", static_cast<unsigned>(duty), warm ? 1 : 0,
-          pulsed ? 1 : 0);
+  if (blend) blendColour(full);
+  LOG_DBG("FrontlightMgr", "gated: lit duty=%u warm=%d blend=%d pulse=%d", static_cast<unsigned>(duty), warm ? 1 : 0,
+          blend ? 1 : 0, pulsed ? 1 : 0);
 #if FREEINK_CAP_FRONTLIGHT_PROBE
   if (fl.loadProbeWindowMs != 0 && monitorConfigured(fl)) {
-    beginWindow(duty, warm, secondTry);  // dark again if it trips
+    beginWindow(duty, warm, secondTry, blend);  // dark again if it trips
     return;
   }
   freeink::frontlight::noteLit(_loadRecord, warm);
+  noteStringLit(warm);
   saveRecord();
   endProbe();
 #endif
@@ -667,6 +731,7 @@ void FrontlightManager::checkMonitor() {
       _fault = true;
 #if FREEINK_CAP_FRONTLIGHT_PROBE
       freeink::frontlight::noteInUseTrip(_loadRecord, _warmSelected);
+      if (_blending) freeink::frontlight::noteInUseTrip(_loadRecord, !_warmSelected);  // both were lit
       saveRecord();
       markRailCharged();
 #endif
@@ -692,10 +757,11 @@ void FrontlightManager::checkMonitor() {
 #if FREEINK_CAP_FRONTLIGHT_PROBE
 // Caller holds _gateLock, with the light just enabled on `warm`: the monitor timer
 // reads the probe window from now on (probeTick()).
-void FrontlightManager::beginWindow(const uint32_t duty, const bool warm, const bool secondTry) {
+void FrontlightManager::beginWindow(const uint32_t duty, const bool warm, const bool secondTry, const bool blend) {
   _probe.phase = ProbePhase::Window;
   _probe.warm = warm;
   _probe.secondTry = secondTry;
+  _probe.blend = blend;
   _probe.duty = duty;
   _probe.startUs = esp_timer_get_time();
   _probe.peakLedMv = 0;
@@ -711,6 +777,7 @@ void FrontlightManager::beginRailWait(const uint32_t duty, const bool warm, cons
   _probe.phase = ProbePhase::RailWait;
   _probe.warm = warm;
   _probe.secondTry = secondTry;
+  _probe.blend = false;
   _probe.duty = duty;
   _probe.startUs = esp_timer_get_time();
   _probing.store(true, std::memory_order_release);
@@ -752,7 +819,8 @@ void FrontlightManager::probeTick() {
 
 // No load on the probed string: dark at once, and the rail counts as charged. The
 // other string follows once the rail allows, unless this was it (or it is known
-// to be missing): then no light answered.
+// to be missing): then no light answered. A blend that trips had both strings on
+// the rail, so nothing else is tried.
 void FrontlightManager::probeTripped(const int64_t tripAtUs) {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   padToGpio(fl.gpio, darkLevel(fl));
@@ -764,9 +832,10 @@ void FrontlightManager::probeTripped(const int64_t tripAtUs) {
   _darkSinceUs = esp_timer_get_time();
   markRailCharged();
   noteProbeEnd(true, tripAtUs);
+  if (_blending) selectWarm(true);  // stops at warm; rests at cool once the rail allows
   const bool colourSelect = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
   const bool warm = _probe.warm;
-  if (freeink::frontlight::noteTripped(_loadRecord, colourSelect, warm, _probe.secondTry)) {
+  if (freeink::frontlight::noteTripped(_loadRecord, colourSelect, warm, _probe.secondTry || _probe.blend)) {
 #if FREEINK_DIAGNOSTICS
     ++_probeDiag.secondTries;
 #endif
@@ -784,7 +853,8 @@ void FrontlightManager::probeTripped(const int64_t tripAtUs) {
 }
 
 // The window ended with no reading above the trip: the string is lit, and the 100 ms
-// monitor takes over. A colour asked for meanwhile is a new switch-on on that string.
+// monitor takes over. A colour asked for meanwhile is a new switch-on on that string,
+// and so is the other string a blend still needs lit; once both are, the blend starts.
 void FrontlightManager::probePassed() {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   _railCharged = false;  // the rail sits at the lit string's forward voltage
@@ -796,14 +866,19 @@ void FrontlightManager::probePassed() {
             warm ? "warm" : "cool");
   } else {
     freeink::frontlight::noteLit(_loadRecord, warm);
+    if (_probe.blend) freeink::frontlight::noteLit(_loadRecord, !warm);
   }
+  noteStringLit(warm);
   saveRecord();
-  const bool colourSelect = fl.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
-  const bool target = freeink::frontlight::targetWarm(_loadRecord, colourSelect, colourSelect && _warmPercent >= 50);
-  if (target != _warmSelected) {
-    const uint32_t full = maxDuty(fl.pwmResolutionBits);
+  const freeink::frontlight::ColourPlan plan = colourPlan();
+  const uint32_t full = maxDuty(fl.pwmResolutionBits);
+  if (plan.blend) {
+    blendColour(full);
+  } else if (_blending) {
+    selectWarm(plan.warm);
+  } else if (plan.warm != _warmSelected) {
     goDark(full);
-    lightUp(_probe.duty, full, target);  // probing() stays true through it
+    lightUp(_probe.duty, full, plan.warm);  // probing() stays true through it
     return;
   }
   startMonitor(MONITOR_PERIOD_US);
@@ -1072,7 +1147,13 @@ void FrontlightManager::prepareForSleep() {
 #endif
   detachChannel(fl.gpio, LEDC_CH_COOL);
   padToGpio(fl.gpio, darkLevel(fl));  // the detached pad keeps the GPIO path; re-assert its level
-  _begun = false;                     // later apply() calls are ignored until the next begin()
+  if (_colourCarrier) {
+    // goDark() took the colour select off its blend carrier; release that too.
+    detachChannel(fl.colorSelectGpio, LEDC_CH_BLEND);
+    padToGpio(fl.colorSelectGpio, _warmSelected == fl.colorSelectWarmHigh ? 1u : 0u);
+    _colourCarrier = false;
+  }
+  _begun = false;  // later apply() calls are ignored until the next begin()
   LOG_DBG("FrontlightMgr", "prepareForSleep: dark, LEDC detached");
 #endif
 }
@@ -1115,5 +1196,14 @@ void FrontlightManager::setColorTemperature(uint8_t warmPercent) {
   apply();
 #else
   (void)warmPercent;
+#endif
+}
+
+bool FrontlightManager::blendsColour() const {
+#if FREEINK_CAP_FRONTLIGHT && FREEINK_CAP_FRONTLIGHT_PROBE
+  const bool colourSelect = BoardConfig::ACTIVE.frontlight.colorSelectGpio != BoardConfig::PIN_UNASSIGNED;
+  return freeink::frontlight::blendPossible(_loadRecord, colourSelect, _colourCarrier);
+#else
+  return false;
 #endif
 }

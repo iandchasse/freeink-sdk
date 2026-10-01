@@ -33,7 +33,7 @@ struct LoadRecord {
   StringState warm = StringState::Unknown;
 
   StringState& string(const bool isWarm) { return isWarm ? warm : cool; }
-  StringState string(const bool isWarm) const { return isWarm ? warm : cool; }
+  constexpr StringState string(const bool isWarm) const { return isWarm ? warm : cool; }
 };
 
 // The string a switch-on lights: the requested one, unless it is missing. Without
@@ -77,6 +77,33 @@ inline void noteOtherLit(LoadRecord& r, const bool trippedWarm) {
 inline void noteInUseTrip(LoadRecord& r, const bool warm) {
   r.string(warm) = StringState::Unknown;
   r.load = Load::Unknown;
+}
+
+// Colour blending (FrontlightConfig::colorBlendHz): possible while neither string is
+// recorded missing, on a colour select with a blend carrier.
+constexpr bool blendPossible(const LoadRecord& r, const bool colourSelect, const bool blendCarrier) {
+  return colourSelect && blendCarrier && r.cool != StringState::Missing && r.warm != StringState::Missing;
+}
+
+// What the light does for a warmth (0 cool .. 100 warm). `coolLit` / `warmLit`: the
+// string lit through a probe since the chip last reset, and is still recorded
+// present. A blend needs both, since one string missing would leave the other
+// carrying the whole current for its share of each period. Until then the light
+// stays on one string: the dominant one, then the other, each through its probe.
+struct ColourPlan {
+  bool blend;  // run the colour select as the blend carrier
+  bool warm;   // the string to light (blending: the dominant one, where a switch-on starts)
+};
+
+constexpr ColourPlan colourPlan(const LoadRecord& r, const bool colourSelect, const bool blendCarrier,
+                                const uint8_t warmPercent, const bool coolLit, const bool warmLit) {
+  const bool dominantWarm = colourSelect && warmPercent >= 50;
+  if (!blendPossible(r, colourSelect, blendCarrier) || warmPercent == 0 || warmPercent >= 100) {
+    return {false, targetWarm(r, colourSelect, dominantWarm)};
+  }
+  if (coolLit && warmLit) return {true, dominantWarm};
+  const bool dominantLit = dominantWarm ? warmLit : coolLit;
+  return {false, dominantLit ? !dominantWarm : dominantWarm};
 }
 
 // Restore Light on Wake may switch the light on at boot unless the last switch-on

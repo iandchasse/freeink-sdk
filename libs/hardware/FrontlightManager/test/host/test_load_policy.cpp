@@ -103,6 +103,37 @@ void inUseTrip() {
   check(fl::restoreAllowed(r), "an in-use trip does not block restore (the consumer clears its saved on)");
 }
 
+// Colour blending: each string lit through a probe first, the dominant one first.
+void blending() {
+  fl::LoadRecord r;
+  auto plan = fl::colourPlan(r, true, true, 70, false, false);
+  check(!plan.blend && plan.warm == WARM, "nothing lit yet: the dominant warm string first");
+  fl::noteLit(r, WARM);
+  plan = fl::colourPlan(r, true, true, 70, false, true);
+  check(!plan.blend && plan.warm == COOL, "warm lit: cool next, still one string");
+  fl::noteLit(r, COOL);
+  plan = fl::colourPlan(r, true, true, 70, true, true);
+  check(plan.blend && plan.warm == WARM, "both lit: blend, from the dominant warm string");
+  plan = fl::colourPlan(r, true, true, 30, true, true);
+  check(plan.blend && plan.warm == COOL, "a cool mix starts from cool");
+  check(!fl::colourPlan(r, true, true, 0, true, true).blend, "0 %: fixed cool");
+  check(!fl::colourPlan(r, true, true, 100, true, true).blend, "100 %: fixed warm");
+  check(fl::colourPlan(r, true, true, 100, true, true).warm == WARM, "100 % lights warm");
+  check(!fl::colourPlan(r, true, false, 70, true, true).blend, "no blend carrier: fixed");
+  check(fl::colourPlan(r, true, false, 70, true, true).warm == WARM, "fixed at >= 50 %: warm");
+  check(!fl::colourPlan(r, false, true, 70, true, true).blend, "no colour select: never blends");
+  plan = fl::colourPlan(r, true, true, 30, false, true);
+  check(!plan.blend && plan.warm == COOL, "cool dominant and not lit since the reset: cool first");
+
+  // A cool-only light: no blend, warmth lights cool.
+  fl::LoadRecord coolOnly;
+  check(fl::noteTripped(coolOnly, true, WARM, false), "setup");
+  fl::noteOtherLit(coolOnly, WARM);
+  check(!fl::blendPossible(coolOnly, true, true), "a string missing: no blend");
+  plan = fl::colourPlan(coolOnly, true, true, 70, true, false);
+  check(!plan.blend && plan.warm == COOL, "warm missing: a warm mix lights cool");
+}
+
 void rtcForm() {
   fl::LoadRecord r;
   check(fl::noteTripped(r, true, WARM, false), "setup");
@@ -140,6 +171,7 @@ int main() {
   colourChangeOntoMissingString();
   singleStringBoard();
   inUseTrip();
+  blending();
   rtcForm();
   if (failures != 0) {
     std::printf("%d check(s) failed\n", failures);

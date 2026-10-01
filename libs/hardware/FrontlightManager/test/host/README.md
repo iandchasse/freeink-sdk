@@ -5,7 +5,8 @@
 (`FrontlightConfig::loadProbeWindowMs`, `FREEINK_CAP_FRONTLIGHT_PROBE`): which string a
 switch-on lights, when the other string is tried after a trip, when a string is
 recorded missing, when the record says no light (and Restore Light on Wake stays
-dark), what an in-use trip changes, and the RTC-memory form with its checks.
+dark), what an in-use trip changes, when warmth blends the two strings and which string
+lights first until both have lit (`colourPlan()`), and the RTC-memory form with its checks.
 
 From the SDK root:
 

@@ -21,6 +21,16 @@
 // change while lit goes dark first. An optional LED-rail monitor switches the light
 // off and latches fault() on over-voltage.
 //
+// Colour blending (FrontlightConfig::colorBlendHz, with the load probe): a warmth
+// strictly between 0 and 100 puts the colour select on its own LEDC carrier, its
+// duty the warm share, while lit. It needs both strings lit through a probe since
+// the chip last reset (see FrontlightLoad.h colourPlan()): the first such switch-on
+// lights the dominant string, then the other, each through its probe window, and
+// blends once both have lit. After that a switch-on blends from the enable pulse
+// (its probe window still watches for no light), and warmth and brightness changes
+// while blending apply at once. Going dark, the carrier stops at the warm level and
+// the colour select then rests at cool as after a warm light.
+//
 // Load probe (FrontlightConfig::loadProbeWindowMs, FREEINK_CAP_FRONTLIGHT_PROBE),
 // for a light that may not be fitted: every enable (a switch-on, or a colour change
 // while lit) reads the monitor every loadProbePeriodMs for loadProbeWindowMs after
@@ -94,8 +104,23 @@ class FrontlightManager {
 
   // Warm/cool mix, 0 = fully cool, 100 = fully warm, 50 = neutral. Only meaningful on a
   // two-channel board (hasColorTemperature()); a no-op on single-channel frontlights.
-  // On a colour-select board it is a fixed choice: warm at >= 50, cool below.
+  // On a colour-select board it blends while blendsColour(), and is otherwise a fixed
+  // choice: warm at >= 50, cool below.
   void setColorTemperature(uint8_t warmPercent);
+
+  // A colour-select light whose warmth between the ends blends the two strings
+  // (FrontlightConfig::colorBlendHz, its carrier attached, neither string recorded
+  // missing). False on other lights, and on a light that uses a fixed selection.
+  bool blendsColour() const;
+  // The colour select runs its blend carrier now (lit). warmSelected() then names
+  // the dominant string.
+  bool blending() const {
+#if FREEINK_CAP_FRONTLIGHT
+    return _blending;
+#else
+    return false;
+#endif
+  }
 
   // Before deep sleep on an enable-gated frontlight: stop the LED monitor, take the
   // light dark (PWM pin held inactive as a plain GPIO, LEDC duty 0, colour select at
@@ -253,9 +278,14 @@ class FrontlightManager {
   void applyGated(uint32_t duty, uint32_t full);
   void goDark(uint32_t full);
   // secondTry: the other string, after `warm`'s opposite tripped in the same switch-on.
-  void lightUp(uint32_t duty, uint32_t full, bool warm, bool secondTry = false);
+  // blend: start the blend carrier with the light (both strings lit since the reset).
+  void lightUp(uint32_t duty, uint32_t full, bool warm, bool secondTry = false, bool blend = false);
   void waitDarkDwell() const;
+  // Holds the colour select on one string, taking it off the blend carrier first.
   void selectWarm(bool warm);
+  // Puts the colour select on its blend carrier at the current warmth (lit only).
+  void blendColour(uint32_t full);
+  freeink::frontlight::ColourPlan colourPlan() const;
   void startMonitor(uint64_t periodUs);
   void stopMonitor();
   void checkMonitor();
@@ -272,12 +302,13 @@ class FrontlightManager {
     ProbePhase phase = ProbePhase::Idle;
     bool warm = false;       // the string being probed, or the one to light after the rail wait
     bool secondTry = false;  // the other string, after the first tripped in this switch-on
+    bool blend = false;      // the window runs on the blend (both strings lit since the reset)
     uint32_t duty = 0;       // the duty to light at (brightness changes while deciding land here)
     int64_t startUs = 0;     // carrier start (Window) or wait start (RailWait)
     uint32_t peakLedMv = 0;
     uint32_t samples = 0;
   };
-  void beginWindow(uint32_t duty, bool warm, bool secondTry);
+  void beginWindow(uint32_t duty, bool warm, bool secondTry, bool blend);
   void beginRailWait(uint32_t duty, bool warm, bool secondTry);
   void endProbe();
   void probeTick();
@@ -297,12 +328,22 @@ class FrontlightManager {
   std::atomic<bool> _probing{false};  // _probe.phase != Idle, for probing()
   bool _railCharged = false;          // a trip left the boost output charged
   int64_t _railChargedAtUs = 0;       // esp_timer time of that trip
+  // Each string lit through a probe since the chip last reset (RAM, so a wake
+  // re-confirms a light that may have been changed while asleep); counts only while
+  // the record still says present. A blend needs both.
+  bool _litSinceReset[2] = {false, false};  // [cool, warm]
+  void noteStringLit(bool warm) { _litSinceReset[warm ? 1 : 0] = true; }
+  bool litSinceReset(bool warm) const {
+    return _litSinceReset[warm ? 1 : 0] && _loadRecord.string(warm) == freeink::frontlight::StringState::Present;
+  }
 #if FREEINK_DIAGNOSTICS
   ProbeDiagnostics _probeDiag;  // written under _gateLock
 #endif
 #endif
   bool _gatedLit = false;      // PWM pin is on its LEDC carrier (gated path)
-  bool _warmSelected = false;  // colour select is at the warm level
+  bool _warmSelected = false;  // colour select is at the warm level (blending: the dominant string)
+  bool _colourCarrier = false;  // the colour select has a blend carrier attached (colorBlendHz)
+  bool _blending = false;       // the colour select is on that carrier
   int64_t _darkSinceUs = 0;    // esp_timer time the light last went dark; 0 = since boot
   esp_timer_handle_t _monitorTimer = nullptr;
   SemaphoreHandle_t _gateLock = nullptr;
