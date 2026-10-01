@@ -1014,8 +1014,10 @@ struct PowerConfig {
   // sleep arms it and the board sleeps with no wake source (reset starts it).
   bool powerPinIdleCheck = false;
   // Data for the consumer: on external power with the battery reading below
-  // BatteryMonitor::CELL_PRESENT_MIN_MV, there is no cell, or one too flat for
-  // the charger to start, so the UI says so instead of showing a charge state.
+  // BatteryMonitor::CELL_PRESENT_MIN_MV, or while the charge-status ladder shows
+  // the charger's no-battery blink (the charger then holds the battery node near
+  // its float voltage), there is no cell, or one too flat for the charger to
+  // start, so the UI says so instead of showing a charge state.
   bool noChargeableCellNotice = false;
 };
 
@@ -2352,9 +2354,9 @@ constexpr BoardProfile SILKSCREEN = {
     //   that floats is switched off at boot. IO18 idles at ~1.76 V with R36 and R72 both
     //   fitted (§9.2), a wake storm or a dead button: that is found at boot and IO18 is
     //   then never armed.
-    // - On USB, P+ below 2.5 V is no cell, or one too flat to charge (the charger is
-    //   enabled only while the cell shows above about 1-1.8 V, §3.3): the UI says so
-    //   instead of showing a charge state.
+    // - On USB, P+ below 2.5 V, or the charger's no-battery blink on USB_STAT, is no
+    //   cell, or one too flat to charge (the charger is enabled only while the cell
+    //   shows above about 1-1.8 V, §3.3): the UI says so instead of a charge state.
     // {latch0, latch1, chargeEnable, chargeEnableActiveHigh, lowBatteryCutoffMv,
     //  releaseWaitMaxMs, earlyWakeDecision, abnormalResetLimit, cutoffRadioAllowanceMv,
     //  firmwareUpdateMinMv, awakeCeilingMin, radioOffWhenIdle, wakeNoInputTimeoutS,
