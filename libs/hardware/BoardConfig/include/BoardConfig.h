@@ -2382,7 +2382,10 @@ constexpr BoardProfile SILKSCREEN = {
     // adcLadders: windows in calibrated mV (11 dB), centred in the chord gaps (§9.1).
     // LEFT starts at 1090 so LEFT+OK (<= ~1089 mV) stays rejected; LEFT+BACK aliases
     // to LEFT and UP(1)+UP(2) to UP. The UP(2)/released split is provisional until
-    // measured (bring-up B5).
+    // measured (bring-up B5). The host test
+    // libs/hardware/InputManager/test/host/test_adc_ladder_decode.cpp copies these
+    // windows, the 3000 mV released floor and the 2-sample debounce: change both
+    // together.
     {{{1,
        4,
        {{0, 200, LadderButton::Right},
@@ -2404,7 +2407,10 @@ constexpr BoardProfile SILKSCREEN = {
     // A reading stuck outside every window for 30 s (the on-battery level is not yet
     // measured, and could land in a gap) drops the last state, so the cutoff and the
     // awake ceiling fall back to the cell reading instead of trusting a stale
-    // "external power".
+    // "external power". The host test
+    // libs/hardware/BatteryMonitor/test/host/test_charge_ladder_decoder.cpp copies
+    // the windows and the debounce, Complete, blink and unknown-hold counts: change
+    // both together.
     {9,
      4,
      {{2601, 0xFFFF, ChargeState::ExternalIdle},

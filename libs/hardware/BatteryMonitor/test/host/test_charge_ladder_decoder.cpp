@@ -1,3 +1,7 @@
+// WINDOWS and PARAMS below are copies of SILKSCREEN.chargeLadder in
+// libs/hardware/BoardConfig/include/BoardConfig.h: change both together, or these
+// tests stop checking the windows and counts the board runs.
+
 #include <cstdio>
 
 #include "../../include/ChargeLadderDecoder.h"

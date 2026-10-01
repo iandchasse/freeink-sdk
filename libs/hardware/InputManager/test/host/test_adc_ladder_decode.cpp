@@ -1,3 +1,7 @@
+// BOTTOM, SIDE, RELEASED_MV and the 2-sample debounce below are copies of
+// SILKSCREEN.adcLadders in libs/hardware/BoardConfig/include/BoardConfig.h:
+// change both together, or these tests stop checking the windows the board runs.
+
 #include <cstdio>
 
 #include "../../include/AdcLadderDecode.h"
