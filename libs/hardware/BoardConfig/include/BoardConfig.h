@@ -852,6 +852,12 @@ struct FrontlightConfig {
   // leave the other one carrying the whole current for its share of each
   // period, which the monitor cannot see. 0 = fixed selection.
   uint32_t colorBlendHz = 0;
+  // A blend's second string, before both have lit since the reset: the colour
+  // select moves to it while the first string is lit, as every blend edge does,
+  // and the monitor is read for this many ms (every loadProbePeriodMs) instead
+  // of a dark gap, a re-enable and a full loadProbeWindowMs. 0 = go dark and run
+  // the full window.
+  uint16_t blendConfirmWindowMs = 0;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven
@@ -2406,6 +2412,9 @@ constexpr BoardProfile SILKSCREEN = {
     // near the OVP level would otherwise discharge through the other string (§13.1).
     // Warmth between the ends blends: COLOR_SEL on a 10 kHz / 10-bit carrier (40 MHz /
     // 10 kHz = 4000), once both strings have lit through a probe since the last reset.
+    // The second string is checked lit, over the same 500 ms window as the first:
+    // B8 has not yet scoped how fast an open string drives LED_SW to the OVP from a
+    // running boost at the lowest brightness. Shorten it once it has.
     .frontlight = {.gpio = 42,
                    .pwmFrequency = 25000,
                    .pwmResolutionBits = 10,
@@ -2422,7 +2431,8 @@ constexpr BoardProfile SILKSCREEN = {
                    .loadProbeWindowMs = 500,
                    .railSafeV = 15,
                    .loadProbePeriodMs = 20,
-                   .colorBlendHz = SILKSCREEN_FRONTLIGHT_BLEND_HZ},
+                   .colorBlendHz = SILKSCREEN_FRONTLIGHT_BLEND_HZ,
+                   .blendConfirmWindowMs = 500},
     .audio = NO_AUDIO,
     .leds = NO_LEDS,
     .orientation = NO_FLIP,
@@ -2597,6 +2607,9 @@ static_assert(SILKSCREEN.frontlight.railSafeV * 1000u < SILKSCREEN.frontlight.mo
 static_assert(SILKSCREEN.frontlight.loadProbePeriodMs != 0 &&
                   SILKSCREEN.frontlight.loadProbePeriodMs * 10u <= SILKSCREEN.frontlight.loadProbeWindowMs,
               "Silkscreen front-light probe needs a reading period and at least 10 readings in its window");
+static_assert(SILKSCREEN.frontlight.blendConfirmWindowMs == 0 ||
+                  SILKSCREEN.frontlight.loadProbePeriodMs * 5u <= SILKSCREEN.frontlight.blendConfirmWindowMs,
+              "Silkscreen blend check needs at least 5 readings in its window");
 static_assert(SILKSCREEN.input.power >= 0 && SILKSCREEN.input.power <= 21,
               "Silkscreen wakes only by ext1 on the power button, which must be an RTC GPIO (0-21, §13.1)");
 // J4 touch VDD is unswitched (§8): a fitted tail must get its sleep command, which

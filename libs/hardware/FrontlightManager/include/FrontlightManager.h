@@ -25,8 +25,10 @@
 // strictly between 0 and 100 puts the colour select on its own LEDC carrier, its
 // duty the warm share, while lit. It needs both strings lit through a probe since
 // the chip last reset (see FrontlightLoad.h colourPlan()): the first such switch-on
-// lights the dominant string, then the other, each through its probe window, and
-// blends once both have lit. After that a switch-on blends from the enable pulse
+// lights the dominant string through its probe window, then the other (with
+// blendConfirmWindowMs, the colour select moves to it while lit and the monitor is
+// read for that window; otherwise dark, then a full window), and blends once both
+// have lit. After that a switch-on blends from the enable pulse
 // (its probe window still watches for no light), and warmth and brightness changes
 // while blending apply at once. Going dark, the carrier stops at the warm level and
 // the colour select then rests at cool as after a warm light.
@@ -286,6 +288,10 @@ class FrontlightManager {
   // Puts the colour select on its blend carrier at the current warmth (lit only).
   void blendColour(uint32_t full);
   freeink::frontlight::ColourPlan colourPlan() const;
+  // Lit on a string that has lit since the reset, on the way to a blend whose other
+  // string has not: check that one while lit (FrontlightConfig::blendConfirmWindowMs).
+  bool confirmsWhileLit(const freeink::frontlight::ColourPlan& plan) const;
+  void switchLitToConfirm(uint32_t duty, uint32_t full, bool warm);
   void startMonitor(uint64_t periodUs);
   void stopMonitor();
   void checkMonitor();
@@ -303,14 +309,18 @@ class FrontlightManager {
     bool warm = false;       // the string being probed, or the one to light after the rail wait
     bool secondTry = false;  // the other string, after the first tripped in this switch-on
     bool blend = false;      // the window runs on the blend (both strings lit since the reset)
+    uint16_t windowMs = 0;   // loadProbeWindowMs, or blendConfirmWindowMs for a string switched to while lit
     uint32_t duty = 0;       // the duty to light at (brightness changes while deciding land here)
     int64_t startUs = 0;     // carrier start (Window) or wait start (RailWait)
     uint32_t peakLedMv = 0;
     uint32_t samples = 0;
   };
-  void beginWindow(uint32_t duty, bool warm, bool secondTry, bool blend);
+  void beginWindow(uint32_t duty, bool warm, bool secondTry, bool blend, uint16_t windowMs);
   void beginRailWait(uint32_t duty, bool warm, bool secondTry);
   void endProbe();
+  // endProbe() for a switch-off or sleep entry: a window on a string not yet lit
+  // since the reset leaves the rail counted as charged.
+  void abandonProbe();
   void probeTick();
   void railWaitTick();
   void probeTripped(int64_t tripAtUs);
