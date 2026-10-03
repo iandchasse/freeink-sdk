@@ -162,6 +162,14 @@ public:
     // oscillating. Pass the last value this returned; pass > 100 for no history.
     static uint16_t percentageFromMillivolts(uint16_t millivolts, uint16_t previousPercent);
 
+    // The same curve read linearly between its 10% notches, in tenths of a percent
+    // (0-1000), for a consumer that averages the voltage itself
+    // (readMillivoltsAveraged()) and wants the finest figure the hardware supports:
+    // about 3 mV per percent in the 20-40% band, 8-14 mV per percent above 80%. It
+    // is as accurate as the voltage is: the ADC's calibration, and the sag under
+    // load at the moment of the reading. 0 mV (a failed read) maps to 0.
+    static uint16_t percentTenthsFromMillivolts(uint16_t millivolts);
+
 private:
     bool hasAdcBackend() const;
     bool hasGaugeBackend() const;

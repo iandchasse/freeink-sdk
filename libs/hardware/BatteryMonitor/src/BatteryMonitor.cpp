@@ -907,6 +907,31 @@ constexpr uint16_t LIION_NOTCH_MV[11] = {
 // well under the narrowest half-segment (10 mV) so no notch can become a trap.
 constexpr uint16_t NOTCH_HYSTERESIS_MV = 8;
 
+// Tenths of a percent, linear between the notches (the table's own entries land on exact
+// multiples of 10 %). Everything at or under the 0% anchor, and a failed read (0 mV), gives 0.
+constexpr uint16_t percentTenthsFromNotches(const uint16_t millivolts) {
+  if (millivolts >= LIION_NOTCH_MV[10]) return 1000;
+  for (uint8_t i = 10; i > 0; --i) {
+    const uint16_t low = LIION_NOTCH_MV[i - 1];
+    if (millivolts >= low) {
+      const uint16_t high = LIION_NOTCH_MV[i];
+      return static_cast<uint16_t>((i - 1) * 100 + (millivolts - low) * 100 / (high - low));
+    }
+  }
+  return 0;
+}
+static_assert(percentTenthsFromNotches(0) == 0 && percentTenthsFromNotches(3000) == 0 && percentTenthsFromNotches(3450) == 0,
+              "the 0% anchor and a failed read are 0");
+static_assert(percentTenthsFromNotches(3680) == 100 && percentTenthsFromNotches(3820) == 500 &&
+                  percentTenthsFromNotches(4060) == 900,
+              "the table's own entries are exact multiples of 10 %");
+static_assert(percentTenthsFromNotches(3665) == 93 && percentTenthsFromNotches(3755) == 250 &&
+                  percentTenthsFromNotches(4130) == 950,
+              "linear between the notches");
+static_assert(percentTenthsFromNotches(4199) == 999 && percentTenthsFromNotches(4200) == 1000 &&
+                  percentTenthsFromNotches(4350) == 1000,
+              "full at the 4.20 V anchor and above");
+
 uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts) {
   // A failed read reports 0 mV, which lands on 0% here. That is deliberate: the
   // cubic this table replaced evaluated to +7501 at 0 V and clamped to a
@@ -932,4 +957,8 @@ uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts, uint16_t 
   const int32_t bias = notch > previousNotch ? -NOTCH_HYSTERESIS_MV : NOTCH_HYSTERESIS_MV;
   const int32_t biased = std::clamp<int32_t>(static_cast<int32_t>(millivolts) + bias, 0, UINT16_MAX);
   return percentageFromMillivolts(static_cast<uint16_t>(biased)) == notch ? notch : previousNotch;
+}
+
+uint16_t BatteryMonitor::percentTenthsFromMillivolts(const uint16_t millivolts) {
+  return percentTenthsFromNotches(millivolts);
 }
