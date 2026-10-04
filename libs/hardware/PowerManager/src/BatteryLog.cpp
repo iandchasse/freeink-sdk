@@ -327,7 +327,12 @@ size_t formatFwLine(char* buf, const size_t cap, const char* version, const uint
 }
 
 void flushed(const bool ok, const uint32_t ms) {
-  if (!recordValid()) return;
+  if (!recordValid()) {
+    // The record stopped validating while a row waited, so formatRow() wrote nothing. Start again in Lost: that also
+    // refreshes the cache the loop reads, so the writer's one attempt is the last of this wake.
+    startFresh();
+    return;
+  }
   core::flushed(rec.r, ok, ms);
   seal();
 }
