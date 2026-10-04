@@ -408,6 +408,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper and Paper Mono, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
 | `-DFREEINK_DIAGNOSTICS=1` | the managers also record what they observe and expose read accessors, for a hardware test build (see [Bring-up diagnostics](#bring-up-diagnostics)); off by default, and then none of it is compiled |
+| `-DSILKSCREEN_BATLOG=1` | the Silkscreen battery sleep/wake log in `PowerManager` (`BatteryLog.h`, `BatteryLogCore.h`, `BatteryLog.cpp`, and one call at the head of `PowerManager::deepSleep()`); needs `FREEINK_DEVICE_SILKSCREEN` and `FREEINK_CAP_POWER_POLICY` (an `#error` otherwise). Only the consumer's own `silkscreen-batlog` env sets it and the SDK never defines it: undefined, it reads as 0 and the SDK compiles to what it did without the log. The SDK formats rows into the caller's buffer and never opens a file; the app appends them. Pure rules checked at compile time by `libs/hardware/PowerManager/test/host/` (see [docs/testing.md](docs/testing.md)); use, columns and the bench proof are in CrossPoint's `docs/silkscreen/BATTERY-LOG.md` |
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
 (`NO_FLIP`, `MIRROR_X`, `MIRROR_Y`, or `ROTATE_180`). The SSD1677 driver applies it in
