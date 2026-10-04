@@ -41,6 +41,20 @@ sealed, and the next start must finish the load.
 The stubs next to it stand in for the app's `Logging.h` and for the FreeRTOS
 mutex behind `SharedAdc.h`, which `BatteryMonitor.cpp` includes.
 
+## Silkscreen battery log
+
+```sh
+c++ -std=c++17 -fsyntax-only -Wall -Wextra -DSILKSCREEN_BATLOG=1 \
+  -Ilibs/hardware/PowerManager/include \
+  libs/hardware/PowerManager/test/host/test_batterylog_core.cpp
+```
+
+The log exists only in the `silkscreen-batlog` image (`SILKSCREEN_BATLOG=1`). This test is all `static_assert`s, so
+compiling it is running it: the CRC-16, the CSV row formatter against the design's example row, the burst
+arithmetic, and the record's state machine, including a silent restart, the SD back-off and the lost-row cases.
+`libs/hardware/PowerManager/test/host/README.md` has the list, the state table and the negative control. The
+hardware layer (`BatteryLog.cpp`) is only compiled, not run.
+
 ## Fonts
 
 ```sh
