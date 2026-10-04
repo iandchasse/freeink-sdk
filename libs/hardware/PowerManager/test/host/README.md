@@ -40,6 +40,9 @@ by compiling it with the SDK's include paths, and by the bench tests of the desi
 - The lock-timeout, no-pin, no-valid, staged, charge-ladder and file-cap flag bits, with their values.
 - An unflushed row followed by an entry, a failed write, a slow one, and the SD back-off: bad, bad, 63 skipped wakes,
   a good probe, a bad probe, a slow probe, a restart inside a skipped wake.
+- A crash count (`ab`, `ab_r`) that stays through a write that failed and through a row dropped by the next entry,
+  and goes only with a row that reached the card; the `w_ui` latch of the row before an orphan row, which a flush
+  leaves set, does not shut the orphan's seed out.
 - A negative control (below).
 
 Mutating the core (the skip count, the CRC polynomial, the drop on a lost row, the boots count, the utc rule, what
@@ -63,7 +66,7 @@ orphan boot with no recorded entry). The log has no setting, so there is no Disa
 | `onWake` | Ready, deep-sleep reset | Ready (B) | The old row is counted lost, the wake is an orphan |
 | `onWake` | Idle, deep-sleep reset | Ready (B) | A sleep nothing recorded: an orphan |
 | `onWake` | Lost, any | Ready (B) | Row 1 (or the number the record had); a restart reason makes the session partial |
-| `flushed` | Ready | Idle | Row number consumed; `drop` reset on a write that reached the card; the back-off counts bad attempts |
+| `flushed` | Ready | Idle | Row number consumed; `drop` and `ab`/`ab_r` reset on a write that reached the card; the back-off counts bad attempts |
 | `mergeUiSeed`, `noteClockSynced`, `carryLedger` | | | `w_ui` once per row and only while a row waits; the synced flag; the running ledger into the record |
 
 ## Where the core departs from the design text
