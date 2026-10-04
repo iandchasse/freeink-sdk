@@ -580,6 +580,8 @@ constexpr Ledger onWake(Record& r, const WakeIn& in) {
   clearEarly(r);
   detail::captureWake(r, in);
   r.wFl |= wakeflag::ORPHAN;
+  // The old row's w_ui latch must not shut this row's seed out (a flush leaves it set).
+  r.flags = static_cast<uint8_t>(r.flags & ~recflag::U_LATCHED);
   r.flags |= recflag::KIND_B;
   if (deep) detail::skipBookkeeping(r);
   detail::countAbnormal(r, in);

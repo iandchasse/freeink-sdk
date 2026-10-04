@@ -1071,6 +1071,28 @@ constexpr int latchStory() {
 }
 static_assert(latchStory() == 0, "w_ui is latched once per row and only while a row waits");
 
+// An orphan row takes its own seed: a flush leaves the latch of the row before it set, and the orphan must clear it.
+constexpr int orphanLatchStory() {
+  Record r = idleRecord(1, 10 * SEC);
+  core::tail(r, entryIn(20 * SEC));
+  core::onWake(r, wakeIn(Reset::DeepSleep, 90 * SEC));
+  CHECK(core::mergeUiSeed(r, 800));
+  core::flushed(r, true, 20);  // Idle, the latch still set
+  CHECK(core::stateOf(r) == State::Idle && (r.flags & recflag::U_LATCHED) != 0);
+  core::onWake(r, wakeIn(Reset::DeepSleep, 300 * SEC));  // a sleep nothing recorded: an orphan
+  CHECK(core::pendingOrphan(r) && r.wUi == core::ABSENT16 && (r.flags & recflag::U_LATCHED) == 0);
+  CHECK(core::mergeUiSeed(r, 700) && r.wUi == 700);
+  // A Ready row that never got flushed, then a deep-sleep wake: the same.
+  core::onWake(r, wakeIn(Reset::DeepSleep, 400 * SEC));
+  CHECK(r.drop == 1 && core::pendingOrphan(r) && r.wUi == core::ABSENT16);
+  CHECK(core::mergeUiSeed(r, 650) && r.wUi == 650);
+  // A restart of the running session keeps the latch: the row's seed stays as it was.
+  core::onWake(r, wakeIn(Reset::Software, 410 * SEC));
+  CHECK(!core::mergeUiSeed(r, 100) && r.wUi == 650);
+  return 0;
+}
+static_assert(orphanLatchStory() == 0, "an orphan row clears the previous row's w_ui latch; a restart keeps it");
+
 // The state a static_assert cannot see by value: sizes.
 static_assert(sizeof(Record) <= 160, "the record's share of the RTC budget");
 static_assert(sizeof(core::LedgerRec) == 24 && sizeof(Burst) == 16, "no padding in the bursts");
