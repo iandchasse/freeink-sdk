@@ -643,6 +643,35 @@ constexpr int uncarriedStory() {
 }
 static_assert(uncarriedStory() == 0, "restarts with no carried ledger, panics and watchdogs: partial, counted, kept");
 
+// A crash count goes with the row that carried it to the card: a write that failed (a slow, full or capped card, where
+// crashes tend to occur too) leaves it for the next row.
+constexpr int lostRowCrashStory() {
+  Record r = idleRecord(3, 100 * SEC);
+  core::tail(r, entryIn(200 * SEC));
+  core::onWake(r, wakeIn(Reset::DeepSleep, 300 * SEC));
+  WakeIn panic = wakeIn(Reset::Abnormal, 310 * SEC);
+  panic.rst = 4;
+  core::onWake(r, panic);  // a panic before the first flush: the row is still Ready
+  CHECK(core::stateOf(r) == State::Ready && r.ab == 1 && r.abR == 4);
+  core::flushed(r, false, 40);  // the append failed
+  CHECK(core::stateOf(r) == State::Idle && r.drop == 1 && r.ab == 1 && r.abR == 4);
+  core::tail(r, entryIn(400 * SEC));
+  CHECK(r.ab == 1 && r.abR == 4);
+  core::onWake(r, wakeIn(Reset::DeepSleep, 500 * SEC));
+  const Text t = rowText(r, rowCtx());
+  CHECK(fieldIs(t, "ab", "1") && fieldIs(t, "ab_r", "4") && fieldIs(t, "drop", "1"));
+  core::flushed(r, true, 20);  // this one reached the card
+  CHECK(r.ab == 0 && r.abR == 0);
+  // A row dropped by the next entry keeps them too.
+  r.ab = 2;
+  r.abR = 7;
+  cycle(r, 600 * SEC, 700 * SEC);
+  cycle(r, 800 * SEC, 900 * SEC);
+  CHECK(r.drop == 1 && r.ab == 2 && r.abR == 7);
+  return 0;
+}
+static_assert(lostRowCrashStory() == 0, "a row that never reached the card leaves its crash count for the next one");
+
 // --- An entry staged on each record state -------------------------------------------------------------------------
 constexpr int entryOnEachStateStory() {
   // Lost: a fresh record. The session was not seen from its start.

@@ -612,6 +612,9 @@ constexpr void flushed(Record& r, const bool ok, const uint32_t ms) {
   r.nextRow = satInc32(r.nextRow);
   if (ok) {
     r.drop = 0;
+    // The crash count goes with the row that carried it. A row that did not reach the card keeps it for the next one.
+    r.ab = 0;
+    r.abR = 0;
     r.flags = static_cast<uint8_t>(r.flags & ~recflag::SKIPPED);
   } else {
     r.drop = satInc16(r.drop);
@@ -624,8 +627,6 @@ constexpr void flushed(Record& r, const bool ok, const uint32_t ms) {
     if (r.sdBad >= SD_BAD_LIMIT) r.sdSkip = SD_SKIP_WAKES;
     r.flags |= recflag::PREV_BAD;
   }
-  r.ab = 0;
-  r.abR = 0;
   r.flags = static_cast<uint8_t>(r.flags & ~recflag::KIND_B);
   r.state = static_cast<uint8_t>(State::Idle);
 }
