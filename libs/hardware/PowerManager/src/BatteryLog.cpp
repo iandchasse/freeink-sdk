@@ -195,6 +195,14 @@ void mergeNotes() {
   seal();
 }
 
+// The clock flag alone, for the two places that seal the record with no loop pass before them: the sleep tail and a
+// silent restart. A sync that lands after the last tick() (CrossPoint joins Wi-Fi and syncs inside its sleep entry,
+// while no loop pass runs) would otherwise die with the RAM flag at the reset. The UI seed stays for tick(): it belongs
+// to the row being worked on, and the tail is about to drop that row. The caller seals. RAM only, no wait.
+void mergeClockFlag() {
+  if (clockSynced.exchange(false, std::memory_order_relaxed)) core::noteClockSynced(rec.r);
+}
+
 }  // namespace
 
 void beginEntry(const Intent& intent) {
@@ -234,6 +242,7 @@ void tail(const bool releaseArmed) {
   in.noteFlags = static_cast<uint16_t>(stagedNotes | (releaseArmed ? core::entryflag::KEY_HELD : 0));
   in.ledger = stagedLedger;
   openRecord();
+  mergeClockFlag();
   core::tail(rec.r, in);
   seal();
 }
@@ -289,6 +298,7 @@ void noteRefresh() { refreshes.fetch_add(1, std::memory_order_relaxed); }
 void carry() {
   foldRefreshes();
   if (!recordValid()) return;
+  mergeClockFlag();
   core::carryLedger(rec.r, core::compact(runLedger));
   seal();
 }
