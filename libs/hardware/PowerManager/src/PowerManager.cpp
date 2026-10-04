@@ -14,6 +14,9 @@
 #include <ProbeChecks.h>
 #include <SharedAdc.h>
 #endif
+#if SILKSCREEN_BATLOG && FREEINK_CAP_POWER_POLICY
+#include "BatteryLog.h"
+#endif
 
 namespace freeink {
 namespace {
@@ -296,6 +299,9 @@ bool PowerManager::sleepPanelWithoutDriver() {
 }
 
 void PowerManager::deepSleep() {
+#if SILKSCREEN_BATLOG && FREEINK_CAP_POWER_POLICY
+  batterylog::tail(releaseWakeMagic == RELEASE_WAKE_MAGIC);
+#endif
   esp_sleep_config_gpio_isolate();
 #if !FREEINK_MCU_C61
   gpio_deep_sleep_hold_en();
