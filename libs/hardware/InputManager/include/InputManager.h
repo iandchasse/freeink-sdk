@@ -27,6 +27,8 @@ class InputManager {
   void begin(bool startTouch = true);
   // Probe and start the touch panel after begin(false). No-op once started.
   void startTouch();
+  // A4: stop touch and release the shared I2C bus after all other bus users finish.
+  bool prepareForDeepSleep();
   uint8_t getState();
 
   // Call regularly from the main loop to update button and touch edge state.
