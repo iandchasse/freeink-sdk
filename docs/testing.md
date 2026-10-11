@@ -55,6 +55,19 @@ arithmetic, and the record's state machine, including a silent restart, the SD b
 `libs/hardware/PowerManager/test/host/README.md` has the list, the state table and the negative control. The
 hardware layer (`BatteryLog.cpp`) is only compiled, not run.
 
+## Driver-free panel sleep
+
+```sh
+python3 libs/hardware/PowerManager/test/host/run_sleep_panel.py
+```
+
+`PowerManager.cpp` needs the ESP-IDF sleep and ADC APIs, so this cuts
+`sleepPanelWithoutDriver()` and its two helpers out of it and runs them over a
+recording GPIO model, for the 4.26" Silkscreen board and for its 3.68" variant:
+the command bytes, the BUSY pull, the reset's settle time (10 ms on the 4.26"
+board, 60 ms for the variant's X3 pair) and the BUSY_N bound. The README next to
+it has the details and the negative control.
+
 ## Fonts
 
 ```sh

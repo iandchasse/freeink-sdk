@@ -297,6 +297,11 @@ bool PowerManager::sleepPanelWithoutDriver() {
   constexpr uint8_t UC81XX_DEEP_SLEEP_CHECK = 0xA5;  // its check code
   constexpr uint32_t RESET_LOW_MS = 10;
   constexpr uint32_t RESET_SETTLE_MS = 10;
+#if FREEINK_SILKSCREEN_368
+  // The X3 pair on the 3.68" variant: their drivers take 60 ms after the reset releases (EpdBus::reset()'s
+  // 10 ms and the extra 50 ms of Uc8253X3Driver::begin() and Uc8279Driver::begin()), not the X4 UltraChip's 10.
+  constexpr uint32_t X3_RESET_SETTLE_MS = 60;
+#endif
   constexpr uint32_t BUSY_WAIT_MAX_MS = 100;
   driveLevel(d.cs, HIGH);
   driveLevel(d.sclk, LOW);
@@ -308,7 +313,13 @@ bool PowerManager::sleepPanelWithoutDriver() {
   digitalWrite(d.rst, LOW);
   delay(RESET_LOW_MS + 1);
   digitalWrite(d.rst, HIGH);
+#if FREEINK_SILKSCREEN_368
+  const bool x3Pair = controller == BoardConfig::DisplayController::UC8253 ||
+                      controller == BoardConfig::DisplayController::UC8279;
+  delay((x3Pair ? X3_RESET_SETTLE_MS : RESET_SETTLE_MS) + 1);
+#else
   delay(RESET_SETTLE_MS + 1);
+#endif
   if (d.busy >= 0) {
     const uint32_t start = millis();
     if (ultraChip) {
