@@ -21,10 +21,16 @@
 //     fingerprint. It reads whatever pins the ACTIVE profile carries, so it is
 //     safe on the S3 X4 Pro too, and on Silkscreen (the same half-duplex read on
 //     SDI, IO12).
+// Two protocols serve it. The stock X3 one (probeX3DisplayController: three VER
+// bytes, the id in byte 2) is for the X3 itself, the X4 Classic, and the Silkscreen
+// 3.68" variant (FREEINK_SILKSCREEN_368), whose panel is the X3's: a UC8253 also
+// drives FLG, so the two-pass VER/FLG/MTP probe below would take it for an UltraChip
+// part. Every other profile keeps the two-pass probe.
 #define FREEINK_XTEINK_C3 (FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
 #define FREEINK_XTEINK_DISPLAY_PROBE                                                             \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
    FREEINK_DEVICE_SILKSCREEN)
+#define FREEINK_XTEINK_STOCK_X3_PROBE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4CLASSIC || FREEINK_SILKSCREEN_368)
 static_assert(!FREEINK_CAP_DISPLAY_PROBE_POLICY || FREEINK_XTEINK_DISPLAY_PROBE,
               "FREEINK_CAP_DISPLAY_PROBE_POLICY needs a profile the display probe serves");
 
@@ -68,6 +74,11 @@ void epdWriteByte(const EpdProbePins& p, uint8_t b) {
   }
 }
 
+// The two-pass VER/FLG/MTP probe and its helpers are not compiled into the
+// Silkscreen 3.68" image (FREEINK_SILKSCREEN_368): that variant identifies its
+// panel with the stock X3 read only, and the X4 Classic block below is the one
+// other user of the half-duplex register read.
+#if !FREEINK_SILKSCREEN_368 || FREEINK_DEVICE_X4CLASSIC
 uint8_t epdReadByte(const EpdProbePins& p) {
   uint8_t b = 0;
   for (uint8_t i = 0; i < 8; i++) {
@@ -97,7 +108,9 @@ void epdCmdRead(const EpdProbePins& p, uint8_t cmd, uint8_t* out, uint8_t len) {
   digitalWrite(p.cs, HIGH);
   pinMode(p.mosi, OUTPUT);
 }
+#endif
 
+#if !FREEINK_SILKSCREEN_368
 // The UC81xx VER signature: a leading reserved 0x00, then a CHIP_VER byte
 // (datasheet default 0x03, MTP-programmed so not pinned to that exact value)
 // that is neither a floating-low nor a floating-high bus. A released SDA reads
@@ -167,6 +180,7 @@ bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, ui
   if (flg) *flg = flgByte;
   return matchUc81xx(ver, flgByte);
 }
+#endif  // !FREEINK_SILKSCREEN_368
 
 void releaseDisplayPins(const EpdProbePins& p) {
   // Leave everything released. RST_N has an internal pull-up, so INPUT keeps the
@@ -178,7 +192,7 @@ void releaseDisplayPins(const EpdProbePins& p) {
   if (p.rst >= 0) pinMode(p.rst, INPUT);
 }
 
-#if FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4CLASSIC
+#if FREEINK_XTEINK_STOCK_X3_PROBE
 // X3 V6.3.15: 4200dafa (reset), 4200db40 (BUSY), 42009e4c/42009dba
 // (read), 4200fb12 (selector). See docs/x3-v6.3.15-firmware-audit.md.
 // Keep this separate from the X4-family fingerprint: stock X3 selects from
@@ -187,6 +201,8 @@ void releaseDisplayPins(const EpdProbePins& p) {
 // FUN_4200a778/FUN_42007fcc) resets, waits BUSY bounded, writes 0x70 with DC
 // low, flips SDA to input (no pull-up) and clocks 3 bytes back — no MISO
 // involved — then selects the driver from ver[2] against a 5-entry table.
+// The Silkscreen 3.68" variant runs it on its own pins (SDI on IO12 through
+// R29): its panel is the X3's, and 0x66 there is the UC8279d, 0xFF the UC8253.
 DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
   g_probeDiag = {};
   g_probeDiag.valid = true;
@@ -258,6 +274,7 @@ DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t
 }
 #endif
 
+#if !FREEINK_SILKSCREEN_368
 // Two-pass probe with agreement, over an arbitrary pinout. Confirmed only when
 // both passes match the UC81xx signature AND agree on the VER bytes — a floating
 // bus can't produce the same stable non-trivial pattern twice. Disagreement is
@@ -371,6 +388,7 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
   g_probeDiag.verdict = static_cast<uint8_t>(v);
   return v;
 }
+#endif  // !FREEINK_SILKSCREEN_368
 
 }  // namespace
 
@@ -383,7 +401,15 @@ DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint
     return probeX3DisplayController(p, verBytes, flg);
   }
 #endif
+#if FREEINK_SILKSCREEN_368
+  // The 3.68" variant's panel is the X3's, a UC8253 (VER byte 2 reads 0xFF) or a UC8279d (0x66): the
+  // stock X3 read, whatever ACTIVE has been promoted to (the verdict, not the profile, picks the
+  // driver). The two-pass probe is not compiled for this build, since it would take the UC8253's
+  // driven FLG for an UltraChip answer.
+  return probeX3DisplayController(p, verBytes, flg);
+#else
   return probeDisplayController(p, verBytes, flg);
+#endif
 }
 
 const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() { return g_probeDiag; }

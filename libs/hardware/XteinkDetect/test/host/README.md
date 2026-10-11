@@ -54,3 +54,30 @@ LUT_VER values that must not select UC8179 (not linked for Silkscreen), a
 UC8279d that drives only a stable FLG (VER floating or all zero, blank MTP), an
 inconclusive probe (FLG on one pass only) that is not kept, and a forced build
 that never touches the bus.
+
+## Silkscreen 3.68" variant (`SILKSCREEN_PANEL_368`)
+
+`test_silkscreen_368_policy.cpp` runs the same detector on the Silkscreen board
+with the Xteink X3's panel on J2. Its default controller is the UC8253, and the
+X3's stock three-byte VER read decides (0x66 is a UC8279d, 0xFF a UC8253, any
+other id leaves the default), on the Silkscreen pins. The two-pass VER/FLG/MTP
+probe is not compiled for it: a UC8253 also drives FLG, which that probe takes
+for an UltraChip answer on Silkscreen. Build it three times: as is, and with
+each build override that skips the probe.
+
+```sh
+mkdir -p .cache/silkscreen-368-probe-build
+for forced in "" "-DSILKSCREEN_DISPLAY_CONTROLLER=uc8279" "-DSILKSCREEN_DISPLAY_CONTROLLER=uc8253"; do
+  c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_DEVICE_SILKSCREEN=1 -DSILKSCREEN_PANEL_368=1     -DFREEINK_CAP_TOUCH=0 $forced     -Ilibs/hardware/XteinkDetect/test/host/stubs     -Ilibs/hardware/BoardConfig/include     -Ilibs/hardware/XteinkDetect/include     libs/hardware/XteinkDetect/test/host/test_silkscreen_368_policy.cpp     libs/hardware/XteinkDetect/src/XteinkDetect.cpp     -o .cache/silkscreen-368-probe-build/test_silkscreen_368_policy &&
+  .cache/silkscreen-368-probe-build/test_silkscreen_368_policy
+done
+```
+
+It covers a UC8279d found on a cold boot (about 111 ms: the stock reset timing
+and one BUSY_N read, and a 410 ms bound with BUSY_N held LOW), a UC8253 that
+also drives FLG and the MTP read and is still taken for a UC8253 with only 0x70
+on the wire, unknown ids that run the default and are not kept, a verdict kept
+across a deep sleep with the bus silent, a panel swapped with the power off
+(cold boot after a wake probes again), every other reset reason probing, a
+dropped verdict, and a forced build that never touches the bus. The profile
+the build selects is checked too: 792x528, no touch and the keys kept.

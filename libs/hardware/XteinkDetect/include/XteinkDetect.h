@@ -67,7 +67,9 @@ X3DisplayVerdict detectX3DisplayController(uint8_t verBytes[5] = nullptr, uint8_
 // X3 C3 pinout), this reads the pins from BoardConfig::ACTIVE,
 // so it works on any Xteink profile — including the S3 X4 Pro, where the X3 I2C
 // probe would be unsafe — and on Silkscreen, whose 4.26" panel is an SSD1677 or a
-// UC8279D. Bit-bangs a half-duplex 4-wire SPI after a reset pulse
+// UC8279D. The Silkscreen 3.68" variant (SILKSCREEN_PANEL_368) carries the X3's
+// panel, so it takes the stock three-byte VER selection too, on its own pins.
+// Bit-bangs a half-duplex 4-wire SPI after a reset pulse
 // and leaves the pins released; safe to call before FreeInkDisplay::begin().
 enum class DisplayControllerVerdict : uint8_t { PrimaryAssumed, Uc81xxConfirmed, Inconclusive };
 
