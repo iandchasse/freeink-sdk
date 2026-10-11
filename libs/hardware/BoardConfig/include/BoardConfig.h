@@ -2730,6 +2730,11 @@ static_assert(SILKSCREEN.frontlight.blendConfirmWindowMs == 0 ||
               "Silkscreen blend check needs at least 5 readings in its window");
 static_assert(SILKSCREEN.input.power >= 0 && SILKSCREEN.input.power <= 21,
               "Silkscreen wakes only by ext1 on the power button, which must be an RTC GPIO (0-21, §13.1)");
+// IO18 is biased by R62 and R76 (§9.2). PowerManager::armWakeOnPins() keeps upstream's RTC pull and its
+// RTC_PERIPH override off a power pin only while the profile says the board biases it itself.
+static_assert(SILKSCREEN.input.powerExternalPull,
+              "Silkscreen's power pin is biased by R62 and R76: without powerExternalPull the SDK puts an RTC pull "
+              "on it and keeps RTC_PERIPH powered (POWER.md ZD-01, PB-02)");
 // J4 touch VDD is unswitched (§8): a fitted tail must get its sleep command, which
 // needs the touch code. A board with no tail loses nothing, since the probe caches
 // it as absent.
