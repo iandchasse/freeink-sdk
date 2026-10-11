@@ -121,11 +121,13 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     _mountAttempts = static_cast<uint8_t>(attempt + 1);
     if (attempt > 0) _lastMountError = mountErr;  // the attempt before this one failed
 #endif
-    if (sdPwr >= 0) {
+    if (sdPwr >= 0 && BoardConfig::ACTIVE.sd.powerCycleOnMount) {
       digitalWrite(sdPwr, sdOff);
       delay(80);
       digitalWrite(sdPwr, sdOn);  // run with the card powered
       delay(120);
+    } else if (sdPwr >= 0) {
+      digitalWrite(sdPwr, BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW);  // keep the rail on
     }
     esp_err_t e = sdmmc_card_init(&host, card);
     if (e != ESP_OK && card->csd.capacity == 0) {

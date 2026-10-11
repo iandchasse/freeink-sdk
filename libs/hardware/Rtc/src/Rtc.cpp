@@ -94,6 +94,17 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
   return true;
 }
 
+// Presence read for begin(). A single failed transaction is not proof of a
+// missing chip: on a shared bus the I2C driver can fail the first transfer after
+// another device's NACK (e.g. an IMU address probe) with ESP_ERR_INVALID_STATE.
+bool readRegsRetry(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (readRegs(addr, reg, dst, len)) return true;
+    delay(10);
+  }
+  return false;
+}
+
 #if FREEINK_CAP_PROBE_IDENTITY
 // SensorsConfig::rtcIdentityCheck: the address this begin() refused (0 = none).
 uint8_t g_rejectedAddr = 0;
@@ -105,9 +116,9 @@ constexpr uint32_t DS3231_RECHECK_MS = 20;
 // read first, and a device without the DS3231 pattern (ProbeChecks.h) is refused
 // before anything is written to it.
 bool readDs3231Status(const uint8_t addr, uint8_t& status) {
-  if (!BoardConfig::rtcIdentityCheck()) return readRegs(addr, DS3231_REG_STATUS, &status, 1);
+  if (!BoardConfig::rtcIdentityCheck()) return readRegsRetry(addr, DS3231_REG_STATUS, &status, 1);
   uint8_t regs[probe::DS3231_REGISTER_COUNT] = {};
-  if (!readRegs(addr, 0x00, regs, sizeof(regs))) return false;
+  if (!readRegsRetry(addr, 0x00, regs, sizeof(regs))) return false;
   if (probe::ds3231Mismatch(regs) != 0) {
     delay(DS3231_RECHECK_MS);
     if (!readRegs(addr, 0x00, regs, sizeof(regs))) return false;
@@ -129,14 +140,14 @@ bool beginDevice(const uint8_t addr, const BoardConfig::RtcType type) {
   uint8_t status = 0;
   switch (type) {
     case BoardConfig::RtcType::Pcf8563:
-      if (!readRegs(addr, PCF8563_REG_CONTROL_STATUS1, &status, 1)) return false;
+      if (!readRegsRetry(addr, PCF8563_REG_CONTROL_STATUS1, &status, 1)) return false;
       writeReg(addr, PCF8563_REG_CLKOUT, PCF8563_CLKOUT_DISABLED);  // we don't use the 32 kHz CLKOUT
       return true;
     case BoardConfig::RtcType::Pcf85063:
       // CLKOUT lives in Control_2 alongside alarm/timer bits, so it is only
       // switched off (read-modify-write) on boards that ask for it: a PCF85063A
       // or RV-8263-C7 with its CLKOUT enabled runs 32.768 kHz out of the pin.
-      if (!readRegs(addr, PCF85063_REG_CONTROL1, &status, 1)) return false;
+      if (!readRegsRetry(addr, PCF85063_REG_CONTROL1, &status, 1)) return false;
       if (lowPower) {
         uint8_t control2 = 0;
         if (readRegs(addr, PCF85063_REG_CONTROL2, &control2, 1)) {
@@ -148,7 +159,7 @@ bool beginDevice(const uint8_t addr, const BoardConfig::RtcType type) {
 #if FREEINK_CAP_PROBE_IDENTITY
       if (!readDs3231Status(addr, status)) return false;
 #else
-      if (!readRegs(addr, DS3231_REG_STATUS, &status, 1)) return false;
+      if (!readRegsRetry(addr, DS3231_REG_STATUS, &status, 1)) return false;
 #endif
       writeReg(addr, DS3231_REG_CONTROL, DS3231_CONTROL_INTCN);  // disable square-wave output
       if (lowPower && (status & DS3231_STATUS_EN32KHZ)) {
@@ -159,7 +170,7 @@ bool beginDevice(const uint8_t addr, const BoardConfig::RtcType type) {
       }
       return true;
     case BoardConfig::RtcType::Rx8130:
-      return readRegs(addr, RX8130_REG_CONTROL0, &status, 1);
+      return readRegsRetry(addr, RX8130_REG_CONTROL0, &status, 1);
     case BoardConfig::RtcType::None:
       return false;
   }

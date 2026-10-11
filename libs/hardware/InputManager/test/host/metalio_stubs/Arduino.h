@@ -21,6 +21,7 @@ inline int analogReadMilliVolts(int) { return 3300; }
 inline int analogRead(int) { return 4095; }
 inline int digitalPinToInterrupt(int p) { return p; }
 inline void attachInterrupt(int,void (*f)(),int) { touchIsr=f; }
+inline void detachInterrupt(int) { touchIsr=nullptr; }
 struct SerialStub { explicit operator bool() const { return false; } };
 inline SerialStub Serial;
 // For the SDK's shared ADC lock (SharedAdc.h) and RTC-retained probe state.
