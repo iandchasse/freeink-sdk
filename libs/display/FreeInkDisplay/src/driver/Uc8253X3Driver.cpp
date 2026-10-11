@@ -179,7 +179,13 @@ void Uc8253X3Driver::begin(EpdBus& bus) {
 }
 
 void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+#if FREEINK_DIAGNOSTICS
+  _diagBlocking = true;
+#endif
   displayStart(bus, fb, prev, mode, turnOff);
+#if FREEINK_DIAGNOSTICS
+  _diagBlocking = false;
+#endif
   displayFinish(bus, fb);
 }
 
@@ -243,6 +249,15 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
+#if FREEINK_DIAGNOSTICS
+  // Report the mode the driver ran (a FAST or HALF promoted to the full sync is FULL) and the bank's
+  // first CDI byte as the sequence: 0x29 for the full and fast banks, 0xA9 for the half scrub. The
+  // displayFinish() wait below closes the record.
+  EpdBus::noteRefresh(static_cast<uint8_t>(doFullSync   ? RefreshMode::Full
+                                           : doHalfSync ? RefreshMode::Half
+                                                        : RefreshMode::Fast),
+                      doHalfSync ? 0xA9 : 0x29, !_diagBlocking, turnOff, false);
+#endif
   // Confirm the waveform actually started (BUSY dropped LOW) before handing the
   // CPU back, so displayFinish()'s waitBusy() only rides out the second
   // (LOW->HIGH) phase. Short timeout: a missed edge just falls through to the

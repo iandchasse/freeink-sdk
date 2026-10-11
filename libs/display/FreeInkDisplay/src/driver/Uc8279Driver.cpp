@@ -118,7 +118,13 @@ void Uc8279Driver::begin(EpdBus& bus) {
 }
 
 void Uc8279Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
+#if FREEINK_DIAGNOSTICS
+  _diagBlocking = true;
+#endif
   displayStart(bus, fb, prev, mode, turnOff);
+#if FREEINK_DIAGNOSTICS
+  _diagBlocking = false;
+#endif
   displayFinish(bus, fb);
 }
 
@@ -188,6 +194,15 @@ bool Uc8279Driver::displayStart(EpdBus &bus, const uint8_t *fb,
     _isScreenOn = true;
   }
   bus.cmd(CMD_DISPLAY_REFRESH);
+#if FREEINK_DIAGNOSTICS
+  // Report the mode the driver ran: the GC bank is the FULL (or the caller's HALF) and only a FAST
+  // with a baseline runs the DU bank. The CDI byte stands in for the sequence byte (the B/W path
+  // writes no TSSET). The displayFinish() wait below closes the record.
+  EpdBus::noteRefresh(static_cast<uint8_t>(!useGc                      ? RefreshMode::Fast
+                                           : mode == RefreshMode::Half ? RefreshMode::Half
+                                                                       : RefreshMode::Full),
+                      _firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater, !_diagBlocking, turnOff, false);
+#endif
   // Confirm the waveform started (BUSY_N dropped LOW) before returning so
   // displayFinish() only rides out the completion edge.
   {

@@ -122,6 +122,9 @@ class Uc8279Driver : public PanelDriver {
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
   bool _pendingUsedGc = false;  // this refresh ran the GC bank (spends the budget)
+#if defined(FREEINK_DIAGNOSTICS) && FREEINK_DIAGNOSTICS
+  bool _diagBlocking = false;  // inside display(): the caller waits for the refresh (EpdBus::noteRefresh)
+#endif
 };
 
 PanelDriver& uc8279Driver();
