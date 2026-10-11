@@ -71,6 +71,17 @@ void boardEpdReset(bool high) {
 #endif
 }
 
+// An UltraChip BUSY_N idles HIGH: the UC81xx X4 drivers' UcIdleHigh wait, and the X3 drivers'
+// X3TwoPhase (UC8253, UC8279d) in a build that links them on a board with the display-probe
+// policy, which is the Silkscreen 3.68" variant. DisplayPins::busyPullUp and the cached-controller
+// check below follow it. Everywhere else X3TwoPhase is left as it is: bare INPUT, no check.
+bool busyIdlesHigh(const freeink::BusyPolarity p) {
+#if FREEINK_CAP_DISPLAY_PROBE_POLICY && (FREEINK_DRIVER_UC8253_X3 || FREEINK_DRIVER_UC8279)
+  if (p == freeink::BusyPolarity::X3TwoPhase) return true;
+#endif
+  return p == freeink::BusyPolarity::UcIdleHigh;
+}
+
 #if FREEINK_CAP_DISPLAY_PROBE_POLICY
 // The bound on the idle check below: the X3 stock protocol's bounded BUSY wait
 // after its reset.
@@ -92,8 +103,8 @@ void checkCachedController(const int8_t busyPin, const freeink::BusyPolarity p) 
   static bool checked = false;
   if (checked || busyPin < 0 || !freeink::displayControllerCached()) return;
   checked = true;
-  if (p != freeink::BusyPolarity::UcIdleHigh && p != freeink::BusyPolarity::ActiveHigh) return;
-  const int idle = p == freeink::BusyPolarity::UcIdleHigh ? HIGH : LOW;
+  if (!busyIdlesHigh(p) && p != freeink::BusyPolarity::ActiveHigh) return;
+  const int idle = busyIdlesHigh(p) ? HIGH : LOW;
   const unsigned long start = millis();
   while (digitalRead(busyPin) != idle) {
     if (millis() - start >= CACHED_IDLE_WAIT_MS) {
@@ -295,8 +306,8 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     pinMode(pins.busy, INPUT_PULLUP);
   } else if (busy == BusyPolarity::ActiveHigh && pins.busyPullDown) {
     pinMode(pins.busy, INPUT_PULLDOWN);  // no external pull: a missing panel reads not-busy
-  } else if (busy == BusyPolarity::UcIdleHigh && BoardConfig::displayBusyPullUp()) {
-    pinMode(pins.busy, INPUT_PULLUP);  // the same for BUSY_N, whose wait has no timeout
+  } else if (busyIdlesHigh(busy) && BoardConfig::displayBusyPullUp()) {
+    pinMode(pins.busy, INPUT_PULLUP);  // the same for BUSY_N, whose wait has no timeout (the X3 pair's has a bound)
   } else {
     pinMode(pins.busy, INPUT);
   }
