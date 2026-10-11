@@ -1136,7 +1136,9 @@ struct DisplayProbeConfig {
   // BUSY_N wait is capped (FreeInkDisplay's EpdBus).
   bool cacheAcrossDeepSleep = false;
   // The panel is Xteink X4-class glass (4.26" 800x480) on whichever controller
-  // the probe finds, so the consumer applies its X4 panel policies to it.
+  // the probe finds, or the X3's 3.68" glass on the Silkscreen variant, so the
+  // consumer applies its X4 panel policies to it (CrossPoint's
+  // xteinkClassPanel() reads this).
   bool x4ClassPanel = false;
 };
 
@@ -2750,6 +2752,9 @@ constexpr BoardProfile SILKSCREEN = {
     .displayProbe = {.forced = silkscreen_display::FORCED,
                      .ultraChipController = DisplayController::UC8279,
                      .cacheAcrossDeepSleep = true,
+                     // Also true for the 3.68" variant, which inherits this block: its X3 glass is not the
+                     // X4's, but the consumer's X4 panel policies (CrossPoint's xteinkClassPanel(), the
+                     // reader overlay's refresh) are the ones it needs. Pinned below.
                      .x4ClassPanel = true}};
 
 static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
@@ -2913,6 +2918,11 @@ static_assert(SILKSCREEN_368.displayProbe.ultraChipController == DisplayControll
                   SILKSCREEN_368.displayProbe.cacheAcrossDeepSleep,
               "Silkscreen 3.68\" needs a probe policy that takes UltraChip answers as UC8279 and caches the verdict "
               "across deep sleep");
+// CrossPoint's xteinkClassPanel() reads x4ClassPanel to give the reader's overlays the X4 panel's refresh policy,
+// and isXteinkDevice() is false on this board, so the variant's X3 glass relies on the value staying true.
+static_assert(SILKSCREEN_368.displayProbe.x4ClassPanel,
+              "Silkscreen 3.68\" must keep displayProbe.x4ClassPanel true: the consumer's X4 panel policies are what "
+              "the X3's glass needs here");
 // No touch hardware, by data: no controller, no pin, no sleep command, no key remap.
 static_assert(silkscreen_368::noTouch(SILKSCREEN_368.touch),
               "Silkscreen 3.68\" has no touch: NO_TOUCH, with no pin, fallback, hibernate or buttonsAlongsideTouch");

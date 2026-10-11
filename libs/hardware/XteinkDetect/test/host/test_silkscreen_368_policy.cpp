@@ -148,6 +148,7 @@ int main() {
   assert(active.displayWidth == 792 && active.displayHeight == 528);
   assert(BoardConfig::displayProbePolicy().ultraChipController == Controller::UC8279);
   assert(BoardConfig::displayProbePolicy().cacheAcrossDeepSleep);
+  assert(BoardConfig::displayProbePolicy().x4ClassPanel);  // CrossPoint's xteinkClassPanel() reads it
   assert(!BoardConfig::hasTouch() && BoardConfig::hasFrontButtons());
   assert(!strcmp(active.name, "silkscreen_368") && BoardConfig::MAX_FRAMEBUFFER_BYTES == 52272);
   // The panel's data: the X3's 10 MHz clock, BUSY_N pulled up while awake, no SSD1677 pull-down.
