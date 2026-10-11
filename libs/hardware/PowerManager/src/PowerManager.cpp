@@ -104,11 +104,22 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
   // pinMode() does not apply and esp_sleep_config_gpio_isolate() floats the pad.
   // Set the idle-level pull in the RTC domain and keep that domain powered so it
   // holds; a pin without an external resistor otherwise floats and wakes at random.
+  //
+  // Silkscreen: a power pin the board biases itself (InputPins::powerExternalPull:
+  // IO18 has R62 and R76) is left as preparePowerPinForSleep() set it, with both RTC
+  // pulls off. An internal pull in parallel would move the pressed level to 2.50 V
+  // against VIH 2.475 V (pull-down) or the released level to 2.28 V (pull-up), and
+  // keeping RTC_PERIPH on is a power-domain override the sleep floor does not carry
+  // (POWER.md ZD-01, PB-02; scripts/check_sleep_wake_sources.sh). Boards that bias
+  // nothing themselves take the code below as upstream has it.
+  const int8_t biasedPin = BoardConfig::ACTIVE.input.powerExternalPull ? powerPin() : int8_t(-1);
+  if (biasedPin >= 0 && gpioMask == (1ULL << biasedPin)) return;
 #if SOC_PM_SUPPORT_RTC_PERIPH_PD
   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 #endif
   for (int pin = 0; pin < 64; ++pin) {
     if (((gpioMask >> pin) & 1) == 0) continue;
+    if (pin == biasedPin) continue;
     const auto g = static_cast<gpio_num_t>(pin);
     if (wakeLow) {
       rtc_gpio_pulldown_dis(g);
