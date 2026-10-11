@@ -124,7 +124,7 @@ def find_compiler() -> str:
     if os.environ.get("CXX"):
         return os.environ["CXX"]
     home = Path(os.environ.get("PLATFORMIO_CORE_DIR", Path.home() / ".platformio"))
-    for package in ("toolchain-xtensa-esp32s3", "toolchain-xtensa-esp-elf"):
+    for package in ("toolchain-xtensa-esp-elf", "toolchain-xtensa-esp32s3"):
         for exe in sorted((home / "packages" / package / "bin").glob("xtensa-esp32s3-elf-g++*")):
             return str(exe)
     return shutil.which("g++") or shutil.which("c++") or sys.exit("run_profile_asserts: no C++ compiler (set CXX)")
