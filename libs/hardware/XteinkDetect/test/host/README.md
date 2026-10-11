@@ -76,8 +76,12 @@ done
 It covers a UC8279d found on a cold boot (about 111 ms: the stock reset timing
 and one BUSY_N read, and a 410 ms bound with BUSY_N held LOW), a UC8253 that
 also drives FLG and the MTP read and is still taken for a UC8253 with only 0x70
-on the wire, unknown ids that run the default and are not kept, a verdict kept
-across a deep sleep with the bus silent, a panel swapped with the power off
-(cold boot after a wake probes again), every other reset reason probing, a
-dropped verdict, and a forced build that never touches the bus. The profile
-the build selects is checked too: 792x528, no touch and the keys kept.
+on the wire, a UC8253 that leaves the VER read undriven (SDI has no external
+pull-up on Silkscreen, so the read releases it with the internal one and the
+bytes read 0xFF, a conclusive verdict that is kept; the same panel on a pad that
+ignores the pull-up request is the negative control: 0x00, inconclusive, not
+kept, probed at every wake), unknown ids that run the default and are not kept,
+a verdict kept across a deep sleep with the bus silent, a panel swapped with the
+power off (cold boot after a wake probes again), every other reset reason
+probing, a dropped verdict, and a forced build that never touches the bus. The
+profile the build selects is checked too: 792x528, no touch and the keys kept.

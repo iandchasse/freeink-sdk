@@ -245,7 +245,16 @@ DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t
   epdWriteByte(p, UC81XX_CMD_VER);
   digitalWrite(p.dc, HIGH);
   epdClockDelay();
+#if FREEINK_SILKSCREEN_368
+  // Silkscreen's SDI (IO12 through R29) has no external pull-up, and a UC8253 does not drive this read
+  // as a UC8279d does. Released bare, the line is expected to keep the 0 that 0x70 ended on and read
+  // 0x00, which is no id: Inconclusive, never kept, so every wake would probe again. The pull-up gives
+  // the 0xFF that the X3's bus gives a UC8253, as the 4.26" board's own read does (epdCmdRead). A
+  // UC8279d drives its answer and is unaffected.
+  pinMode(p.mosi, INPUT_PULLUP);
+#else
   pinMode(p.mosi, INPUT);  // stock releases SDA without enabling a pull-up
+#endif
   delayMicroseconds(2);
   for (uint8_t i = 0; i < 3; i++) {
     uint8_t& b = g_probeDiag.ver[i];

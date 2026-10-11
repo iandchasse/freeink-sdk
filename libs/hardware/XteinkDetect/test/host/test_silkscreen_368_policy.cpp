@@ -2,8 +2,10 @@
 // detector: the X3's stock three-byte VER read decides (0x66 is a UC8279d, 0xFF a UC8253, anything
 // else leaves the profile's UC8253), the two-pass VER/FLG/MTP probe never runs (a UC8253 also drives
 // FLG), a conclusive verdict is reused on a deep-sleep wake with the bus silent, and a forced build
-// never touches the bus. Build twice (see README.md): once as is, once with
-// -DSILKSCREEN_DISPLAY_CONTROLLER=uc8279 (and =uc8253).
+// never touches the bus. SDI has no external pull-up on this board, so the read releases it with the
+// internal one: a pad nothing drives reads HIGH with it and LOW without (the model below), which is
+// what makes a UC8253 that leaves the read undriven a conclusive, kept 0xFF. Build three times (see
+// README.md): once as is, once each with -DSILKSCREEN_DISPLAY_CONTROLLER=uc8279 and =uc8253.
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <XteinkDetect.h>
@@ -29,12 +31,14 @@ esp_reset_reason_t resetReason = ESP_RST_POWERON;
 unsigned long now;
 unsigned long readyAt;  // BUSY_N reads LOW until then
 std::array<int, 64> levels{}, modes{};
-// Replies per command; a command with none reads the released, floating line (0xFF through the pad).
+// Replies per command. A command with none, or a read past its bytes, leaves SDI undriven; see digitalRead().
 std::map<int, std::vector<uint8_t>> replies;
 std::vector<int> commands;
 std::vector<unsigned long> resetAt;
 std::vector<int> resetLevel;
 int command, commandBits, readBits, samples, holds;
+int pullUpRequests;    // INPUT_PULLUP requests on SDI, counted before the pad takes them
+bool padIgnoresPull;   // control: the pad does not take the pull-up request (the line as a bare INPUT read it)
 const auto& pins = BoardConfig::SILKSCREEN_368.display;
 
 // A panel answering the stock VER read with this id in byte 2 (byte 0 and 1 as the X3's modules read:
@@ -58,7 +62,7 @@ void boot(const esp_reset_reason_t reason, std::map<int, std::vector<uint8_t>> o
   commands.clear();
   resetAt.clear();
   resetLevel.clear();
-  command = commandBits = readBits = samples = holds = 0;
+  command = commandBits = readBits = samples = holds = pullUpRequests = 0;
   levels.fill(LOW);
   levels.at(pins.rst) = HIGH;  // RST_N rests HIGH (R5), so only the probe's pulses count
   modes.fill(INPUT);
@@ -68,10 +72,11 @@ void boot(const esp_reset_reason_t reason, std::map<int, std::vector<uint8_t>> o
 void checkStockWire() {
   assert(commands == std::vector<int>{0x70});  // VER only: no FLG, no MTP, no second pass
   assert(samples == 24);                       // three bytes
+  assert(pullUpRequests == 1);                 // SDI released with the internal pull-up, for the read (no external one)
   assert(resetAt.size() == 3 && resetLevel == (std::vector<int>{HIGH, LOW, HIGH}));
   assert(resetAt[1] - resetAt[0] == 10 && resetAt[2] - resetAt[1] == 50);  // 10 ms high, 50 ms low
   assert(holds == 1);                          // the sleep hold on RST released before the pulse
-  // Every pin is released afterwards: the driver's begin() sets them up again.
+  // Every pin is released afterwards, the pull-up on SDI included: the driver's begin() sets them up again.
   assert(modes[pins.sclk] == INPUT && modes[pins.mosi] == INPUT && modes[pins.dc] == INPUT);
   assert(modes[pins.cs] == INPUT_PULLUP && levels[pins.cs] == HIGH && modes[pins.rst] == INPUT);
   const auto& diag = freeink::getXteinkDisplayProbeDiag();
@@ -81,7 +86,11 @@ void checkStockWire() {
 }  // namespace
 
 esp_reset_reason_t esp_reset_reason() { return resetReason; }
-void pinMode(int pin, int mode) { modes.at(pin) = mode; }
+void pinMode(int pin, int mode) {
+  const bool sdiPull = pin == pins.mosi && mode == INPUT_PULLUP;
+  if (sdiPull) ++pullUpRequests;
+  modes.at(pin) = sdiPull && padIgnoresPull ? INPUT : mode;
+}
 void gpio_hold_dis(gpio_num_t pin) {
   if (pin == pins.rst) ++holds;
 }
@@ -100,15 +109,20 @@ void digitalWrite(int pin, int value) {
 }
 int digitalRead(int pin) {
   if (pin == pins.busy) return now >= readyAt ? HIGH : LOW;
-  // Half-duplex read on SDI (IO12): selected, data phase, sampled while SCLK is HIGH, and SDA an input
-  // with no pull (the stock protocol releases it without a pull-up).
+  // Half-duplex read on SDI (IO12): selected, data phase, sampled while SCLK is HIGH, and SDA released
+  // as an input.
   assert(pin == pins.mosi && levels[pins.cs] == LOW && levels[pins.dc] == HIGH);
-  assert(levels[pins.sclk] == HIGH && modes[pin] == INPUT);
+  assert(levels[pins.sclk] == HIGH && (modes[pin] == INPUT || modes[pin] == INPUT_PULLUP));
   const int bit = readBits++;
   ++samples;
   const auto it = replies.find(command);
-  if (it == replies.end() || static_cast<size_t>(bit / 8) >= it->second.size()) return HIGH;
-  return (it->second[bit / 8] >> (7 - bit % 8)) & 1;
+  if (it != replies.end() && static_cast<size_t>(bit / 8) < it->second.size()) {
+    return (it->second[bit / 8] >> (7 - bit % 8)) & 1;  // the panel drives its answer, whatever the pad's pull
+  }
+  // Nothing drives the line, and Silkscreen's SDI has no external pull-up: a released pad with no pull
+  // keeps the level it was last driven to (0x70 ends in a 0), so it reads LOW; with the internal
+  // pull-up it reads HIGH.
+  return modes[pin] == INPUT_PULLUP ? HIGH : LOW;
 }
 void delay(unsigned long ms) { now += ms; }
 void delayMicroseconds(unsigned int) {}
@@ -193,6 +207,43 @@ int main() {
   assert(commands.empty() && displayControllerSource() == Source::Cached);
   assert(active.displayController == Controller::UC8253 && !diag.promoted);
   assert(diag.verdict == static_cast<uint8_t>(Verdict::PrimaryAssumed));
+
+  // A UC8253 that leaves the VER read undriven (the X3's modules read 0xFF through the bus's pull-up):
+  // Silkscreen's SDI has none, so the probe releases it with the internal pull-up. The three bytes read
+  // 0xFF, the verdict is PrimaryAssumed (conclusive: the profile's UC8253), and it is kept, so the next
+  // deep-sleep wake takes it from RTC memory with the bus silent.
+  boot(ESP_RST_POWERON, {});
+  assert(!applyXteinkDisplayController());
+  assert(active.displayController == Controller::UC8253 && !diag.promoted && displayControllerSource() == Source::Probed);
+  assert(diag.verdict == static_cast<uint8_t>(Verdict::PrimaryAssumed));
+  assert(diag.ver[0] == 0xFF && diag.ver[1] == 0xFF && diag.ver[2] == 0xFF && now == 111);
+  checkStockWire();
+  boot(ESP_RST_DEEPSLEEP, {});
+  assert(!applyXteinkDisplayController());
+  assert(commands.empty() && resetAt.empty() && samples == 0 && now == 0);
+  assert(displayControllerSource() == Source::Cached && displayControllerCached());
+  assert(active.displayController == Controller::UC8253 && !diag.promoted);
+  assert(diag.verdict == static_cast<uint8_t>(Verdict::PrimaryAssumed));
+
+  // Negative control: the same panel on a pad that does not take the pull-up request (the line as a bare
+  // INPUT read it). It reads LOW, 0x00 is no id, the verdict is Inconclusive and is not kept, so every
+  // wake probes again. This is what the pull-up above prevents; the production code still asks for it
+  // (checkStockWire), and a driven UC8279d does not need it either way.
+  padIgnoresPull = true;
+  boot(ESP_RST_POWERON, {});
+  assert(!applyXteinkDisplayController());
+  assert(active.displayController == Controller::UC8253 && !diag.promoted);
+  assert(diag.verdict == static_cast<uint8_t>(Verdict::Inconclusive));
+  assert(diag.ver[0] == 0x00 && diag.ver[1] == 0x00 && diag.ver[2] == 0x00);
+  checkStockWire();
+  boot(ESP_RST_DEEPSLEEP, {});
+  assert(!applyXteinkDisplayController());
+  assert(!commands.empty() && samples == 24 && now == 111);
+  assert(displayControllerSource() == Source::Probed && !displayControllerCached());
+  boot(ESP_RST_POWERON, panel(0x66));
+  assert(applyXteinkDisplayController());
+  assert(active.displayController == Controller::UC8279 && diag.ver[2] == 0x66);
+  padIgnoresPull = false;
 
   // An unknown id is inconclusive: the profile's UC8253 runs, and nothing is kept, so the next wake probes.
   for (const uint8_t id : {uint8_t(0x00), uint8_t(0x01), uint8_t(0x65), uint8_t(0x68), uint8_t(0xFE)}) {
