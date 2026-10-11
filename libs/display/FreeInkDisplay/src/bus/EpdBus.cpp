@@ -72,11 +72,13 @@ void boardEpdReset(bool high) {
 }
 
 // The X3 drivers' X3TwoPhase BUSY_N (UC8253, UC8279d) idles HIGH like the UC81xx X4 drivers'
-// UcIdleHigh. In a build that links them on a board with the display-probe policy, which is
-// the Silkscreen 3.68" variant, it gets UcIdleHigh's treatment: DisplayPins::busyPullUp while
-// awake, and the cached-controller check below. Everywhere else X3TwoPhase stays a bare INPUT
-// with no check, and the lines below are the ones those builds always had.
-#define FREEINK_EPD_X3_BUSY_N (FREEINK_CAP_DISPLAY_PROBE_POLICY && (FREEINK_DRIVER_UC8253_X3 || FREEINK_DRIVER_UC8279))
+// UcIdleHigh. On the Silkscreen 3.68" variant, the X3 pair on a board with the display-probe
+// policy, it gets UcIdleHigh's treatment: DisplayPins::busyPullUp while awake, and the
+// cached-controller check below. The rule is keyed on the variant itself, so any other build
+// that links the X3 drivers (the C3 X3, or an env that sets the capability) keeps X3TwoPhase a
+// bare INPUT with no check, and the lines below are the ones those builds always had.
+#define FREEINK_EPD_X3_BUSY_N \
+  (FREEINK_SILKSCREEN_368 && FREEINK_CAP_DISPLAY_PROBE_POLICY && (FREEINK_DRIVER_UC8253_X3 || FREEINK_DRIVER_UC8279))
 
 #if FREEINK_CAP_DISPLAY_PROBE_POLICY
 // The bound on the idle check below: the X3 stock protocol's bounded BUSY wait
