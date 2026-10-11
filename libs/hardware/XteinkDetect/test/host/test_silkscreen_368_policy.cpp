@@ -133,6 +133,15 @@ int main() {
   const auto& active = BoardConfig::ACTIVE;
   const auto& diag = getXteinkDisplayProbeDiag();
 
+  // The profile the firmware boots with. On an S3 nothing calls selectDevice() before ACTIVE is first
+  // read, so DEFAULT_DEVICE (the pristine ACTIVE) is what runs: read both before boot() selects anything.
+  assert(!strcmp(BoardConfig::DEFAULT_DEVICE.name, "silkscreen_368"));
+  assert(BoardConfig::DEFAULT_DEVICE.displayWidth == 792 && BoardConfig::DEFAULT_DEVICE.displayHeight == 528);
+  assert(BoardConfig::DEFAULT_DEVICE.touch.controller == BoardConfig::TouchController::None);
+  assert(!strcmp(active.name, "silkscreen_368") && active.displayWidth == 792 && active.displayHeight == 528);
+  assert(active.touch.controller == BoardConfig::TouchController::None);
+  assert(active.displayController == BoardConfig::silkscreen_display::CONTROLLER_368);
+
   // The profile the build selects: the 3.68" panel, no touch, the X3 pins' probe policy.
   boot(ESP_RST_POWERON, {});
   assert(BoardConfig::isSilkscreen() && active.board == BoardConfig::Board::Silkscreen);

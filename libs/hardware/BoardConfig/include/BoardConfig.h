@@ -2858,6 +2858,20 @@ constexpr bool noTouch(const TouchConfig& t) {
          t.powerEnable < 0 && !t.optional && t.fallbackController == TouchController::None && !t.hibernateInSleep &&
          !t.buttonsAlongsideTouch && !t.requireFocalTechId;
 }
+// Profile names are string literals, compared character by character: the addresses of two literals are not
+// something a constant expression can rely on.
+constexpr bool sameName(const char* a, const char* b) {
+  while (*a != '\0' && *a == *b) {
+    ++a;
+    ++b;
+  }
+  return *a == *b;
+}
+// The data that tells the 3.68" variant from the 4.26" board it derives from (and either from another device).
+constexpr bool sameProfile(const BoardProfile& a, const BoardProfile& b) {
+  return sameName(a.name, b.name) && a.displayWidth == b.displayWidth && a.displayHeight == b.displayHeight &&
+         a.touch.controller == b.touch.controller && a.displayController == b.displayController;
+}
 }  // namespace silkscreen_368
 
 constexpr BoardProfile SILKSCREEN_368 = silkscreen_368::derive(SILKSCREEN);
@@ -2974,6 +2988,22 @@ constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X3;  // X3-only binary
 #else
 // X4-only or the dual X3+X4 C3 binary: boot as X4, runtime-swap to X3 on detect.
 constexpr BoardProfile DEFAULT_DEVICE = XTEINK_X4;
+#endif
+
+// An S3 build boots with this profile: no consumer calls selectDevice() before it first reads ACTIVE, so
+// DEFAULT_DEVICE is the line the 3.68" variant stands on. Every other assert is about SILKSCREEN_368 or the
+// macro, so a chain that picked the 4.26" profile would pass them all and boot it onto the X3 drivers: pin
+// it by its data.
+#if FREEINK_DEVICE_SILKSCREEN
+static_assert(!FREEINK_SILKSCREEN_368 ||
+                  (DEFAULT_DEVICE.displayWidth == 792 && DEFAULT_DEVICE.displayHeight == 528 &&
+                   DEFAULT_DEVICE.touch.controller == TouchController::None &&
+                   silkscreen_368::sameName(DEFAULT_DEVICE.name, "silkscreen_368") &&
+                   silkscreen_368::sameProfile(DEFAULT_DEVICE, SILKSCREEN_368)),
+              "the Silkscreen 3.68\" build must boot as SILKSCREEN_368 (792x528, no touch, \"silkscreen_368\"): "
+              "DEFAULT_DEVICE is the profile ACTIVE starts as");
+static_assert(FREEINK_SILKSCREEN_368 || silkscreen_368::sameProfile(DEFAULT_DEVICE, SILKSCREEN),
+              "the Silkscreen 4.26\" build must boot as SILKSCREEN: DEFAULT_DEVICE is the profile ACTIVE starts as");
 #endif
 
 // Runtime-active profile. Defaults to DEFAULT_DEVICE — identical to the old
