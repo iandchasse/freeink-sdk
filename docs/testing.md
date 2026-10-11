@@ -119,8 +119,22 @@ the drivers included in each harness.
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md),
 which also cover the Silkscreen 3.68" variant (`test_silkscreen_368_policy.cpp`).
-Its profile rules are `static_assert`s in `BoardConfig.h`, checked by compiling the
-header with the macro set and with each bad combination.
+
+## Board profile rules
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_profile_asserts.py
+```
+
+The Silkscreen profiles (the 4.26" board and the 3.68" variant,
+`SILKSCREEN_PANEL_368`) are guarded by `static_assert`s and `#error`s in
+`BoardConfig.h` that no test executes. This runs the compiler's syntax check on the
+header (the PlatformIO xtensa g++, or `CXX`; C++20 with GNU extensions) against the
+XteinkDetect host stubs, for each flag combination that must build and each that must
+be refused, and says which expectation failed: a build that did not compile, one that
+compiled and should not have, or a refusal by a different assert than the one meant
+for it. A few cases edit a scratch copy of the header to prove an assert is live (the
+profile a build boots with, the probe policy). A new profile rule gets a case here.
 
 ## Validation limits
 

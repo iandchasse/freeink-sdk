@@ -30,3 +30,30 @@ The header has no hardware dependency, so no stubs are needed. The readings
 themselves (the ADC with each pull on, the touch and RTC register reads, IO18 on
 ADC2) happen only on a board: the Silkscreen test firmware's P1, P2, T3, T11 and
 T13 report them.
+
+# Profile rules
+
+The Silkscreen profiles are guarded by `static_assert`s and `#error`s in
+`BoardConfig.h`, which nothing executes. `run_profile_asserts.py` compiles the
+header (syntax only, `-std=gnu++2a`) against the XteinkDetect host stubs for each
+flag combination that must build and each that must be refused, and fails with the
+expectation that did not hold. It runs the PlatformIO xtensa g++ or `CXX`:
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_profile_asserts.py -v
+```
+
+- **Must build:** the 4.26" board (default, forced `ssd1677` or `uc8279`, alternate
+  touch jumpers, `SILKSCREEN_PANEL_368=0`), the 3.68" variant (default, touch
+  written out as 0, forced `uc8253` or `uc8279`, diagnostics), and the X3, X4, X3+X4,
+  X4 Pro, X4 Classic and de-link headers, with no warning.
+- **Must be refused, by the assert meant for it:** the variant with touch, with
+  `ssd1677` or `uc8179`, with the alternate jumpers, beside an SSD1677 device or
+  without the probe policy; the macro at 2 or without the Silkscreen device; the
+  4.26" board with `uc8253`, without the touch code, without the probe policy; a
+  Silkscreen build without probe identity, power policy or ADC ladders, or with a
+  C3 device.
+- **Asserts proven live (a scratch copy of the header is edited):** the variant's
+  `DEFAULT_DEVICE` set to the 4.26" profile and the reverse, the probe policy
+  diverging in `derive()` or `x4ClassPanel` turned off, and a field appended to
+  `DisplayProbeConfig` that SILKSCREEN sets, which the variant must inherit.
