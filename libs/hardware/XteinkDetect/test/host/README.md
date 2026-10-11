@@ -68,7 +68,14 @@ each build override that skips the probe.
 ```sh
 mkdir -p .cache/silkscreen-368-probe-build
 for forced in "" "-DSILKSCREEN_DISPLAY_CONTROLLER=uc8279" "-DSILKSCREEN_DISPLAY_CONTROLLER=uc8253"; do
-  c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_DEVICE_SILKSCREEN=1 -DSILKSCREEN_PANEL_368=1     -DFREEINK_CAP_TOUCH=0 $forced     -Ilibs/hardware/XteinkDetect/test/host/stubs     -Ilibs/hardware/BoardConfig/include     -Ilibs/hardware/XteinkDetect/include     libs/hardware/XteinkDetect/test/host/test_silkscreen_368_policy.cpp     libs/hardware/XteinkDetect/src/XteinkDetect.cpp     -o .cache/silkscreen-368-probe-build/test_silkscreen_368_policy &&
+  c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_DEVICE_SILKSCREEN=1 -DSILKSCREEN_PANEL_368=1 \
+    -DFREEINK_CAP_TOUCH=0 $forced \
+    -Ilibs/hardware/XteinkDetect/test/host/stubs \
+    -Ilibs/hardware/BoardConfig/include \
+    -Ilibs/hardware/XteinkDetect/include \
+    libs/hardware/XteinkDetect/test/host/test_silkscreen_368_policy.cpp \
+    libs/hardware/XteinkDetect/src/XteinkDetect.cpp \
+    -o .cache/silkscreen-368-probe-build/test_silkscreen_368_policy &&
   .cache/silkscreen-368-probe-build/test_silkscreen_368_policy
 done
 ```
