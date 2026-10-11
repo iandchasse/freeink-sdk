@@ -2813,12 +2813,11 @@ constexpr BoardProfile derive(BoardProfile p) {
   p.display.busyPullUp = true;
   p.displaySpiHz = XTEINK_DISPLAY_SPI_HZ;  // the X3's proven 10 MHz, not the SSD1677's 20
   p.touch = NO_TOUCH;
-  // The probe is the X3 stock one (the profile's default is the UC8253): a VER read of 0x66 is the
-  // UC8279d, which this policy takes as UC8279. The verdict is kept for deep-sleep wakes.
-  p.displayProbe = {.forced = silkscreen_display::FORCED,
-                    .ultraChipController = DisplayController::UC8279,
-                    .cacheAcrossDeepSleep = true,
-                    .x4ClassPanel = true};
+  // displayProbe is SILKSCREEN's, inherited whole: forced follows the same build macro (the controller it
+  // forces is displayController above), an UltraChip answer is the UC8279 (here the X3's UC8279d, which
+  // the stock probe reads as VER byte 0x66), and the verdict is kept for deep-sleep wakes. A field upstream
+  // appends to DisplayProbeConfig and SILKSCREEN sets reaches the variant this way; the asserts below make
+  // a field that differs a decision, taken here.
   return p;
 }
 
@@ -2843,6 +2842,10 @@ constexpr bool same(const InputPins& a, const InputPins& b) {
          a.down == b.down && a.power == b.power && a.powerActiveHigh == b.powerActiveHigh &&
          a.adcLadderPin == b.adcLadderPin && a.toggleSwitch == b.toggleSwitch &&
          a.powerExternalPull == b.powerExternalPull;
+}
+constexpr bool same(const DisplayProbeConfig& a, const DisplayProbeConfig& b) {
+  return a.forced == b.forced && a.ultraChipController == b.ultraChipController &&
+         a.cacheAcrossDeepSleep == b.cacheAcrossDeepSleep && a.x4ClassPanel == b.x4ClassPanel;
 }
 constexpr bool sameParkedPins(const BoardProfile& a, const BoardProfile& b) {
   for (int i = 0; i < 8; ++i) {
@@ -2893,6 +2896,17 @@ static_assert(silkscreen_368::same(SILKSCREEN_368.input, SILKSCREEN.input) &&
               "Silkscreen 3.68\" input and battery pins must be the 4.26\" board's");
 static_assert(silkscreen_368::sameParkedPins(SILKSCREEN_368, SILKSCREEN),
               "Silkscreen 3.68\" parked pins must be the 4.26\" board's (IO11 stays parked HIGH)");
+// The probe policy is SILKSCREEN's too (derive() inherits it): a difference is a decision, taken in derive()
+// and in this assert.
+static_assert(silkscreen_368::same(SILKSCREEN_368.displayProbe, SILKSCREEN.displayProbe),
+              "Silkscreen 3.68\" probe policy must be the 4.26\" board's: forced, ultraChipController, "
+              "cacheAcrossDeepSleep and x4ClassPanel");
+// ... and what the variant's stock probe stands on: a 0x66 read is promoted to UC8279 and kept for the next
+// deep-sleep wake, and restoreCachedController() takes that verdict back only when ultraChipController is UC8279.
+static_assert(SILKSCREEN_368.displayProbe.ultraChipController == DisplayController::UC8279 &&
+                  SILKSCREEN_368.displayProbe.cacheAcrossDeepSleep,
+              "Silkscreen 3.68\" needs a probe policy that takes UltraChip answers as UC8279 and caches the verdict "
+              "across deep sleep");
 // No touch hardware, by data: no controller, no pin, no sleep command, no key remap.
 static_assert(silkscreen_368::noTouch(SILKSCREEN_368.touch),
               "Silkscreen 3.68\" has no touch: NO_TOUCH, with no pin, fallback, hibernate or buttonsAlongsideTouch");
