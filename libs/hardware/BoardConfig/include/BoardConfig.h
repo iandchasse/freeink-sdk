@@ -2791,6 +2791,12 @@ static_assert(FREEINK_CAP_ADC_LADDERS || !FREEINK_DEVICE_SILKSCREEN,
 // are power-policy data.
 static_assert(!FREEINK_DEVICE_SILKSCREEN || (FREEINK_CAP_PROBE_IDENTITY && FREEINK_CAP_POWER_POLICY),
               "Silkscreen needs FREEINK_CAP_PROBE_IDENTITY and FREEINK_CAP_POWER_POLICY: its boot checks use them");
+// The controller rules hang on the probe policy: without it the forced-controller override is ignored (the
+// panel is probed anyway and a forced UC8253 is promoted), BUSY gets no pull-up, the cached verdict is never
+// checked against the panel, and the UltraChip driver-free sleep is not compiled.
+static_assert(!FREEINK_DEVICE_SILKSCREEN || FREEINK_CAP_DISPLAY_PROBE_POLICY,
+              "Silkscreen needs FREEINK_CAP_DISPLAY_PROBE_POLICY: its controller probe, override, cache and "
+              "BUSY handling are behind it");
 
 // --- Silkscreen with the Xteink X3's 3.68" panel (SILKSCREEN_PANEL_368) ------
 // The board cut at y 62.00 with the X3's 792x528 panel on J2 (UC8253, or the UC8279d some X3
@@ -2915,6 +2921,11 @@ static_assert(!SILKSCREEN_PANEL_368 || !FREEINK_CAP_TOUCH,
               "SILKSCREEN_PANEL_368 has no touch hardware: build with FREEINK_CAP_TOUCH=0 (the default for it)");
 static_assert(!SILKSCREEN_PANEL_368 || !SILKSCREEN_TOUCH_ALT_JUMPERS,
               "SILKSCREEN_TOUCH_ALT_JUMPERS is for a J4 touch tail, which the 3.68\" variant does not have");
+// The variant's controller handling is all behind the probe policy: the BUSY_N pull-up and the cached-controller
+// check (EpdBus), the UC8253's driver-free sleep (PowerManager) and the forced-controller override (XteinkDetect).
+static_assert(!SILKSCREEN_PANEL_368 || FREEINK_CAP_DISPLAY_PROBE_POLICY,
+              "SILKSCREEN_PANEL_368 needs FREEINK_CAP_DISPLAY_PROBE_POLICY: its BUSY_N pull-up, cached-controller "
+              "check, UC8253 sleep and forced-controller rule are behind it");
 // Its panel drivers are the X3 pair. The SSD1677 and UC8279 X4 drivers are not linked, and a build
 // that links another device's SSD1677 is not this variant's.
 static_assert(!FREEINK_SILKSCREEN_368 || (FREEINK_DRIVER_UC8253_X3 && FREEINK_DRIVER_UC8279 &&
