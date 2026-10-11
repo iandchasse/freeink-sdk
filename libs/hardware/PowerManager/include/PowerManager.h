@@ -58,11 +58,13 @@ class PowerManager {
   // RESET (analog and clock off, the power-on state), wait for BUSY (bounded),
   // then send deep sleep 0x10 / 0x03 bit-banged on the display pins, leaving CS
   // HIGH and SCLK/MOSI/DC LOW. With FREEINK_CAP_DISPLAY_PROBE_POLICY, an
-  // UltraChip controller (UC8279/UC8179, as ACTIVE names it once the probe has
-  // run) gets its own: BUSY_N waited HIGH, then DSLP 0x07 / 0xA5. Returns false,
-  // doing nothing, unless the profile declares one of those controllers with
-  // RESET, CS, SCLK, MOSI and DC and no display rail switch (a switched rail is
-  // simply cut).
+  // UltraChip controller (UC8279/UC8179, or the UC8253 of the Silkscreen 3.68"
+  // variant, whose X3 driver sends the same command; as ACTIVE names it once the
+  // probe has run) gets its own: BUSY_N waited HIGH, then DSLP 0x07 / 0xA5. On
+  // that variant the X3 pair settles 60 ms after the reset releases, as its
+  // drivers do, instead of 10. Returns false, doing nothing, unless the profile
+  // declares one of those controllers with RESET, CS, SCLK, MOSI and DC and no
+  // display rail switch (a switched rail is simply cut).
   static bool sleepPanelWithoutDriver();
 
   // Isolate floating GPIOs to cut sleep current, then enter deep sleep. Does not

@@ -574,10 +574,11 @@ struct DisplayPins {
   // existing initializers stay valid and keep a bare INPUT.
   bool busyPullDown = false;
   // The same for an UltraChip panel's active-low BUSY_N (the UC81xx X4 drivers'
-  // BusyPolarity::UcIdleHigh): an internal pull-up while awake, so a missing panel
-  // reads idle and the UC wait, which has no timeout, ends. A board whose probe
-  // picks SSD1677 or an UltraChip part at runtime sets both, and the bus applies
-  // the one matching the driver. Read through BoardConfig::displayBusyPullUp().
+  // BusyPolarity::UcIdleHigh, and on the Silkscreen 3.68" variant the X3 drivers'
+  // X3TwoPhase): an internal pull-up while awake, so a missing panel reads idle and
+  // the UC wait, which has no timeout, ends. A board whose probe picks SSD1677 or
+  // an UltraChip part at runtime sets both, and the bus applies the one matching
+  // the driver. Read through BoardConfig::displayBusyPullUp().
   bool busyPullUp = false;
 };
 

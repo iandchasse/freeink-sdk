@@ -41,12 +41,16 @@ struct EpdBusDiagnostics {
   // uses the same order). kNoRefresh until a driver reports one.
   static constexpr uint8_t kNoRefresh = 0xFF;
   uint8_t lastRefreshMode = kNoRefresh;
-  uint8_t lastRefreshSequence = 0;    // controller update-sequence byte (SSD1677 0x22 value)
+  // controller update-sequence byte: the SSD1677's 0x22 value, the UC8279 X4's TSSET (its CDI for
+  // the gray waveform), the X3 drivers' CDI byte (UC8253 0x29 / 0xA9, UC8279d 0x97 first, 0xD7 later)
+  uint8_t lastRefreshSequence = 0;
   bool lastRefreshAsync = false;      // fired without waiting (displayStart)
   bool lastRefreshTurnOff = false;    // the caller asked for power-down afterwards
   bool lastRefreshCustomLut = false;  // ran on a loaded (grayscale) LUT
   bool refreshInFlight = false;       // activation reported, completion wait not ended
-  uint32_t lastRefreshMs = 0;         // activation to the end of its completion wait
+  // activation to the end of its completion wait: the first one, so a UC8253 FULL ends before its
+  // condition and settle passes, and a Direct-gray page's destination refresh is not in it
+  uint32_t lastRefreshMs = 0;
   bool lastRefreshTimedOut = false;   // that completion wait gave up
 };
 #endif
@@ -64,7 +68,8 @@ struct EpdPins {
   int8_t powerEnable = -1;
   // Internal pull-down on an active-high BUSY with no external pull (see
   // BoardConfig::DisplayPins::busyPullDown). Default false keeps a bare INPUT.
-  // The UcIdleHigh pull-up comes from BoardConfig::displayBusyPullUp().
+  // The pull-up of a UcIdleHigh BUSY_N (and, on the Silkscreen 3.68" variant, of X3TwoPhase)
+  // comes from BoardConfig::displayBusyPullUp().
   bool busyPullDown = false;
 };
 
