@@ -17,8 +17,9 @@ pins rather than the X3's. It runs the stock probe below on those pins, keeps th
 verdict in RTC memory for deep-sleep wakes (`restoreCachedController()`), and
 applies the same driver recipe, waveforms and refresh policy, untouched; only the
 BUSY_N pull-up, the cached-controller check and the driver-free panel sleep are
-added, behind the Silkscreen probe policy. See the README's per-batch controller
-section.
+added, behind the Silkscreen probe policy, and the VER read releases SDI with the
+internal pull-up (Silkscreen's has no external one, where the X3's bus has).
+See the README's per-batch controller section.
 
 The detection section reflects the stock V6.3.15 protocol. The driver uses
 recovered external waveforms and register initialization; the initial OTP-only

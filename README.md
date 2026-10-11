@@ -236,9 +236,31 @@ wakes as above; `-DSILKSCREEN_DISPLAY_CONTROLLER=uc8253` or `=uc8279` forces it
 starts in X3 mode, so a consumer needs no `setDisplayX3()` call for it, and
 `FreeInkDisplay::isX3Mode()` is the panel predicate. Touch is off twice: the
 profile carries no controller and no pin, and `FREEINK_CAP_TOUCH` defaults to 0
-for it (a `static_assert` fails the build if an env turns it back on). At a cold
-boot the check costs about 111 ms awake (410 ms at most); a deep-sleep wake reuses
-the verdict with no bus traffic.
+for it (a `static_assert` fails the build if an env turns it back on). Silkscreen's
+SDI has no external pull-up, so the VER read releases it with the internal one (a
+UC8253 that leaves the read undriven then reads `0xFF`, as it does on the X3). At a
+cold boot the check costs about 111 ms awake (410 ms at most). A deep-sleep wake
+reuses a conclusive verdict, `0x66` or `0xFF`, with no bus traffic; any other id
+keeps the UC8253, is not kept, and is probed again at every wake. The wake's first
+panel reset still compares the cached verdict with `BUSY_N`, but both X3
+controllers idle it `HIGH`, so that guard cannot tell a UC8253 from a UC8279d: it
+catches a polarity change, or a `BUSY_N` stuck `LOW` for 300 ms (it then restarts
+and probes).
+
+Panel sleep without a driver, `PowerManager::sleepPanelWithoutDriver()`, is the
+reset-loop sleep only. On the variant it settles 60 ms after the reset, as the X3
+drivers do: about 72 ms with `BUSY_N` idle, about 172 ms at most. A boot below the
+battery cutoff goes through the driver instead (probe, `begin()`, `deepSleep()`), an
+estimated 0.2-0.3 s and 0.6 s at worst.
+
+**Bench first.** Read the panel's VER bytes (the Silkscreen test firmware's P1, or
+the `[XTDET] X3 stock probe` log line) before trusting the verdict. A UC8279d unit
+whose VER reads blank (`0xFF` in byte 2) is taken for a UC8253 here and gets the
+UC8253 driver until a build forces `-DSILKSCREEN_DISPLAY_CONTROLLER=uc8279`: the
+4.26" board separates such units from a UC8253 by the MTP read, which this probe
+does not carry. An id that is neither `0x66` nor `0xFF` runs the UC8253 driver too,
+and costs the 111 ms probe at every wake. Nothing of this variant has run on a
+board yet.
 
 Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
 Chip-specific code in a consumer's *own* layer (deep-sleep wakeup, panic
@@ -967,7 +989,7 @@ Leave a field out and the board keeps the old behaviour.
 | `PowerConfig` | `lowBatteryCutoffMv` (0), `cutoffRadioAllowanceMv` (0) | `BatteryMonitor::isBelowCutoff(known, mv, radioOn)`: 3 consecutive once-a-second readings at or below the cutoff (less the allowance while the radio is on), never on external power or with no cell. |
 | `PowerConfig` | `releaseWaitMaxMs` (0 = unbounded) | A power button still held after this long at sleep entry: sleep until its release instead of spinning, and `PowerManager::takeReleaseWake()` tells the next boot to sleep again at once. |
 | `PowerConfig` | `earlyWakeDecision` (false) | The consumer decides sleep-or-boot right after the wake-hold check; `InputManager::begin(false)` defers the touch probe to `startTouch()`. |
-| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (a panel on an always-on rail: reset, then SSD1677 `0x10`/`0x03` or, with `FREEINK_CAP_DISPLAY_PROBE_POLICY`, UltraChip DSLP `0x07`/`0xA5` bit-banged, by the controller `ACTIVE` names) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
+| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (a panel on an always-on rail: reset, then SSD1677 `0x10`/`0x03` or, with `FREEINK_CAP_DISPLAY_PROBE_POLICY`, UltraChip DSLP `0x07`/`0xA5` bit-banged, by the controller `ACTIVE` names; the 3.68" variant's UC8253 is one, after the X3 drivers' 60 ms settle. It is the reset-loop sleep only: a boot below the battery cutoff sleeps the panel through its driver) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
 | `PowerConfig` | `firmwareUpdateMinMv`, `awakeCeilingMin`, `radioOffWhenIdle` (0/0/false) | Data for the consumer: battery floor for firmware writes, awake ceiling on battery with no input or client traffic, and screens whose work has ended stop spinning the loop and drop the radio. |
 | `PowerConfig` | `wakeNoInputTimeoutS`, `storageErrorSleepS`, `awakeInputCapMin` (0/0/0) | Data for the consumer, on battery: sleep again after a power-button wake with no input, leave a dead-end storage-error screen, and an awake cap that only input (not client traffic) extends. |
 | `PowerConfig` | `ladderPresenceProbe` (false) | `InputStyle::AdcLadders`: at every reset but a deep-sleep wake, `InputManager::begin()` reads each ladder pin with the internal pull-down, then the pull-up (about 2 ms each), and a pin that follows both from rail to rail (no pull-up fitted, `ProbeChecks.h`) is switched off for the session (its `ACTIVE` pin `PIN_UNASSIGNED`), so a floating ladder cannot report phantom keys. Both pulls end off; the result is kept in RTC memory for deep-sleep wakes. `InputManager::ladderPresence()` reports it. Needs `FREEINK_CAP_ADC_LADDERS` and `FREEINK_CAP_POWER_POLICY` (the field is read through `powerPolicy()`). |
@@ -1007,7 +1029,7 @@ the flag.)
 | Accessor | Reports |
 |---|---|
 | `BatteryMonitor::chargeLadderDiagnostics()` | the decoded and published charge state, the debounce candidate and run counters, the lost/disproved flags, the P+ cross-check window, the last oversampled pin mV and the sample count, from cached state (no ADC read) |
-| `FreeInkDisplay::busDiagnostics()` (`EpdBus::diagnostics()`) | the last BUSY wait (ms, tag, timed out) and wait/timeout counts; the last refresh a driver reported through `EpdBus::noteRefresh()` (the SSD1677 and UC8279 X4 drivers do, and the X3 UC8253 and UC8279d drivers for their B/W refreshes, with the CDI byte as the sequence): the mode it actually ran after any FAST→HALF/FULL promotion, the update-sequence byte (SSD1677 `0x22`; UC8279 its `TSSET` byte, `0x1E` GC or `0x5A` DU, and its CDI for the gray waveform), async/turn-off/custom-LUT, and activation-to-completion time |
+| `FreeInkDisplay::busDiagnostics()` (`EpdBus::diagnostics()`) | the last BUSY wait (ms, tag, timed out) and wait/timeout counts; the last refresh a driver reported through `EpdBus::noteRefresh()` (the SSD1677 and UC8279 X4 drivers do, and the X3 UC8253 and UC8279d drivers for their B/W refreshes only, with the CDI byte as the sequence: not their grayscale and settle passes nor the destination refresh after a Direct-gray page, so a UC8253 FULL's duration ends before its settle passes): the mode it actually ran after any FAST→HALF/FULL promotion, the update-sequence byte (SSD1677 `0x22`; UC8279 its `TSSET` byte, `0x1E` GC or `0x5A` DU, and its CDI for the gray waveform), async/turn-off/custom-LUT, and activation-to-completion time |
 | `SDCardManager::cardInfo()` | native SDMMC: card type (SDSC/SDHC/SDXC/MMC), CSD capacity, bus width, host cap, card max and real clock, CID name/MID/OID/revision/serial/date, power cycles the last mount used and its last error (SPI: mounted and type only) |
 | `FrontlightManager::monitorDiagnostics()` | LED-rail monitor trips (count, LED mV, limit, time) and the last reading (pin and LED mV), kept after the light is switched off, which clears `fault()` |
 | `FrontlightManager::probeDiagnostics()` | the load record (`load()` and both strings), the switch-on probes, their trips, the second tries and the switch-ons that found no light since boot, and the last probe's string, result, peak LED mV, reading count, time to the trip and from the trip to the pad dark; the waits for the rail after a trip (count, last wait, the rail then, timeouts). With `FREEINK_CAP_FRONTLIGHT_PROBE` |
