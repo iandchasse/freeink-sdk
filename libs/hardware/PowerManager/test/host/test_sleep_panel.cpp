@@ -3,6 +3,9 @@
 // the BUSY pull, and what is left alone. run_sleep_panel.py cuts the production function and its two
 // helpers out of PowerManager.cpp into sleep_panel_under_test.inc, so this executes the text the
 // firmware compiles, over a recording GPIO model. Build it once per board (see README.md).
+// Every check below is an assert(), several of them around the call under test: a build with -DNDEBUG
+// must not turn this into a pass that ran nothing.
+#undef NDEBUG
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <driver/gpio.h>

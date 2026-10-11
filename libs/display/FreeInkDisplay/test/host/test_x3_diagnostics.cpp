@@ -3,6 +3,8 @@
 // FAST/HALF promotion, the CDI byte in the sequence field, whether the caller waited, the turn-off
 // request, and no custom LUT. The record is closed by the completion wait displayFinish() already
 // does, so it is never left in flight by a blocking display().
+// Every check below is an assert(): a build with -DNDEBUG must not turn this into a pass that ran nothing.
+#undef NDEBUG
 #include <cassert>
 #include <cstdio>
 #include <vector>
@@ -63,7 +65,8 @@ void uc8253() {
   d.begin(bus);
   d.display(bus, fb.data(), nullptr, RefreshMode::Fast, false);
   const unsigned count = EpdBus::report.count;
-  assert(d.displayStart(bus, fb.data(), nullptr, RefreshMode::Fast, false));
+  const bool started = d.displayStart(bus, fb.data(), nullptr, RefreshMode::Fast, false);
+  assert(started);
   assert(EpdBus::report.count == count + 1 && EpdBus::report.async && EpdBus::report.inFlight);
   d.displayFinish(bus, fb.data());
   assert(!EpdBus::report.inFlight && EpdBus::report.mode == kFast);
@@ -100,7 +103,8 @@ void uc8279() {
 
   d.display(bus, fb.data(), nullptr, RefreshMode::Fast, false);
   const unsigned count = EpdBus::report.count;
-  assert(d.displayStart(bus, fb.data(), nullptr, RefreshMode::Fast, false));
+  const bool started = d.displayStart(bus, fb.data(), nullptr, RefreshMode::Fast, false);
+  assert(started);
   assert(EpdBus::report.count == count + 1 && EpdBus::report.async && EpdBus::report.inFlight);
   d.displayFinish(bus, fb.data());
   assert(!EpdBus::report.inFlight);

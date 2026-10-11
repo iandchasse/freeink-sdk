@@ -6,6 +6,9 @@
 // internal one: a pad nothing drives reads HIGH with it and LOW without (the model below), which is
 // what makes a UC8253 that leaves the read undriven a conclusive, kept 0xFF. Build three times (see
 // README.md): once as is, once each with -DSILKSCREEN_DISPLAY_CONTROLLER=uc8279 and =uc8253.
+// Every check below is an assert(), several of them around the call under test: a build with -DNDEBUG
+// must not turn this into a pass that ran nothing.
+#undef NDEBUG
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <XteinkDetect.h>
