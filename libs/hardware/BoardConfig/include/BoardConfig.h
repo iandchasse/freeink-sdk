@@ -2448,7 +2448,7 @@ constexpr BoardProfile SILKSCREEN = {
                 .powerEnable = PIN_UNASSIGNED,
                 .busyPullDown = true,
                 .busyPullUp = true},
-    .displaySpiHz = 20000000,  // 20 MHz, below the SSD1677 40 MHz default until bench-checked
+    .displaySpiHz = 20000000,  // 20 MHz: the SSD1677 driver default since upstream moved it from 40 MHz; named so a default change cannot move this board
     // SD: SPI pins unused (4-bit SDMMC below). IO10 SD_ACTIVATE gates SD_VDD through
     // Q7 and is active-LOW: LOW = card powered (§5).
     .sd = {.sclk = PIN_UNASSIGNED,
