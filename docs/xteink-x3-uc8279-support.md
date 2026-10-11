@@ -10,6 +10,16 @@ Build: nothing new — `-DFREEINK_DEVICE_X3=1` links both X3 drivers
 (`FREEINK_DRIVER_UC8253_X3` and `FREEINK_DRIVER_UC8279`); which one runs is
 decided at boot.
 
+The same pair also drives the X3's panel on an ESP32-S3: Silkscreen's 3.68"
+variant (`-DFREEINK_DEVICE_SILKSCREEN=1 -DSILKSCREEN_PANEL_368=1`) links both
+drivers for the profile `SILKSCREEN_368` (792×528, no touch), on Silkscreen's own
+pins rather than the X3's. It runs the stock probe below on those pins, keeps the
+verdict in RTC memory for deep-sleep wakes (`restoreCachedController()`), and
+applies the same driver recipe, waveforms and refresh policy, untouched; only the
+BUSY_N pull-up, the cached-controller check and the driver-free panel sleep are
+added, behind the Silkscreen probe policy. See the README's per-batch controller
+section.
+
 The detection section reflects the stock V6.3.15 protocol. The driver uses
 recovered external waveforms and register initialization; the initial OTP-only
 proposal is no longer the implementation.

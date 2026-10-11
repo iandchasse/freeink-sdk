@@ -91,6 +91,7 @@ python3 libs/display/FreeInkDisplay/test/host/run_pro.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8253_power.py
+python3 libs/display/FreeInkDisplay/test/host/run_x3_diagnostics.py
 ```
 
 These compile production drivers against recording buses. The Pro suite also
@@ -98,8 +99,15 @@ compiles the facade in single- and dual-buffer modes. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
 the drivers included in each harness.
 
+`run_x3_diagnostics.py` compiles the X3 UC8253 and UC8279d drivers with
+`FREEINK_DIAGNOSTICS=1` and checks the refreshes they report to
+`EpdBus::noteRefresh()` (mode run, CDI byte, blocking or deferred, turn-off).
+
 For the board-profile and display-probe regression test, follow the
-[XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md).
+[XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md),
+which also cover the Silkscreen 3.68" variant (`test_silkscreen_368_policy.cpp`).
+Its profile rules are `static_assert`s in `BoardConfig.h`, checked by compiling the
+header with the macro set and with each bad combination.
 
 ## Validation limits
 
