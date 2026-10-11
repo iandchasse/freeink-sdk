@@ -280,9 +280,13 @@ bool PowerManager::sleepPanelWithoutDriver() {
   const BoardConfig::DisplayPins& d = BoardConfig::ACTIVE.display;
   const BoardConfig::DisplayController controller = BoardConfig::ACTIVE.displayController;
   // An UltraChip panel that a DisplayProbeConfig board's probe picked takes its own
-  // deep-sleep command; BUSY_N is LOW while busy.
-  const bool ultraChip = FREEINK_CAP_DISPLAY_PROBE_POLICY && (controller == BoardConfig::DisplayController::UC8279 ||
-                                                              controller == BoardConfig::DisplayController::UC8179);
+  // deep-sleep command; BUSY_N is LOW while busy. The Silkscreen 3.68" variant's UC8253
+  // (FREEINK_DRIVER_UC8253_X3 is linked only there, on a board with the probe policy) sleeps
+  // with the same DSLP 0x07 / 0xA5 as its UC8279d (Uc8253X3Driver::deepSleep()).
+  const bool ultraChip = FREEINK_CAP_DISPLAY_PROBE_POLICY &&
+                         (controller == BoardConfig::DisplayController::UC8279 ||
+                          controller == BoardConfig::DisplayController::UC8179 ||
+                          (FREEINK_DRIVER_UC8253_X3 && controller == BoardConfig::DisplayController::UC8253));
   if ((controller != BoardConfig::DisplayController::SSD1677 && !ultraChip) || d.powerEnable >= 0 || d.rst < 0 ||
       d.cs < 0 || d.sclk < 0 || d.mosi < 0 || d.dc < 0) {
     return false;
