@@ -2859,7 +2859,8 @@ constexpr bool same(const DisplayProbeConfig& a, const DisplayProbeConfig& b) {
          a.cacheAcrossDeepSleep == b.cacheAcrossDeepSleep && a.x4ClassPanel == b.x4ClassPanel;
 }
 constexpr bool sameParkedPins(const BoardProfile& a, const BoardProfile& b) {
-  for (int i = 0; i < 8; ++i) {
+  constexpr int count = sizeof(BoardProfile::parkedPins) / sizeof(ParkedPin);
+  for (int i = 0; i < count; ++i) {
     if (a.parkedPins[i].pin != b.parkedPins[i].pin || a.parkedPins[i].boot != b.parkedPins[i].boot ||
         a.parkedPins[i].sleep != b.parkedPins[i].sleep) {
       return false;
@@ -2906,7 +2907,8 @@ static_assert(silkscreen_368::same(SILKSCREEN_368.input, SILKSCREEN.input) &&
                   SILKSCREEN_368.usbDetect == SILKSCREEN.usbDetect,
               "Silkscreen 3.68\" input and battery pins must be the 4.26\" board's");
 static_assert(silkscreen_368::sameParkedPins(SILKSCREEN_368, SILKSCREEN),
-              "Silkscreen 3.68\" parked pins must be the 4.26\" board's (IO11 stays parked HIGH)");
+              "Silkscreen 3.68\" parkedPins must equal SILKSCREEN's, entry by entry (pin, boot level, sleep level); "
+              "the host test checks that IO11 is parked HIGH");
 // The probe policy is SILKSCREEN's too (derive() inherits it): a difference is a decision, taken in derive()
 // and in this assert.
 static_assert(silkscreen_368::same(SILKSCREEN_368.displayProbe, SILKSCREEN.displayProbe),
