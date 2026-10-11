@@ -12,6 +12,7 @@
 #include <array>
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -125,6 +126,22 @@ int main() {
   assert(BoardConfig::displayProbePolicy().ultraChipController == Controller::UC8279);
   assert(BoardConfig::displayProbePolicy().cacheAcrossDeepSleep);
   assert(!BoardConfig::hasTouch() && BoardConfig::hasFrontButtons());
+  assert(!strcmp(active.name, "silkscreen_368") && BoardConfig::MAX_FRAMEBUFFER_BYTES == 52272);
+  // The panel's data: the X3's 10 MHz clock, BUSY_N pulled up while awake, no SSD1677 pull-down.
+  assert(active.displaySpiHz == BoardConfig::XTEINK_DISPLAY_SPI_HZ);
+  assert(active.display.busyPullUp && !active.display.busyPullDown && BoardConfig::displayBusyPullUp());
+  // No touch at all: no controller and no pin (and no fallback or sleep command, see BoardConfig.h).
+  assert(active.touch.controller == BoardConfig::TouchController::None);
+  assert(active.touch.sda < 0 && active.touch.scl < 0 && active.touch.irq < 0 && active.touch.reset < 0);
+  // Everything else is the board's: IO11 stays parked HIGH, the panel pins and the power key are SILKSCREEN's.
+  bool io11Parked = false;
+  for (const auto& parked : active.parkedPins) {
+    io11Parked |= parked.pin == 11 && parked.boot == BoardConfig::PinPark::High &&
+                  parked.sleep == BoardConfig::PinPark::High;
+  }
+  assert(io11Parked);
+  assert(active.input.power == BoardConfig::SILKSCREEN.input.power && active.input.powerExternalPull);
+  assert(active.display.rst == BoardConfig::SILKSCREEN.display.rst && active.sdmmc.busWidth == 4);
 
 #ifdef SILKSCREEN_DISPLAY_CONTROLLER
   // Forced: the profile carries the controller and nothing touches the bus, cold or woken.
