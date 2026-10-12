@@ -59,7 +59,8 @@ that never touches the bus.
 
 `test_silkscreen_368_policy.cpp` runs the production detector on the Silkscreen board
 with the Xteink X3's panel on J2. The panel is the X3's UC8279d and nothing else (the
-owner's SEO368NQW25 module, whose stock VER read answers `00 0F 00`, runs on that driver):
+owner's SEO368NQW25 module, whose stock VER read answered `00 0F 00`, set that decision;
+what has run on a board is in `docs/xteink-x3-uc8279-support.md`):
 the profile carries the controller, and its probe policy is forced with no verdict cache,
 so nothing is identified at a boot or a wake. The test counts every call that could be
 identification traffic (pin modes, writes, reads, sleep-hold releases, waits) and requires

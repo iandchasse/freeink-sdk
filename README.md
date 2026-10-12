@@ -228,17 +228,17 @@ probe policy with no verdict cache), so the pins, the power policy, the key and
 charge ladders, the light, the card and the RTC are the board's own. The build
 links the X3's UC8279d driver (`Uc8279Driver`) and no other panel driver: not the
 UC8253, not SSD1677 or the UC8279 X4 driver. **The variant supports the UC8279d
-only** (owner decision, 2026-10-11). Its controller is data, so it is never
-probed: `XteinkDetect` compiles neither the stock X3 VER read nor the two-pass
-VER/FLG/MTP probe for it, and a cold boot and a deep-sleep wake make no bus
-traffic for identification and keep nothing in RTC memory
+only** (owner decision: decided 2026-10-11, made 2026-10-12). Its controller is
+data, so it is never probed: `XteinkDetect` compiles neither the stock X3 VER
+read nor the two-pass VER/FLG/MTP probe for it, and a cold boot and a deep-sleep
+wake make no bus traffic for identification and keep nothing in RTC memory
 (`applyXteinkDisplayController()` logs "controller forced by the build" and
-returns false; `displayControllerSource()` is `Forced`). The one module this
-build has run on, the Xteink 3.68" panel marked `SEO368NQW25`, answered the X3
-stock VER read with `00 0F 00`, a driven UltraChip answer whose id byte is
-neither the `0x66` of the X3's own UC8279d module nor the `0xFF` of a UC8253; the
-UC8253 recipe it was given then left the glass blank, and the UC8279d driver ran
-it. That is one module, one board, one bench session: this build does not read VER.
+returns false; `displayControllerSource()` is `Forced`). The Xteink 3.68" panel
+marked `SEO368NQW25` answered the X3 stock VER read with `00 0F 00`, a driven
+UltraChip answer whose id byte is neither the `0x66` of the X3's own UC8279d
+module nor the `0xFF` of a UC8253; the UC8253 recipe it was given then left the
+glass blank, and the UC8279d driver displayed a picture. That is one module, one
+board, one bench session: this build does not read VER.
 
 `-DSILKSCREEN_DISPLAY_CONTROLLER` is not a knob of the variant: `=uc8279` is
 accepted and changes nothing (an env that sets it keeps building), `=uc8253`
@@ -255,8 +255,23 @@ reset-loop sleep only. On the variant it settles 60 ms after the reset, as
 most. A boot below the battery cutoff goes through the driver instead
 (`begin()`, `deepSleep()`).
 
-Nothing of this variant has run beyond that one module's first session: the
-rails, the gray waveforms, the deep-sleep current and the `BUSY_N` level in
+**What has run on a board (as of 2026-10-12).** One module (`SEO368NQW25`) has
+run, in the owner's first session (2026-10-11, a CrossPoint build): the stock X3
+probe read `VER=00 0F 00`, the UC8253 default recipe left it blank (`Wait
+complete: X3_PON (41 ms)`), and with the UC8279d driver forced by a local build
+flag it displayed a picture. That forced build then froze (no panic, no
+watchdog) on its first grayscale image page. The code reads as a bus transaction
+held across a bus command (a deadlock on arduino-esp32's non-recursive SPI
+mutex): that cause is inferred from the code, not from a backtrace. SDK
+`4988be4` ends the transaction first and the fix is visible in the images'
+disassembly; it has not yet been seen on glass. The owner also reported a quiet,
+harsh buzz at every display refresh, from the e-paper boost stage; it is
+unexplained, and the boost inductor `L1` (47 µH, sized to the SSD1677 reference
+and unverified for this panel: the Silkscreen board's HARDWARE.md §6.2) and the
+4.7 µF / 50 V X5R MLCCs `C11` and `C13`-`C17` are the usual singers. Nothing
+else has run on a board, and CrossInk's variant images have never been flashed.
+
+The rails, the gray waveforms, the deep-sleep current and the `BUSY_N` level in
 the panel's sleep are unmeasured.
 
 Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
