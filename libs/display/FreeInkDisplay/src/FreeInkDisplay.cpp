@@ -138,12 +138,12 @@ FreeInkDisplay::FreeInkDisplay(int8_t, int8_t, int8_t, int8_t, int8_t, int8_t)
 #endif
 {
 #if FREEINK_SILKSCREEN_368
-  // The Silkscreen 3.68" image links the X3 drivers and no other panel family, and has no
-  // X3 board for a consumer to detect (setDisplayX3() is called on a detected X3, and
+  // The Silkscreen 3.68" image links the X3's UC8279d driver and no other panel driver, and
+  // has no X3 board for a consumer to detect (setDisplayX3() is called on a detected X3, and
   // there is none on an S3): the panel is the X3's from construction. Without it the
-  // facade would run the X4 route, which picks the UC8253 driver for a UC8279d panel and
-  // shadows async refreshes the X3 drivers cannot honour. selectDevice() has no X3 case
-  // here, so this changes only the panel mode and the 792x528 geometry.
+  // facade would run the X4 route, which has no driver in this image (no SSD1677, no UC8279
+  // X4) and shadows async refreshes the UC8279d driver cannot honour. selectDevice() has no
+  // X3 case here, so this changes only the panel mode and the 792x528 geometry.
   setDisplayX3();
 #endif
 }

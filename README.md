@@ -141,7 +141,7 @@ so the SD manager itself stays device-agnostic.
 | **Waveshare ESP32-S3-ePaper-3.97** | ESP32-S3 | SSD1677 | 3.97" 800×480 B/W | reuses the SSD1677 driver with the Sticky's vendor sequences, 3 side keys + BOOT (no touch), native 4-bit SDMMC, AXP2101 PMIC as EPD rail + battery gauge + power key, PCF85063 RTC, QMI8658 IMU; orientation pending hardware validation — see docs/waveshare-epaper-397-support.md |
 | **M5Stack PaperS3** | ESP32-S3 | ED047TC1 (raw parallel) | 960×540 16-gray | same LovyanGFX EPD driver class as the LilyGo T5 S3 (plain-GPIO EPD rails, no PMIC), GT911 touch (touch-only navigation — no GPIO buttons), BM8563 RTC, GPIO3 ADC battery, LEDC buzzer, SPI MicroSD; power-off is a GPIO44 pulse to the PMS150G latch (`BoardPaperS3::powerOff()`); rotation/touch-flip pending hardware validation |
 | **Onyx Picco / BOOX Tiles** (initial) | ESP32-S3 (16MB flash, 8MB octal PSRAM) | SSD1677 / SSD2677 (auto) | 3.97" 800×480 B/W (portrait) | reuses the SSD1677 driver, native 4-bit SDMMC, GPIO2 power/wake button, PCF8563/BM8563 RTC @0x51 + QMI8658 IMU @0x6A on the shared I2C bus (SDA7/SCL8); touch (I2C 0x24, model unknown), 2-channel warm/cool I2C frontlight (@0x38), slide switch (GPIO6), SGM41562 charger (@0x03) and battery ADC (GPIO1) are wired; touch coordinates are not yet decoded, and nav-button roles are provisional |
-| **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot); with `-DSILKSCREEN_PANEL_368=1`, the X3's **UC8253 or UC8279d** | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel); 792×528 with the X3's 3.68" panel (`SILKSCREEN_PANEL_368`, no touch) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip, and a load probe at every switch-on, since the light may not be fitted), optional FT6336U touch tail probed at boot (keys kept; 0x38 counts as touch only with a FocalTech chip id; a GT911 fallback only in an alternate-jumper build, `-DSILKSCREEN_TOUCH_ALT_JUMPERS=1`), key ladders checked for their pull-up and the power button for a valid idle level at boot, native 4-bit SDMMC behind a gated card rail, DS3231MZ (identified before it is written) or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
+| **Silkscreen** | ESP32-S3 | SSD1677 **or UC8279D** (probed at boot); with `-DSILKSCREEN_PANEL_368=1`, the X3's **UC8279d** alone (fixed in the profile, never probed) | 800×480 B/W (GDEQ0426T82, or the custom UC8279D panel); 792×528 with the X3's 3.68" panel (`SILKSCREEN_PANEL_368`, no touch) | open-hardware de-link successor: 8 keys on two ADC ladders, optional warm/cool front light on an enable-gated TPS923610 (LED over-voltage trip, and a load probe at every switch-on, since the light may not be fitted), optional FT6336U touch tail probed at boot (keys kept; 0x38 counts as touch only with a FocalTech chip id; a GT911 fallback only in an alternate-jumper build, `-DSILKSCREEN_TOUCH_ALT_JUMPERS=1`), key ladders checked for their pull-up and the power button for a valid idle level at boot, native 4-bit SDMMC behind a gated card rail, DS3231MZ (identified before it is written) or RV-8263 RTC, analog charge-status ladder; no power latch, so it sets the sleep and battery fields below; pending hardware validation |
 
 X3 and X4 share the ESP32-C3 and a pinout, so **one firmware binary drives both**:
 it carries both board profiles (`XTEINK_X4` and `XTEINK_X3`) and picks one at
@@ -222,45 +222,42 @@ a panel addressed differently gets its own config through
 **Silkscreen with the X3's 3.68" panel** (`-DSILKSCREEN_PANEL_368=1`: the same
 device and `Board::Silkscreen`, a different panel family) swaps the panel side of
 the profile. `SILKSCREEN_368` is built from `SILKSCREEN` by a `constexpr` function
-that overrides only the display and touch data (792×528, a UC8253 default, the X3's
-10 MHz clock, the `BUSY_N` pull-up and no pull-down, `NO_TOUCH`), so the pins, the
-power policy, the key and charge ladders, the light, the card and the RTC are the
-board's own. The build links the X3 drivers (`Uc8253X3Driver`, `Uc8279Driver`) in
-place of SSD1677 and the UC8279 X4 driver. The controller is the X3's question, so
-the probe is the stock X3 one (`probeX3DisplayController`: three VER bytes, byte 2
-`0x66` is a UC8279d, `0xFF` a UC8253, anything else keeps the UC8253): the two-pass
-VER/FLG/MTP probe is not compiled for it, since a UC8253 also drives FLG and would
-be promoted to the wrong driver. The verdict is kept in RTC memory for deep-sleep
-wakes as above; `-DSILKSCREEN_DISPLAY_CONTROLLER=uc8253` or `=uc8279` forces it
-(`ssd1677` is a compile error there, as `uc8253` is on the 4.26" board). The facade
-starts in X3 mode, so a consumer needs no `setDisplayX3()` call for it, and
-`FreeInkDisplay::isX3Mode()` is the panel predicate. Touch is off twice: the
-profile carries no controller and no pin, and `FREEINK_CAP_TOUCH` defaults to 0
-for it (a `static_assert` fails the build if an env turns it back on). Silkscreen's
-SDI has no external pull-up, so the VER read releases it with the internal one (a
-UC8253 that leaves the read undriven then reads `0xFF`, as it does on the X3). At a
-cold boot the check costs about 111 ms awake (410 ms at most). A deep-sleep wake
-reuses a conclusive verdict, `0x66` or `0xFF`, with no bus traffic; any other id
-keeps the UC8253, is not kept, and is probed again at every wake. The wake's first
-panel reset still compares the cached verdict with `BUSY_N`, but both X3
-controllers idle it `HIGH`, so that guard cannot tell a UC8253 from a UC8279d: it
-catches a polarity change, or a `BUSY_N` stuck `LOW` for 300 ms (it then restarts
-and probes).
+that overrides only the display and touch data (792×528, the UC8279d, the X3's
+10 MHz clock, the `BUSY_N` pull-up and no pull-down, `NO_TOUCH`, and a forced
+probe policy with no verdict cache), so the pins, the power policy, the key and
+charge ladders, the light, the card and the RTC are the board's own. The build
+links the X3's UC8279d driver (`Uc8279Driver`) and no other panel driver: not the
+UC8253, not SSD1677 or the UC8279 X4 driver. **The variant supports the UC8279d
+only** (owner decision, 2026-10-11). Its controller is data, so it is never
+probed: `XteinkDetect` compiles neither the stock X3 VER read nor the two-pass
+VER/FLG/MTP probe for it, and a cold boot and a deep-sleep wake make no bus
+traffic for identification and keep nothing in RTC memory
+(`applyXteinkDisplayController()` logs "controller forced by the build" and
+returns false; `displayControllerSource()` is `Forced`). The one module this
+build has run on, the Xteink 3.68" panel marked `SEO368NQW25`, answered the X3
+stock VER read with `00 0F 00`, a driven UltraChip answer whose id byte is
+neither the `0x66` of the X3's own UC8279d module nor the `0xFF` of a UC8253; the
+UC8253 recipe it was given then left the glass blank, and the UC8279d driver ran
+it. That is one module, one board, one bench session: this build does not read VER.
+
+`-DSILKSCREEN_DISPLAY_CONTROLLER` is not a knob of the variant: `=uc8279` is
+accepted and changes nothing (an env that sets it keeps building), `=uc8253`
+and `=ssd1677` are compile errors that say why (as `=uc8253` is on the 4.26"
+board, which links no UC8253 driver either). The facade starts in X3 mode, so a
+consumer needs no `setDisplayX3()` call for it, and `FreeInkDisplay::isX3Mode()`
+is the panel predicate. Touch is off twice: the profile carries no controller and
+no pin, and `FREEINK_CAP_TOUCH` defaults to 0 for it (a `static_assert` fails the
+build if an env turns it back on).
 
 Panel sleep without a driver, `PowerManager::sleepPanelWithoutDriver()`, is the
-reset-loop sleep only. On the variant it settles 60 ms after the reset, as the X3
-drivers do: about 72 ms with `BUSY_N` idle, about 172 ms at most. A boot below the
-battery cutoff goes through the driver instead (probe, `begin()`, `deepSleep()`), an
-estimated 0.2-0.3 s and 0.6 s at worst.
+reset-loop sleep only. On the variant it settles 60 ms after the reset, as
+`Uc8279Driver::begin()` does: about 72 ms with `BUSY_N` idle, about 172 ms at
+most. A boot below the battery cutoff goes through the driver instead
+(`begin()`, `deepSleep()`).
 
-**Bench first.** Read the panel's VER bytes (the Silkscreen test firmware's P1, or
-the `[XTDET] X3 stock probe` log line) before trusting the verdict. A UC8279d unit
-whose VER reads blank (`0xFF` in byte 2) is taken for a UC8253 here and gets the
-UC8253 driver until a build forces `-DSILKSCREEN_DISPLAY_CONTROLLER=uc8279`: the
-4.26" board separates such units from a UC8253 by the MTP read, which this probe
-does not carry. An id that is neither `0x66` nor `0xFF` runs the UC8253 driver too,
-and costs the 111 ms probe at every wake. Nothing of this variant has run on a
-board yet.
+Nothing of this variant has run beyond that one module's first session: the
+rails, the gray waveforms, the deep-sleep current and the `BUSY_N` level in
+the panel's sleep are unmeasured.
 
 Every SDK library compiles on ESP32-C3, ESP32-S3, and the classic ESP32.
 Chip-specific code in a consumer's *own* layer (deep-sleep wakeup, panic
@@ -408,7 +405,7 @@ MCU (a C3-vs-S3 mix is a compile error):
 | `-DFREEINK_DEVICE_X4CLASSIC` | Xteink X4 Classic / X4C (S3, SSD1677/UC8179/UC8279 auto-detect, buttons-only — no touch/frontlight, + SDMMC) |
 | `-DFREEINK_DEVICE_PAPERMONO` | M5Stack Paper Mono (S3, SSD1677 + FT6336 touch + PMIC frontlight) |
 | `-DFREEINK_DEVICE_PAPERS3` | M5Stack PaperS3 (S3, ED047TC1 raw-parallel EPD via LovyanGFX + GT911 touch) |
-| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677/UC8279 auto-detect + ADC-ladder keys + optional touch + 4-bit SDMMC; the env sets `FREEINK_CAP_FRONTLIGHT`/`FREEINK_CAP_WARMLIGHT` by default and the switch-on probe finds whether a light is fitted; `-DSILKSCREEN_DISPLAY_CONTROLLER=ssd1677` or `=uc8279` forces the controller, `-DSILKSCREEN_TOUCH_ALT_JUMPERS=1` adds the GT911 fallback; `-DSILKSCREEN_PANEL_368=1` builds the variant with the X3's 3.68" 792×528 panel, no touch, through the X3 drivers) |
+| `-DFREEINK_DEVICE_SILKSCREEN` | Silkscreen (S3, SSD1677/UC8279 auto-detect + ADC-ladder keys + optional touch + 4-bit SDMMC; the env sets `FREEINK_CAP_FRONTLIGHT`/`FREEINK_CAP_WARMLIGHT` by default and the switch-on probe finds whether a light is fitted; `-DSILKSCREEN_DISPLAY_CONTROLLER=ssd1677` or `=uc8279` forces the controller, `-DSILKSCREEN_TOUCH_ALT_JUMPERS=1` adds the GT911 fallback; `-DSILKSCREEN_PANEL_368=1` builds the variant with the X3's 3.68" 792×528 UC8279d panel, no touch, through the X3 UC8279d driver) |
 | *(none)* | **compile error** — a build must select at least one device |
 
 Multiple **different-pinout** devices on one MCU are runtime-selected: `ACTIVE`
@@ -437,7 +434,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `FREEINK_CAP_CHARGE_LADDER` | the analog charge-status ladder (`BoardConfig::hasChargeStatusLadder()`, `BatteryMonitor::pollChargeStatus()`) | on for Silkscreen |
 | `FREEINK_CAP_POWER_POLICY` | the `PowerConfig` policy fields, read through `BoardConfig::powerPolicy()` (all zero without it) | on for Silkscreen |
 | `FREEINK_CAP_I2C_RECOVERY` | `SensorsConfig::i2cBusRecovery` (stuck-bus recovery, sleep release in `SharedI2c.h`) | on for Silkscreen |
-| `FREEINK_CAP_DISPLAY_PROBE_POLICY` | the `DisplayProbeConfig` probe policy and `DisplayPins::busyPullUp`, read through `BoardConfig::displayProbePolicy()` / `displayBusyPullUp()` (the X4-family defaults without it), `displayControllerSource()`, and the UltraChip deep sleep in `PowerManager::sleepPanelWithoutDriver()`; for the 3.68" variant also the X3 drivers' `BUSY_N` pull-up and cached-controller check in `EpdBus`, and the UC8253 in that deep sleep | on for Silkscreen, which needs it: a `static_assert` fails a Silkscreen build that turns it off |
+| `FREEINK_CAP_DISPLAY_PROBE_POLICY` | the `DisplayProbeConfig` probe policy and `DisplayPins::busyPullUp`, read through `BoardConfig::displayProbePolicy()` / `displayBusyPullUp()` (the X4-family defaults without it), `displayControllerSource()`, and the UltraChip deep sleep in `PowerManager::sleepPanelWithoutDriver()`; for the 3.68" variant also the UC8279d driver's `BUSY_N` pull-up in `EpdBus` and the `x4ClassPanel` the app reads | on for Silkscreen, which needs it: a `static_assert` fails a Silkscreen build that turns it off |
 | `FREEINK_CAP_PROBE_IDENTITY` | the identity checks of `TouchConfig::requireFocalTechId` and `SensorsConfig::rtcIdentityCheck`, read through `BoardConfig::touchIdentityCheck()` / `rtcIdentityCheck()` (false without it), the probe's refused-device record and `Rtc::rejectedAddress()` | on for Silkscreen |
 | `FREEINK_CAP_FRONTLIGHT_PROBE` | the front light's switch-on load probe (`FrontlightConfig::loadProbeWindowMs` / `loadProbePeriodMs` / `railSafeV`): `FrontlightManager::probing()`, `load()`, `stringMissing()` and `restoreAllowed()` (false / Unknown / false / true without it), the load record in RTC memory, and the wait for the LED rail before the colour select moves after a trip. Needs `FREEINK_CAP_FRONTLIGHT` | on for Silkscreen when its env compiles the light in |
 
@@ -452,7 +449,7 @@ tight. Each defaults on when an included device needs it; force with `=0`/`=1`:
 | `-DFREEINK_FB_PSRAM=1` | place the facade framebuffer(s) in PSRAM heap (`MALLOC_CAP_SPIRAM`, allocated in `begin()`) instead of static DRAM `.bss`; auto-on for M5Paper and Paper Mono, off everywhere else |
 | `-DFREEINK_NET_WOLFSSL=1` | enable the wolfSSL TLS 1.3 transport in `SecureNet` |
 | `-DFREEINK_DIAGNOSTICS=1` | the managers also record what they observe and expose read accessors, for a hardware test build (see [Bring-up diagnostics](#bring-up-diagnostics)); off by default, and then none of it is compiled |
-| `-DSILKSCREEN_PANEL_368=1` | the Silkscreen board with the Xteink X3's 3.68" panel (792×528) on J2 and no touch: the derived `SILKSCREEN_368` profile, the X3 drivers (UC8253 or UC8279d, found by the X3 stock probe) linked in place of SSD1677 and the UC8279 X4 driver, `FREEINK_CAP_TOUCH` 0 by default (an env cannot turn it on), and `SILKSCREEN_DISPLAY_CONTROLLER` taking `uc8253` or `uc8279`. Needs `FREEINK_DEVICE_SILKSCREEN`; default 0, which changes nothing else |
+| `-DSILKSCREEN_PANEL_368=1` | the Silkscreen board with the Xteink X3's 3.68" panel (792×528) on J2 and no touch: the derived `SILKSCREEN_368` profile, the X3's UC8279d driver linked in place of SSD1677 and the UC8279 X4 driver (and no UC8253 driver), the controller fixed in the profile and never probed, `FREEINK_CAP_TOUCH` 0 by default (an env cannot turn it on), and `SILKSCREEN_DISPLAY_CONTROLLER` taking `uc8279` as a no-op (`uc8253` and `ssd1677` are refused). Needs `FREEINK_DEVICE_SILKSCREEN`; default 0, which changes nothing else |
 | `-DSILKSCREEN_BATLOG=1` | the Silkscreen battery sleep/wake log in `PowerManager` (`BatteryLog.h`, `BatteryLogCore.h`, `BatteryLog.cpp`, and one call at the head of `PowerManager::deepSleep()`); needs `FREEINK_DEVICE_SILKSCREEN` and `FREEINK_CAP_POWER_POLICY` (an `#error` otherwise). Only the consumer's own `silkscreen-batlog` env sets it and the SDK never defines it: undefined, it reads as 0 and the SDK compiles to what it did without the log. The SDK formats rows into the caller's buffer and never opens a file; the app appends them. Pure rules checked at compile time by `libs/hardware/PowerManager/test/host/` (see [docs/testing.md](docs/testing.md)); use, columns and the bench proof are in CrossPoint's `docs/silkscreen/BATTERY-LOG.md` |
 
 Panel **orientation/mirroring** is per-board data, not a flag: set `BoardProfile.orientation`
@@ -962,7 +959,7 @@ Leave a field out and the board keeps the old behaviour.
 | Struct | Field (default) | Effect when set |
 |---|---|---|
 | `DisplayPins` | `busyPullDown` (false) | Internal pull-down on an active-high `BUSY` with no external pull, awake only; `powerDownRailsForSleep()` removes it before deep sleep. |
-| `DisplayPins` | `busyPullUp` (false) | The same for an UltraChip `BUSY_N` (the UC81xx X4 drivers' `UcIdleHigh` wait, which has no timeout, and the X3 drivers' `X3TwoPhase` where the build links them on a board with the probe policy, the Silkscreen 3.68" variant): internal pull-up while awake, so a missing panel reads idle; removed before deep sleep. A board whose probe picks SSD1677 or UltraChip sets both. Needs `FREEINK_CAP_DISPLAY_PROBE_POLICY`. |
+| `DisplayPins` | `busyPullUp` (false) | The same for an UltraChip `BUSY_N` (the UC81xx X4 drivers' `UcIdleHigh` wait, which has no timeout, and the X3 UC8279d driver's `X3TwoPhase` on the Silkscreen 3.68" variant, whose wait is bounded): internal pull-up while awake, so a missing panel reads idle; removed before deep sleep. A board whose probe picks SSD1677 or UltraChip sets both. Needs `FREEINK_CAP_DISPLAY_PROBE_POLICY`. |
 | `BoardProfile` | `displayProbe` (the X4-family rule) | `DisplayProbeConfig` for `applyXteinkDisplayController()`: `forced` (the build set `displayController`, no probe), `ultraChipController` (UC8279: every UltraChip answer, a FLG driven the same on both passes included, raw LUT_VER kept as the variant), `cacheAcrossDeepSleep` (reuse a conclusive verdict from RTC memory on a deep-sleep wake only; both passes take the vendor reset, the wake's first panel reset checks the verdict against the idle `BUSY` level, and a UC `BUSY_N` wait is capped at 60 s, `forgetCachedDisplayController()`), `x4ClassPanel` (the consumer applies its X4 panel policies whichever controller is found). Needs `FREEINK_CAP_DISPLAY_PROBE_POLICY`. |
 | `SdmmcPins` | `maxFreqKhz` (0 = 20 MHz), `internalPullups` (true) | Clock cap; set `internalPullups` false when the bus pull-ups sit on a gated card rail. |
 | `SdmmcPins` | `parkLowWhenOff` (false), `powerOffMs` (20), `powerOnSettleMs` (20) | Real power cycle around the mount: bus LOW with pulls off before the gate goes off, off for `powerOffMs`, settle after power-on. The bus is also parked at boot, on a failed mount, on shutdown and held LOW through deep sleep. |
@@ -989,7 +986,7 @@ Leave a field out and the board keeps the old behaviour.
 | `PowerConfig` | `lowBatteryCutoffMv` (0), `cutoffRadioAllowanceMv` (0) | `BatteryMonitor::isBelowCutoff(known, mv, radioOn)`: 3 consecutive once-a-second readings at or below the cutoff (less the allowance while the radio is on), never on external power or with no cell. |
 | `PowerConfig` | `releaseWaitMaxMs` (0 = unbounded) | A power button still held after this long at sleep entry: sleep until its release instead of spinning, and `PowerManager::takeReleaseWake()` tells the next boot to sleep again at once. |
 | `PowerConfig` | `earlyWakeDecision` (false) | The consumer decides sleep-or-boot right after the wake-hold check; `InputManager::begin(false)` defers the touch probe to `startTouch()`. |
-| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (a panel on an always-on rail: reset, then SSD1677 `0x10`/`0x03` or, with `FREEINK_CAP_DISPLAY_PROBE_POLICY`, UltraChip DSLP `0x07`/`0xA5` bit-banged, by the controller `ACTIVE` names; the 3.68" variant's UC8253 is one, after the X3 drivers' 60 ms settle. It is the reset-loop sleep only: a boot below the battery cutoff sleeps the panel through its driver) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
+| `PowerConfig` | `abnormalResetLimit` (0 = off) | `PowerManager::countAbnormalResets()` counts panics, watchdog resets, brown-outs and aborted sleep entries in a row; the consumer sleeps at the limit. `PowerManager::sleepPanelWithoutDriver()` (a panel on an always-on rail: reset, then SSD1677 `0x10`/`0x03` or, with `FREEINK_CAP_DISPLAY_PROBE_POLICY`, UltraChip DSLP `0x07`/`0xA5` bit-banged, by the controller `ACTIVE` names; the 3.68" variant's UC8279d is one, after that driver's 60 ms settle. It is the reset-loop sleep only: a boot below the battery cutoff sleeps the panel through its driver) and `InputManager::resetAndHibernateTouch()` quiesce the panel and touch there without their drivers. |
 | `PowerConfig` | `firmwareUpdateMinMv`, `awakeCeilingMin`, `radioOffWhenIdle` (0/0/false) | Data for the consumer: battery floor for firmware writes, awake ceiling on battery with no input or client traffic, and screens whose work has ended stop spinning the loop and drop the radio. |
 | `PowerConfig` | `wakeNoInputTimeoutS`, `storageErrorSleepS`, `awakeInputCapMin` (0/0/0) | Data for the consumer, on battery: sleep again after a power-button wake with no input, leave a dead-end storage-error screen, and an awake cap that only input (not client traffic) extends. |
 | `PowerConfig` | `ladderPresenceProbe` (false) | `InputStyle::AdcLadders`: at every reset but a deep-sleep wake, `InputManager::begin()` reads each ladder pin with the internal pull-down, then the pull-up (about 2 ms each), and a pin that follows both from rail to rail (no pull-up fitted, `ProbeChecks.h`) is switched off for the session (its `ACTIVE` pin `PIN_UNASSIGNED`), so a floating ladder cannot report phantom keys. Both pulls end off; the result is kept in RTC memory for deep-sleep wakes. `InputManager::ladderPresence()` reports it. Needs `FREEINK_CAP_ADC_LADDERS` and `FREEINK_CAP_POWER_POLICY` (the field is read through `powerPolicy()`). |
@@ -1029,7 +1026,7 @@ the flag.)
 | Accessor | Reports |
 |---|---|
 | `BatteryMonitor::chargeLadderDiagnostics()` | the decoded and published charge state, the debounce candidate and run counters, the lost/disproved flags, the P+ cross-check window, the last oversampled pin mV and the sample count, from cached state (no ADC read) |
-| `FreeInkDisplay::busDiagnostics()` (`EpdBus::diagnostics()`) | the last BUSY wait (ms, tag, timed out) and wait/timeout counts; the last refresh a driver reported through `EpdBus::noteRefresh()` (the SSD1677 and UC8279 X4 drivers do, and the X3 UC8253 and UC8279d drivers for their B/W refreshes only, with the CDI byte as the sequence: not their grayscale and settle passes nor the destination refresh after a Direct-gray page, so a UC8253 FULL's duration ends before its settle passes): the mode it actually ran after any FAST→HALF/FULL promotion, the update-sequence byte (SSD1677 `0x22`; UC8279 its `TSSET` byte, `0x1E` GC or `0x5A` DU, and its CDI for the gray waveform), async/turn-off/custom-LUT, and activation-to-completion time |
+| `FreeInkDisplay::busDiagnostics()` (`EpdBus::diagnostics()`) | the last BUSY wait (ms, tag, timed out) and wait/timeout counts; the last refresh a driver reported through `EpdBus::noteRefresh()` (the SSD1677 and UC8279 X4 drivers do, and the X3 UC8279d driver for its B/W refreshes only, with the CDI byte as the sequence: not its grayscale passes nor the destination refresh after a Direct-gray page): the mode it actually ran after any FAST→HALF/FULL promotion, the update-sequence byte (SSD1677 `0x22`; UC8279 its `TSSET` byte, `0x1E` GC or `0x5A` DU, and its CDI for the gray waveform), async/turn-off/custom-LUT, and activation-to-completion time |
 | `SDCardManager::cardInfo()` | native SDMMC: card type (SDSC/SDHC/SDXC/MMC), CSD capacity, bus width, host cap, card max and real clock, CID name/MID/OID/revision/serial/date, power cycles the last mount used and its last error (SPI: mounted and type only) |
 | `FrontlightManager::monitorDiagnostics()` | LED-rail monitor trips (count, LED mV, limit, time) and the last reading (pin and LED mV), kept after the light is switched off, which clears `fault()` |
 | `FrontlightManager::probeDiagnostics()` | the load record (`load()` and both strings), the switch-on probes, their trips, the second tries and the switch-ons that found no light since boot, and the last probe's string, result, peak LED mV, reading count, time to the trip and from the trip to the pad dark; the waits for the rail after a trip (count, last wait, the rail then, timeouts). With `FREEINK_CAP_FRONTLIGHT_PROBE` |

@@ -65,7 +65,7 @@ python3 libs/hardware/PowerManager/test/host/run_sleep_panel.py
 `sleepPanelWithoutDriver()` and its two helpers out of it and runs them over a
 recording GPIO model, for the 4.26" Silkscreen board and for its 3.68" variant:
 the command bytes, the BUSY pull, the reset's settle time (10 ms on the 4.26"
-board, 60 ms for the variant's X3 pair) and the BUSY_N bound. The README next to
+board, 60 ms for the variant's UC8279d) and the BUSY_N bound. The README next to
 it has the details and the negative control.
 
 ## Fonts
@@ -112,8 +112,8 @@ compiles the facade in single- and dual-buffer modes. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
 the drivers included in each harness.
 
-`run_x3_diagnostics.py` compiles the X3 UC8253 and UC8279d drivers with
-`FREEINK_DIAGNOSTICS=1` and checks the refreshes they report to
+`run_x3_diagnostics.py` compiles the X3 UC8279d driver with
+`FREEINK_DIAGNOSTICS=1` and checks the refreshes it reports to
 `EpdBus::noteRefresh()` (mode run, CDI byte, blocking or deferred, turn-off).
 
 `run_uc8279.py` and `run_uc8253_power.py` record the bus through
@@ -131,7 +131,8 @@ configuration, which keeps upstream's lines and fails the strip check.
 
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md),
-which also cover the Silkscreen 3.68" variant (`test_silkscreen_368_policy.cpp`).
+which also cover the Silkscreen 3.68" variant (`test_silkscreen_368_policy.cpp`: a UC8279d
+panel, fixed in its profile, with no bus traffic to identify it at any reset).
 
 ## Board profile rules
 
