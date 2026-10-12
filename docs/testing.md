@@ -116,6 +116,19 @@ the drivers included in each harness.
 `FREEINK_DIAGNOSTICS=1` and checks the refreshes they report to
 `EpdBus::noteRefresh()` (mode run, CDI byte, blocking or deferred, turn-off).
 
+`run_uc8279.py` and `run_uc8253_power.py` record the bus through
+`epdbus_txn_model.h`, a model of `EpdBus`'s transaction contract. `cmd()`, `data()`,
+`cmdData()` and the plane streamers each open a Transaction, and `beginTxn()` holds one:
+a bus call made while one is alive blocks its task for ever in arduino-esp32's
+non-recursive `SPI.beginTransaction()` mutex (no panic, no watchdog, a frozen screen).
+The tests fail on such a call, and check a strip upload's order: the window, the plane's
+RAM command, the rows as one burst, then PTOUT after the burst has ended. A copy of the
+driver can be run instead with `UC8279_SOURCE` or `UC8253_SOURCE` (the controls: the
+UC8279d source before `txn.end()` was added, and the UC8253 without it, both fail).
+`run_uc8279.py` builds the driver as the Silkscreen 3.68" variant, the build that
+ends the strip's transaction; `FREEINK_SILKSCREEN_368=0` builds the C3 X3's
+configuration, which keeps upstream's lines and fails the strip check.
+
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md),
 which also cover the Silkscreen 3.68" variant (`test_silkscreen_368_policy.cpp`).
