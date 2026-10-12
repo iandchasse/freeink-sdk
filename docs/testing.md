@@ -41,6 +41,22 @@ sealed, and the next start must finish the load.
 The stubs next to it stand in for the app's `Logging.h` and for the FreeRTOS
 mutex behind `SharedAdc.h`, which `BatteryMonitor.cpp` includes.
 
+## Real-time clock
+
+```sh
+python3 libs/hardware/Rtc/test/host/run.py
+```
+
+Builds `Rtc.cpp` with a recording I2C bus, once with `FREEINK_CAP_RTC` on and once off (it needs `CXX` or `c++`
+and a compiler that takes `-fsanitize`, or a shim that ignores it). The RTC-on build checks the RX8130's time
+reads and writes (the valid-time flag, the stop bit, the cleared voltage-low flag) and its countdown timer
+(`armWakeTimer()`, `cancelWakeTimer()`, `readWakeTimer()`: the register values, every refused write, a counter or
+enable that does not stick, another interrupt owner, an unset clock), plus the PaperMono board's PMIC wake
+registers (`papermono::setRtcWake()`, `ensureBooted()`'s snapshot and `requestShutdown()`'s abort). Nothing in
+this SDK calls the timer functions: they are API for a consumer. The stubs in `test/host/stubs` stand in for
+`BoardConfig.h` (only the sensor fields the RTC reads), `soc/soc_caps.h`, `driver/gpio.h`,
+`esp32-hal-periman.h` and `esp_rom_sys.h` (what `SharedI2c.h` includes); the `Wire.h` is BatteryMonitor's.
+
 ## Silkscreen battery log
 
 ```sh
@@ -126,10 +142,11 @@ RAM command, the rows as one burst, then PTOUT after the burst has ended. Both d
 end the strip's transaction before PTOUT, so every configuration passes: the UC8279d's
 `txn.end()` is upstream's fix (Free-Ink PR #139, `c2d711a`), built ungated for the C3 X3
 and the Silkscreen 3.68" variant alike. A copy of the driver can be run instead with
-`UC8279_SOURCE` or `UC8253_SOURCE` (the controls: upstream's UC8279d source before that
-fix, `git show 0b60346:libs/display/FreeInkDisplay/src/driver/Uc8279Driver.cpp`, and the
-UC8253 without its `txn.end()`; both fail on `EpdBus::cmd(0x92) while a beginTxn()
-Transaction is alive`).
+`UC8279_SOURCE` or `UC8253_SOURCE`, each the path of the copy (the controls: upstream's
+UC8279d source before that fix, written with
+`git show c2d711a^:libs/display/FreeInkDisplay/src/driver/Uc8279Driver.cpp > file`, and
+the UC8253 driver without its `txn.end()`; both fail on `EpdBus::cmd(0x92) while a
+beginTxn() Transaction is alive`).
 
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md),

@@ -5,10 +5,11 @@ The recording bus models EpdBus's transaction contract (epdbus_txn_model.h): a b
 beginTxn() Transaction is alive would block its task for ever on hardware, and the test fails on it.
 The driver is built as it is. The strip upload's txn.end() before PARTIAL_OUT is upstream's fix (Free-Ink
 PR #139, c2d711a, merged as 7fcd3b3), carried ungated, so the C3 X3, the Silkscreen 3.68" variant and every
-other UC8279d build run this one source and none of them fails. The control: UC8279_SOURCE names another
-copy of Uc8279Driver.cpp, and upstream's source before that fix
-(git show 0b60346:libs/display/FreeInkDisplay/src/driver/Uc8279Driver.cpp) must fail this test with
-"EpdBus::cmd(0x92) while a beginTxn() Transaction is alive".
+other UC8279d build run this one source and none of them fails. The control: UC8279_SOURCE is the path of
+another copy of Uc8279Driver.cpp, and upstream's source before that fix must fail this test with
+"EpdBus::cmd(0x92) while a beginTxn() Transaction is alive". Write it with
+git show c2d711a^:libs/display/FreeInkDisplay/src/driver/Uc8279Driver.cpp > <file>  (the shared line's 0b60346
+holds the same bytes).
 """
 from pathlib import Path
 import os
