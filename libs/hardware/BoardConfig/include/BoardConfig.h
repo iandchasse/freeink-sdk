@@ -86,11 +86,11 @@
 #endif
 
 // Silkscreen's panel variant. -DSILKSCREEN_PANEL_368=1 builds the board with the Xteink X3's 3.68" 792x528
-// panel on J2 in place of the 4.26" 800x480 one: the panel's UC8253 (or the UC8279d some X3 batches carry)
-// through the SDK's X3 drivers, the derived SILKSCREEN_368 profile, and no touch at all. It is the same
-// device (FREEINK_DEVICE_SILKSCREEN, Board::Silkscreen), so the battery log, the key-access rules, the front
-// light and the power policy apply to it as they are. 0 (the default) is the 4.26" board, and then the
-// macro changes nothing below. Read before the driver block, which it selects.
+// panel on J2 in place of the 4.26" 800x480 one: the newer X3 batch's UC8279d, the only controller this
+// variant supports, through the SDK's UC8279d X3 driver, the derived SILKSCREEN_368 profile, and no touch at
+// all. It is the same device (FREEINK_DEVICE_SILKSCREEN, Board::Silkscreen), so the battery log, the
+// key-access rules, the front light and the power policy apply to it as they are. 0 (the default) is the
+// 4.26" board, and then the macro changes nothing below. Read before the driver block, which it selects.
 #ifndef SILKSCREEN_PANEL_368
 #define SILKSCREEN_PANEL_368 0
 #endif
@@ -142,7 +142,7 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 // use SSD1677, UC8179, or UC8279, recovered from OEM firmware and hardware
 // references — see docs/xteink-x4pro-support.md.
 // Silkscreen's 4.26" board takes the SSD1677; its 3.68" variant (SILKSCREEN_PANEL_368)
-// carries the X3's panel and links the X3 driver pair below instead.
+// carries the X3's UC8279d panel and links that driver below instead.
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
     FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || \
     FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368)
@@ -150,7 +150,7 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 #else
 #define FREEINK_DRIVER_SSD1677 0
 #endif
-#if FREEINK_DEVICE_X3 || FREEINK_SILKSCREEN_368
+#if FREEINK_DEVICE_X3
 #define FREEINK_DRIVER_UC8253_X3 1
 #else
 #define FREEINK_DRIVER_UC8253_X3 0
@@ -168,9 +168,10 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 // Which controller a given unit runs is resolved at boot by the display-bus
 // probe (0x70 VER readback; NVS hw_calib/screenType is diagnostics-only) and the
 // matching driver is selected before display begin(). Link each driver wherever
-// a batch might carry it. The Silkscreen 3.68" variant carries the X3's panel,
-// so it links the X3 pair (UC8253, UC8279d) and neither SSD1677 nor the UC8279
-// X4 driver.
+// a batch might carry it. The Silkscreen 3.68" variant carries the X3's UC8279d
+// panel and nothing else (its controller is fixed in its profile and never
+// probed), so it links that driver alone: not the UC8253, the SSD1677 or the
+// UC8279 X4 driver.
 #if FREEINK_DEVICE_X3 || FREEINK_SILKSCREEN_368
 #define FREEINK_DRIVER_UC8279 1
 #else
@@ -574,11 +575,12 @@ struct DisplayPins {
   // existing initializers stay valid and keep a bare INPUT.
   bool busyPullDown = false;
   // The same for an UltraChip panel's active-low BUSY_N (the UC81xx X4 drivers'
-  // BusyPolarity::UcIdleHigh, and on the Silkscreen 3.68" variant the X3 drivers'
-  // X3TwoPhase): an internal pull-up while awake, so a missing panel reads idle and
-  // the UC wait, which has no timeout, ends. A board whose probe picks SSD1677 or
-  // an UltraChip part at runtime sets both, and the bus applies the one matching
-  // the driver. Read through BoardConfig::displayBusyPullUp().
+  // BusyPolarity::UcIdleHigh, and on the Silkscreen 3.68" variant the X3 UC8279d
+  // driver's X3TwoPhase): an internal pull-up while awake, so a missing panel reads
+  // idle and the wait ends (a UcIdleHigh wait has no timeout; X3TwoPhase's runs to
+  // its 30 s ceiling on a floating line). A board whose probe picks SSD1677 or an
+  // UltraChip part at runtime sets both, and the bus applies the one matching the
+  // driver. Read through BoardConfig::displayBusyPullUp().
   bool busyPullUp = false;
 };
 
@@ -2439,12 +2441,13 @@ static_assert(SILKSCREEN_TOUCH_ALT_JUMPERS == 0 || SILKSCREEN_TOUCH_ALT_JUMPERS 
 // Panel controller override for a unit whose probe misbehaves:
 // -DSILKSCREEN_DISPLAY_CONTROLLER=ssd1677 or =uc8279 runs that controller and
 // skips the probe. UC8179 is not linked into this build, so it cannot be named.
-// The 3.68" variant (SILKSCREEN_PANEL_368) takes =uc8253 or =uc8279 instead (the
-// X3's pair): it links no SSD1677 driver, and the 4.26" board no UC8253 driver, so
-// each build rejects the other's name below.
+// The 3.68" variant (SILKSCREEN_PANEL_368) has no such choice: its controller is the
+// X3's UC8279d, fixed in SILKSCREEN_368, and it never probes. =uc8279 is accepted
+// there and changes nothing (an env that already sets it keeps building); =uc8253 and
+// =ssd1677 are refused below, with the reason.
 namespace silkscreen_display {
 constexpr DisplayController ssd1677 = DisplayController::SSD1677;
-constexpr DisplayController uc8253 = DisplayController::UC8253;
+constexpr DisplayController uc8253 = DisplayController::UC8253;  // declared so that asking for it is refused with a reason
 constexpr DisplayController uc8279 = DisplayController::UC8279;
 constexpr DisplayController SSD1677 = ssd1677;
 constexpr DisplayController UC8253 = uc8253;
@@ -2456,17 +2459,16 @@ constexpr DisplayController CONTROLLER = SILKSCREEN_DISPLAY_CONTROLLER;
 constexpr bool FORCED = false;
 constexpr DisplayController CONTROLLER = ssd1677;  // until the probe finds an UltraChip part
 #endif
-// The 3.68" variant's controller: the forced one, else the X3's UC8253 until the X3 stock probe finds
-// the newer batch's UC8279d.
-constexpr DisplayController CONTROLLER_368 = FORCED ? CONTROLLER : uc8253;
 }  // namespace silkscreen_display
-static_assert(SILKSCREEN_PANEL_368 || silkscreen_display::CONTROLLER != silkscreen_display::uc8253,
-              "SILKSCREEN_DISPLAY_CONTROLLER=uc8253 is for the 3.68\" variant (SILKSCREEN_PANEL_368=1): "
-              "the 4.26\" board links no UC8253 driver");
-static_assert(!SILKSCREEN_PANEL_368 || silkscreen_display::CONTROLLER_368 == silkscreen_display::uc8253 ||
-                  silkscreen_display::CONTROLLER_368 == silkscreen_display::uc8279,
-              "the 3.68\" variant runs a UC8253 or a UC8279d: SILKSCREEN_DISPLAY_CONTROLLER is uc8253 or uc8279, "
-              "and the SSD1677 driver is not linked for it");
+static_assert(silkscreen_display::CONTROLLER != silkscreen_display::uc8253,
+              "SILKSCREEN_DISPLAY_CONTROLLER=uc8253 is refused: no Silkscreen build links the UC8253 driver. The 3.68\" "
+              "variant is UC8279d only (the owner's SEO368NQW25 module answers the X3 VER read with 00 0F 00, a "
+              "driven UltraChip answer the UC8253 recipe leaves blank, and runs on the UC8279d driver)");
+static_assert(!SILKSCREEN_PANEL_368 || !silkscreen_display::FORCED ||
+                  silkscreen_display::CONTROLLER != silkscreen_display::ssd1677,
+              "SILKSCREEN_DISPLAY_CONTROLLER=ssd1677 is refused for the 3.68\" variant: its controller is the X3's "
+              "UC8279d, fixed in SILKSCREEN_368 (=uc8279 is accepted and changes nothing), and the SSD1677 driver "
+              "is not linked for it");
 // Designated initializers (C++20; they must follow declaration order): upstream
 // appends fields to BoardProfile and its sub-structs, which would shift a
 // positional initializer. A member left out takes its default member
@@ -2753,9 +2755,10 @@ constexpr BoardProfile SILKSCREEN = {
     .displayProbe = {.forced = silkscreen_display::FORCED,
                      .ultraChipController = DisplayController::UC8279,
                      .cacheAcrossDeepSleep = true,
-                     // Also true for the 3.68" variant, which inherits this block: its X3 glass is not the
-                     // X4's, but the consumer's X4 panel policies (CrossPoint's xteinkClassPanel(), the
-                     // reader overlay's refresh) are the ones it needs. Pinned below.
+                     // Also true for the 3.68" variant, which inherits this field and ultraChipController (and
+                     // sets forced and no cache itself, in derive()): its X3 glass is not the X4's, but the
+                     // consumer's X4 panel policies (CrossPoint's xteinkClassPanel(), the reader overlay's
+                     // refresh) are the ones it needs. Pinned below.
                      .x4ClassPanel = true}};
 
 static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
@@ -2797,39 +2800,42 @@ static_assert(FREEINK_CAP_ADC_LADDERS || !FREEINK_DEVICE_SILKSCREEN,
 // are power-policy data.
 static_assert(!FREEINK_DEVICE_SILKSCREEN || (FREEINK_CAP_PROBE_IDENTITY && FREEINK_CAP_POWER_POLICY),
               "Silkscreen needs FREEINK_CAP_PROBE_IDENTITY and FREEINK_CAP_POWER_POLICY: its boot checks use them");
-// The controller rules hang on the probe policy: without it the forced-controller override is ignored (the
-// panel is probed anyway and a forced UC8253 is promoted), BUSY gets no pull-up, the cached verdict is never
-// checked against the panel, and the UltraChip driver-free sleep is not compiled.
+// The controller rules hang on the probe policy: without it the 4.26" board's forced-controller override is
+// ignored (the panel is probed anyway), BUSY gets no pull-up, the cached verdict is never checked against the
+// panel, and the UltraChip driver-free sleep is not compiled.
 static_assert(!FREEINK_DEVICE_SILKSCREEN || FREEINK_CAP_DISPLAY_PROBE_POLICY,
               "Silkscreen needs FREEINK_CAP_DISPLAY_PROBE_POLICY: its controller probe, override, cache and "
               "BUSY handling are behind it");
 
 // --- Silkscreen with the Xteink X3's 3.68" panel (SILKSCREEN_PANEL_368) ------
-// The board cut at y 62.00 with the X3's 792x528 panel on J2 (UC8253, or the UC8279d some X3
-// batches carry), 4-wire SPI + DC + RST + BUSY_N as the 4.26" panel, and no touch hardware at
-// all: no J4 tail, no controller, no pin (the "x3 build", docs/silkscreen/MODULARITY.md). It is
-// derived from SILKSCREEN and overrides only the display and touch data below, so the pins, the
-// power policy, the key and charge ladders, the light, the card, the RTC and the parked pins
-// cannot drift from the profile the board was validated with. The controller is the X3's to
-// find: UC8253 here, promoted to UC8279 by the X3 stock probe (XteinkDetect) where the VER
-// read says so, or forced with SILKSCREEN_DISPLAY_CONTROLLER=uc8253|uc8279.
+// The board cut at y 62.00 with the X3's 792x528 panel on J2, 4-wire SPI + DC + RST + BUSY_N as
+// the 4.26" panel, and no touch hardware at all: no J4 tail, no controller, no pin (the "x3
+// build", docs/silkscreen/MODULARITY.md). The controller is the X3's newer-batch UC8279d and only
+// that (owner decision, 2026-10-11): the owner's SEO368NQW25 module answers the X3 stock VER read
+// with 00 0F 00, a driven UltraChip answer that is neither the 0x66 of the X3's own UC8279d module
+// nor the 0xFF of a UC8253, the UC8253 recipe left it blank, and the UC8279d driver ran it. So the
+// profile knows its controller and probes nothing: no VER read, no verdict cache. It is derived
+// from SILKSCREEN and overrides only the display and touch data below, so the pins, the power
+// policy, the key and charge ladders, the light, the card, the RTC and the parked pins cannot
+// drift from the profile the board was validated with.
 namespace silkscreen_368 {
 constexpr BoardProfile derive(BoardProfile p) {
   p.name = "silkscreen_368";
-  p.displayController = silkscreen_display::CONTROLLER_368;
+  p.displayController = DisplayController::UC8279;  // fixed in data: SILKSCREEN_DISPLAY_CONTROLLER is not read here
   p.displayWidth = 792;
   p.displayHeight = 528;
-  // BUSY_N idles HIGH on both X3 controllers and has no external pull on this board: the UltraChip
-  // pull-up while awake (EpdBus), none of the SSD1677's pull-down. Neither is held into sleep.
+  // BUSY_N idles HIGH on the UC8279d and has no external pull on this board: the UltraChip pull-up
+  // while awake (EpdBus), none of the SSD1677's pull-down. Neither is held into sleep.
   p.display.busyPullDown = false;
   p.display.busyPullUp = true;
   p.displaySpiHz = XTEINK_DISPLAY_SPI_HZ;  // the X3's proven 10 MHz, not the SSD1677's 20
   p.touch = NO_TOUCH;
-  // displayProbe is SILKSCREEN's, inherited whole: forced follows the same build macro (the controller it
-  // forces is displayController above), an UltraChip answer is the UC8279 (here the X3's UC8279d, which
-  // the stock probe reads as VER byte 0x66), and the verdict is kept for deep-sleep wakes. A field upstream
-  // appends to DisplayProbeConfig and SILKSCREEN sets reaches the variant this way; the asserts below make
-  // a field that differs a decision, taken here.
+  // displayProbe is SILKSCREEN's, but the controller is known: forced (the build chose it: leave the bus
+  // alone, a cold boot and a deep-sleep wake make no bus traffic for identification) and no verdict cache.
+  // ultraChipController and x4ClassPanel stay SILKSCREEN's, and so does a field upstream appends to
+  // DisplayProbeConfig and SILKSCREEN sets; the asserts below pin what the variant stands on.
+  p.displayProbe.forced = true;
+  p.displayProbe.cacheAcrossDeepSleep = false;
   return p;
 }
 
@@ -2855,9 +2861,9 @@ constexpr bool same(const InputPins& a, const InputPins& b) {
          a.adcLadderPin == b.adcLadderPin && a.toggleSwitch == b.toggleSwitch &&
          a.powerExternalPull == b.powerExternalPull;
 }
-constexpr bool same(const DisplayProbeConfig& a, const DisplayProbeConfig& b) {
-  return a.forced == b.forced && a.ultraChipController == b.ultraChipController &&
-         a.cacheAcrossDeepSleep == b.cacheAcrossDeepSleep && a.x4ClassPanel == b.x4ClassPanel;
+// The probe policy fields the variant inherits: all but forced and cacheAcrossDeepSleep, which derive() sets.
+constexpr bool sameInheritedProbePolicy(const DisplayProbeConfig& a, const DisplayProbeConfig& b) {
+  return a.ultraChipController == b.ultraChipController && a.x4ClassPanel == b.x4ClassPanel;
 }
 constexpr bool sameParkedPins(const BoardProfile& a, const BoardProfile& b) {
   constexpr int count = sizeof(BoardProfile::parkedPins) / sizeof(ParkedPin);
@@ -2910,17 +2916,18 @@ static_assert(silkscreen_368::same(SILKSCREEN_368.input, SILKSCREEN.input) &&
 static_assert(silkscreen_368::sameParkedPins(SILKSCREEN_368, SILKSCREEN),
               "Silkscreen 3.68\" parkedPins must equal SILKSCREEN's, entry by entry (pin, boot level, sleep level); "
               "the host test checks that IO11 is parked HIGH");
-// The probe policy is SILKSCREEN's too (derive() inherits it): a difference is a decision, taken in derive()
+// The controller is fixed in data and nothing is probed: the UC8279d, a forced policy (the build chose it, so a
+// cold boot and a deep-sleep wake make no bus traffic for identification) and no verdict cache. The 4.26" board's
+// SILKSCREEN_DISPLAY_CONTROLLER is not what sets any of it (it is refused above unless it is =uc8279).
+static_assert(SILKSCREEN_368.displayController == DisplayController::UC8279,
+              "Silkscreen 3.68\" is a UC8279d panel and only that: its profile's controller is fixed, not probed");
+static_assert(SILKSCREEN_368.displayProbe.forced && !SILKSCREEN_368.displayProbe.cacheAcrossDeepSleep,
+              "Silkscreen 3.68\" probes nothing: its probe policy is forced, and it keeps no verdict across deep sleep");
+// The rest of the policy is SILKSCREEN's (derive() inherits it): a difference is a decision, taken in derive()
 // and in this assert.
-static_assert(silkscreen_368::same(SILKSCREEN_368.displayProbe, SILKSCREEN.displayProbe),
-              "Silkscreen 3.68\" probe policy must be the 4.26\" board's: forced, ultraChipController, "
-              "cacheAcrossDeepSleep and x4ClassPanel");
-// ... and what the variant's stock probe stands on: a 0x66 read is promoted to UC8279 and kept for the next
-// deep-sleep wake, and restoreCachedController() takes that verdict back only when ultraChipController is UC8279.
-static_assert(SILKSCREEN_368.displayProbe.ultraChipController == DisplayController::UC8279 &&
-                  SILKSCREEN_368.displayProbe.cacheAcrossDeepSleep,
-              "Silkscreen 3.68\" needs a probe policy that takes UltraChip answers as UC8279 and caches the verdict "
-              "across deep sleep");
+static_assert(silkscreen_368::sameInheritedProbePolicy(SILKSCREEN_368.displayProbe, SILKSCREEN.displayProbe),
+              "Silkscreen 3.68\" probe policy must be the 4.26\" board's but for forced and cacheAcrossDeepSleep: "
+              "ultraChipController and x4ClassPanel");
 // CrossPoint's xteinkClassPanel() reads x4ClassPanel to give the reader's overlays the X4 panel's refresh policy,
 // and isXteinkDevice() is false on this board, so the variant's X3 glass relies on the value staying true.
 static_assert(SILKSCREEN_368.displayProbe.x4ClassPanel,
@@ -2934,17 +2941,17 @@ static_assert(!SILKSCREEN_PANEL_368 || !FREEINK_CAP_TOUCH,
               "SILKSCREEN_PANEL_368 has no touch hardware: build with FREEINK_CAP_TOUCH=0 (the default for it)");
 static_assert(!SILKSCREEN_PANEL_368 || !SILKSCREEN_TOUCH_ALT_JUMPERS,
               "SILKSCREEN_TOUCH_ALT_JUMPERS is for a J4 touch tail, which the 3.68\" variant does not have");
-// The variant's controller handling is all behind the probe policy: the BUSY_N pull-up and the cached-controller
-// check (EpdBus), the UC8253's driver-free sleep (PowerManager) and the forced-controller override (XteinkDetect).
+// What the variant keeps behind the probe policy: the BUSY_N pull-up (EpdBus), the UltraChip driver-free sleep
+// (PowerManager) and the x4ClassPanel the app reads through displayProbePolicy().
 static_assert(!SILKSCREEN_PANEL_368 || FREEINK_CAP_DISPLAY_PROBE_POLICY,
-              "SILKSCREEN_PANEL_368 needs FREEINK_CAP_DISPLAY_PROBE_POLICY: its BUSY_N pull-up, cached-controller "
-              "check, UC8253 sleep and forced-controller rule are behind it");
-// Its panel drivers are the X3 pair. The SSD1677 and UC8279 X4 drivers are not linked, and a build
-// that links another device's SSD1677 is not this variant's.
-static_assert(!FREEINK_SILKSCREEN_368 || (FREEINK_DRIVER_UC8253_X3 && FREEINK_DRIVER_UC8279 &&
+              "SILKSCREEN_PANEL_368 needs FREEINK_CAP_DISPLAY_PROBE_POLICY: its BUSY_N pull-up, its UltraChip "
+              "driver-free sleep and x4ClassPanel are behind it");
+// Its one panel driver is the X3's UC8279d. The UC8253, SSD1677 and UC8279 X4 drivers are not linked, and a
+// build that links another device's is not this variant's.
+static_assert(!FREEINK_SILKSCREEN_368 || (FREEINK_DRIVER_UC8279 && !FREEINK_DRIVER_UC8253_X3 &&
                                           !FREEINK_DRIVER_SSD1677 && !FREEINK_DRIVER_UC8279_X4),
-              "SILKSCREEN_PANEL_368 links the X3 drivers (UC8253, UC8279d) and neither SSD1677 nor the UC8279 X4 "
-              "driver: do not combine it with a device that needs them");
+              "SILKSCREEN_PANEL_368 links the X3's UC8279d driver and no other panel driver (not the UC8253, the "
+              "SSD1677 or the UC8279 X4 driver): do not combine it with a device that needs them");
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to

@@ -45,15 +45,18 @@ python3 libs/hardware/BoardConfig/test/host/run_profile_asserts.py -v
 
 - **Must build:** the 4.26" board (default, forced `ssd1677` or `uc8279`, alternate
   touch jumpers, `SILKSCREEN_PANEL_368=0`), the 3.68" variant (default, touch
-  written out as 0, forced `uc8253` or `uc8279`, diagnostics), and the X3, X4, X3+X4,
-  X4 Pro, X4 Classic and de-link headers, with no warning.
+  written out as 0, `uc8279` or `UC8279` accepted as a no-op, diagnostics), and the
+  X3, X4, X3+X4, X4 Pro, X4 Classic and de-link headers, with no warning.
 - **Must be refused, by the assert meant for it:** the variant with touch, with
-  `ssd1677` or `uc8179`, with the alternate jumpers, beside an SSD1677 device or
-  without the probe policy; the macro at 2 or without the Silkscreen device; the
-  4.26" board with `uc8253`, without the touch code, without the probe policy; a
-  Silkscreen build without probe identity, power policy or ADC ladders, or with a
-  C3 device.
+  `ssd1677` (its driver is not linked), `uc8253` (no Silkscreen build links the
+  UC8253 driver) or `uc8179` (not declared), with the alternate jumpers, beside an
+  SSD1677 device or without the probe policy; the macro at 2 or without the
+  Silkscreen device; the 4.26" board with `uc8253`, without the touch code, without
+  the probe policy; a Silkscreen build without probe identity, power policy or ADC
+  ladders, or with a C3 device.
 - **Asserts proven live (a scratch copy of the header is edited):** the variant's
-  `DEFAULT_DEVICE` set to the 4.26" profile and the reverse, the probe policy
-  diverging in `derive()` or `x4ClassPanel` turned off, and a field appended to
-  `DisplayProbeConfig` that SILKSCREEN sets, which the variant must inherit.
+  `DEFAULT_DEVICE` set to the 4.26" profile and the reverse, its controller made a
+  UC8253, its probe policy left probing (`forced` off) or caching a verdict, an
+  inherited probe field changed in `derive()`, `x4ClassPanel` turned off, and a
+  field appended to `DisplayProbeConfig` that SILKSCREEN sets, which the variant
+  must inherit.
