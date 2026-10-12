@@ -68,8 +68,8 @@ struct EpdPins {
   int8_t powerEnable = -1;
   // Internal pull-down on an active-high BUSY with no external pull (see
   // BoardConfig::DisplayPins::busyPullDown). Default false keeps a bare INPUT.
-  // The pull-up of a UcIdleHigh BUSY_N (and, on the Silkscreen 3.68" variant, of X3TwoPhase)
-  // comes from BoardConfig::displayBusyPullUp().
+  // The pull-up of a UcIdleHigh BUSY_N (and, on the Silkscreen 3.68" variant, of the UC8279d's
+  // X3TwoPhase) comes from BoardConfig::displayBusyPullUp().
   bool busyPullDown = false;
 };
 

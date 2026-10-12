@@ -71,14 +71,15 @@ void boardEpdReset(bool high) {
 #endif
 }
 
-// The X3 drivers' X3TwoPhase BUSY_N (UC8253, UC8279d) idles HIGH like the UC81xx X4 drivers'
-// UcIdleHigh. On the Silkscreen 3.68" variant, the X3 pair on a board with the display-probe
-// policy, it gets UcIdleHigh's treatment: DisplayPins::busyPullUp while awake, and the
-// cached-controller check below. The rule is keyed on the variant itself, so any other build
-// that links the X3 drivers (the C3 X3, or an env that sets the capability) keeps X3TwoPhase a
-// bare INPUT with no check, and the lines below are the ones those builds always had.
-#define FREEINK_EPD_X3_BUSY_N \
-  (FREEINK_SILKSCREEN_368 && FREEINK_CAP_DISPLAY_PROBE_POLICY && (FREEINK_DRIVER_UC8253_X3 || FREEINK_DRIVER_UC8279))
+// The X3 UC8279d driver's X3TwoPhase BUSY_N idles HIGH like the UC81xx X4 drivers' UcIdleHigh,
+// and Silkscreen has no external pull on that line. On the 3.68" variant, which links that driver
+// on a board with the display-probe policy, it gets UcIdleHigh's internal pull-up while awake
+// (DisplayPins::busyPullUp): an unseated or missing panel then reads idle, and its waits end
+// where a floating line would run each to its 30 s ceiling. The variant caches no controller,
+// so it gets no cached-controller check below. The rule is keyed on the variant itself: the C3
+// X3 and every other build keep X3TwoPhase a bare INPUT, and the lines below are the ones those
+// builds always had.
+#define FREEINK_EPD_X3_BUSY_N (FREEINK_SILKSCREEN_368 && FREEINK_CAP_DISPLAY_PROBE_POLICY)
 
 #if FREEINK_CAP_DISPLAY_PROBE_POLICY
 // The bound on the idle check below: the X3 stock protocol's bounded BUSY wait
@@ -101,14 +102,8 @@ void checkCachedController(const int8_t busyPin, const freeink::BusyPolarity p) 
   static bool checked = false;
   if (checked || busyPin < 0 || !freeink::displayControllerCached()) return;
   checked = true;
-#if FREEINK_EPD_X3_BUSY_N
-  const bool idleHigh = p == freeink::BusyPolarity::UcIdleHigh || p == freeink::BusyPolarity::X3TwoPhase;
-  if (!idleHigh && p != freeink::BusyPolarity::ActiveHigh) return;
-  const int idle = idleHigh ? HIGH : LOW;
-#else
   if (p != freeink::BusyPolarity::UcIdleHigh && p != freeink::BusyPolarity::ActiveHigh) return;
   const int idle = p == freeink::BusyPolarity::UcIdleHigh ? HIGH : LOW;
-#endif
   const unsigned long start = millis();
   while (digitalRead(busyPin) != idle) {
     if (millis() - start >= CACHED_IDLE_WAIT_MS) {
@@ -313,7 +308,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
 #if FREEINK_EPD_X3_BUSY_N
   } else if ((busy == BusyPolarity::UcIdleHigh || busy == BusyPolarity::X3TwoPhase) &&
              BoardConfig::displayBusyPullUp()) {
-    pinMode(pins.busy, INPUT_PULLUP);  // the same for BUSY_N (the X3 pair's wait is bounded)
+    pinMode(pins.busy, INPUT_PULLUP);  // the same for BUSY_N (the X3 UC8279d's wait is bounded)
 #else
   } else if (busy == BusyPolarity::UcIdleHigh && BoardConfig::displayBusyPullUp()) {
     pinMode(pins.busy, INPUT_PULLUP);  // the same for BUSY_N, whose wait has no timeout
