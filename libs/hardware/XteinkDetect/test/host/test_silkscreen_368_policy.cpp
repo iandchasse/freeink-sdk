@@ -111,6 +111,18 @@ int main() {
     assert(calls.none() && displayControllerSource() == Source::Forced);
   }
 
+  // The probe API itself reads nothing: it answers the profile's controller with no bytes, on the bus
+  // as on a wake (no probe is compiled into this build).
+  for (const auto reason : {ESP_RST_POWERON, ESP_RST_DEEPSLEEP}) {
+    boot(reason);
+    uint8_t ver[5] = {9, 9, 9, 9, 9};
+    uint8_t flg = 9;
+    assert(detectXteinkDisplayController(ver, &flg) == Verdict::PrimaryAssumed);
+    for (const uint8_t b : ver) assert(b == 0);
+    assert(flg == 0 && calls.none());
+    assert(detectXteinkDisplayController() == Verdict::PrimaryAssumed && calls.none());
+  }
+
   // The C3-only fingerprints are compiled out here (an S3 build): inert, with no bus traffic either.
   boot(ESP_RST_POWERON);
   uint8_t score1 = 9, score2 = 9;

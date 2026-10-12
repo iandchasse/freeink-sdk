@@ -81,9 +81,13 @@ for forced in "" "-DSILKSCREEN_DISPLAY_CONTROLLER=uc8279"; do
 done
 ```
 
+`XteinkDetect.cpp` compiles no probe for this build (neither the stock X3 VER read nor the two-pass
+VER/FLG/MTP read, and no verdict cache), so the test also calls the probe API directly.
+
 It covers the profile the build selects (`DEFAULT_DEVICE` and `ACTIVE`: 792x528, UC8279, no
 touch and the keys kept, IO11 parked HIGH, the X3's 10 MHz clock and the BUSY_N pull-up),
 the forced policy without a cache, `applyXteinkDisplayController()` at every reset reason
 (nothing promoted, source `Forced`, no probe record, nothing for `forgetCachedDisplayController()`
-to drop), and the C3-only fingerprints, inert on an S3. `=uc8253` and `=ssd1677` are refused
+to drop), `detectXteinkDisplayController()` (the profile's controller, no byte read, no pin
+touched), and the C3-only fingerprints, inert on an S3. `=uc8253` and `=ssd1677` are refused
 by `BoardConfig.h`, which `libs/hardware/BoardConfig/test/host/run_profile_asserts.py` checks.

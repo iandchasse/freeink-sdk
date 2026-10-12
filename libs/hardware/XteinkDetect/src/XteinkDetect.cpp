@@ -21,25 +21,63 @@
 //     fingerprint. It reads whatever pins the ACTIVE profile carries, so it is
 //     safe on the S3 X4 Pro too, and on Silkscreen (the same half-duplex read on
 //     SDI, IO12).
-// Two protocols serve it. The stock X3 one (probeX3DisplayController: three VER
-// bytes, the id in byte 2) is for the X3 itself, the X4 Classic, and the Silkscreen
-// 3.68" variant (FREEINK_SILKSCREEN_368), whose panel is the X3's: a UC8253 also
-// drives FLG, so the two-pass VER/FLG/MTP probe below would take it for an UltraChip
-// part. Every other profile keeps the two-pass probe.
+// The Silkscreen 3.68" variant (FREEINK_SILKSCREEN_368) is the one exception: its
+// controller is fixed in its profile, so it compiles no probe at all (see below).
 #define FREEINK_XTEINK_C3 (FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
 #define FREEINK_XTEINK_DISPLAY_PROBE                                                             \
   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
    FREEINK_DEVICE_SILKSCREEN)
-#define FREEINK_XTEINK_STOCK_X3_PROBE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4CLASSIC || FREEINK_SILKSCREEN_368)
 static_assert(!FREEINK_CAP_DISPLAY_PROBE_POLICY || FREEINK_XTEINK_DISPLAY_PROBE,
               "FREEINK_CAP_DISPLAY_PROBE_POLICY needs a profile the display probe serves");
 
 namespace freeink {
 
 // =============================================================================
+// The Silkscreen 3.68" variant: nothing to probe.
+// =============================================================================
+#if FREEINK_SILKSCREEN_368
+
+// The panel is the X3's newer-batch UC8279d and the profile says so: SILKSCREEN_368 has displayController UC8279
+// and a forced probe policy with no verdict cache, and BoardConfig.h asserts it. Nothing is probed, so no probe
+// is compiled into this image: not the X3 stock VER read, not the two-pass VER/FLG/MTP read, no verdict cache.
+// A cold boot and a deep-sleep wake make no bus traffic for identification. The API keeps its shape for the
+// consumers that call it (the test firmware's panel page and main.cpp's log line).
+
+// Never probes: the profile's controller (PrimaryAssumed) with no bytes read.
+DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint8_t* flg) {
+  if (verBytes) memset(verBytes, 0, 5);
+  if (flg) *flg = 0;
+  return DisplayControllerVerdict::PrimaryAssumed;
+}
+
+const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() {
+  static const XteinkDisplayProbeDiag empty;  // valid == false: no probe has run
+  return empty;
+}
+
+namespace {
+DisplayControllerSource controllerSource = DisplayControllerSource::NotResolved;
+}  // namespace
+
+DisplayControllerSource displayControllerSource() { return controllerSource; }
+bool displayControllerCached() { return false; }
+void forgetCachedDisplayController() {}  // there is no verdict to drop
+
+bool applyXteinkDisplayController() {
+  // The 4.26" board's forced path, without the probe code behind it: leave the bus alone.
+  controllerSource = DisplayControllerSource::Forced;
+  if (Serial) {
+    Serial.printf("[%lu] [XTDET] controller forced by the build: %s (not probed)\n", millis(),
+                  BoardConfig::controllerPartName(BoardConfig::ACTIVE.displayController));
+  }
+  return false;
+}
+
+#elif FREEINK_XTEINK_DISPLAY_PROBE
+
+// =============================================================================
 // Board-agnostic UC81xx display-controller probe (shared bit-bang core).
 // =============================================================================
-#if FREEINK_XTEINK_DISPLAY_PROBE
 
 namespace {
 
@@ -74,11 +112,6 @@ void epdWriteByte(const EpdProbePins& p, uint8_t b) {
   }
 }
 
-// The two-pass VER/FLG/MTP probe and its helpers are not compiled into the
-// Silkscreen 3.68" image (FREEINK_SILKSCREEN_368): that variant identifies its
-// panel with the stock X3 read only, and the X4 Classic block below is the one
-// other user of the half-duplex register read.
-#if !FREEINK_SILKSCREEN_368 || FREEINK_DEVICE_X4CLASSIC
 uint8_t epdReadByte(const EpdProbePins& p) {
   uint8_t b = 0;
   for (uint8_t i = 0; i < 8; i++) {
@@ -108,9 +141,7 @@ void epdCmdRead(const EpdProbePins& p, uint8_t cmd, uint8_t* out, uint8_t len) {
   digitalWrite(p.cs, HIGH);
   pinMode(p.mosi, OUTPUT);
 }
-#endif
 
-#if !FREEINK_SILKSCREEN_368
 // The UC81xx VER signature: a leading reserved 0x00, then a CHIP_VER byte
 // (datasheet default 0x03, MTP-programmed so not pinned to that exact value)
 // that is neither a floating-low nor a floating-high bus. A released SDA reads
@@ -180,7 +211,6 @@ bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, ui
   if (flg) *flg = flgByte;
   return matchUc81xx(ver, flgByte);
 }
-#endif  // !FREEINK_SILKSCREEN_368
 
 void releaseDisplayPins(const EpdProbePins& p) {
   // Leave everything released. RST_N has an internal pull-up, so INPUT keeps the
@@ -192,7 +222,7 @@ void releaseDisplayPins(const EpdProbePins& p) {
   if (p.rst >= 0) pinMode(p.rst, INPUT);
 }
 
-#if FREEINK_XTEINK_STOCK_X3_PROBE
+#if FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4CLASSIC
 // X3 V6.3.15: 4200dafa (reset), 4200db40 (BUSY), 42009e4c/42009dba
 // (read), 4200fb12 (selector). See docs/x3-v6.3.15-firmware-audit.md.
 // Keep this separate from the X4-family fingerprint: stock X3 selects from
@@ -201,8 +231,6 @@ void releaseDisplayPins(const EpdProbePins& p) {
 // FUN_4200a778/FUN_42007fcc) resets, waits BUSY bounded, writes 0x70 with DC
 // low, flips SDA to input (no pull-up) and clocks 3 bytes back — no MISO
 // involved — then selects the driver from ver[2] against a 5-entry table.
-// The Silkscreen 3.68" variant runs it on its own pins (SDI on IO12 through
-// R29): its panel is the X3's, and 0x66 there is the UC8279d, 0xFF the UC8253.
 DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t verBytes[5], uint8_t* flg) {
   g_probeDiag = {};
   g_probeDiag.valid = true;
@@ -245,16 +273,7 @@ DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t
   epdWriteByte(p, UC81XX_CMD_VER);
   digitalWrite(p.dc, HIGH);
   epdClockDelay();
-#if FREEINK_SILKSCREEN_368
-  // Silkscreen's SDI (IO12 through R29) has no external pull-up, and a UC8253 does not drive this read
-  // as a UC8279d does. Released bare, the line is expected to keep the 0 that 0x70 ended on and read
-  // 0x00, which is no id: Inconclusive, never kept, so every wake would probe again. The pull-up gives
-  // the 0xFF that the X3's bus gives a UC8253, as the 4.26" board's own read does (epdCmdRead). A
-  // UC8279d drives its answer and is unaffected.
-  pinMode(p.mosi, INPUT_PULLUP);
-#else
   pinMode(p.mosi, INPUT);  // stock releases SDA without enabling a pull-up
-#endif
   delayMicroseconds(2);
   for (uint8_t i = 0; i < 3; i++) {
     uint8_t& b = g_probeDiag.ver[i];
@@ -283,7 +302,6 @@ DisplayControllerVerdict probeX3DisplayController(const EpdProbePins& p, uint8_t
 }
 #endif
 
-#if !FREEINK_SILKSCREEN_368
 // Two-pass probe with agreement, over an arbitrary pinout. Confirmed only when
 // both passes match the UC81xx signature AND agree on the VER bytes — a floating
 // bus can't produce the same stable non-trivial pattern twice. Disagreement is
@@ -397,7 +415,6 @@ DisplayControllerVerdict probeDisplayController(const EpdProbePins& p, uint8_t v
   g_probeDiag.verdict = static_cast<uint8_t>(v);
   return v;
 }
-#endif  // !FREEINK_SILKSCREEN_368
 
 }  // namespace
 
@@ -410,15 +427,7 @@ DisplayControllerVerdict detectXteinkDisplayController(uint8_t verBytes[5], uint
     return probeX3DisplayController(p, verBytes, flg);
   }
 #endif
-#if FREEINK_SILKSCREEN_368
-  // The 3.68" variant's panel is the X3's, a UC8253 (VER byte 2 reads 0xFF) or a UC8279d (0x66): the
-  // stock X3 read, whatever ACTIVE has been promoted to (the verdict, not the profile, picks the
-  // driver). The two-pass probe is not compiled for this build, since it would take the UC8253's
-  // driven FLG for an UltraChip answer.
-  return probeX3DisplayController(p, verBytes, flg);
-#else
   return probeDisplayController(p, verBytes, flg);
-#endif
 }
 
 const XteinkDisplayProbeDiag& getXteinkDisplayProbeDiag() { return g_probeDiag; }
