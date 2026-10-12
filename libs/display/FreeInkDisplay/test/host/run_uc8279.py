@@ -3,10 +3,12 @@
 
 The recording bus models EpdBus's transaction contract (epdbus_txn_model.h): a bus call made while a
 beginTxn() Transaction is alive would block its task for ever on hardware, and the test fails on it.
-The driver is built as the Silkscreen 3.68" variant (-DFREEINK_SILKSCREEN_368=1), the build that carries the
-strip-transaction fix. Two environment variables run the controls: UC8279_SOURCE names another copy of
-Uc8279Driver.cpp (the source before the fix must fail this test), and FREEINK_SILKSCREEN_368=0 builds the
-C3 X3's configuration, which keeps upstream's lines and fails it on the strip upload (a known upstream defect).
+The driver is built as it is. The strip upload's txn.end() before PARTIAL_OUT is upstream's fix (Free-Ink
+PR #139, c2d711a, merged as 7fcd3b3), carried ungated, so the C3 X3, the Silkscreen 3.68" variant and every
+other UC8279d build run this one source and none of them fails. The control: UC8279_SOURCE names another
+copy of Uc8279Driver.cpp, and upstream's source before that fix
+(git show 0b60346:libs/display/FreeInkDisplay/src/driver/Uc8279Driver.cpp) must fail this test with
+"EpdBus::cmd(0x92) while a beginTxn() Transaction is alive".
 """
 from pathlib import Path
 import os
@@ -17,7 +19,6 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE.parents[1] / "src"
 DRIVER = Path(os.environ.get("UC8279_SOURCE", str(SOURCE / "driver/Uc8279Driver.cpp")))
-VARIANT = os.environ.get("FREEINK_SILKSCREEN_368", "1")
 with tempfile.TemporaryDirectory(prefix="uc8279-test-") as directory:
     root = Path(directory)
     for folder in ("driver", "bus", "lut"):
@@ -103,7 +104,7 @@ public:
 ''')
     exe = root / "test_uc8279"
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
-                    "-Wno-unused-parameter", "-DFREEINK_SILKSCREEN_368=" + VARIANT, "-I"+str(root),
+                    "-Wno-unused-parameter", "-I"+str(root),
                     str(HERE / "test_uc8279.cpp"),
                     str(root / "driver/Uc8279Driver.cpp"), "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True)

@@ -122,12 +122,14 @@ the drivers included in each harness.
 a bus call made while one is alive blocks its task for ever in arduino-esp32's
 non-recursive `SPI.beginTransaction()` mutex (no panic, no watchdog, a frozen screen).
 The tests fail on such a call, and check a strip upload's order: the window, the plane's
-RAM command, the rows as one burst, then PTOUT after the burst has ended. A copy of the
-driver can be run instead with `UC8279_SOURCE` or `UC8253_SOURCE` (the controls: the
-UC8279d source before `txn.end()` was added, and the UC8253 without it, both fail).
-`run_uc8279.py` builds the driver as the Silkscreen 3.68" variant, the build that
-ends the strip's transaction; `FREEINK_SILKSCREEN_368=0` builds the C3 X3's
-configuration, which keeps upstream's lines and fails the strip check.
+RAM command, the rows as one burst, then PTOUT after the burst has ended. Both drivers
+end the strip's transaction before PTOUT, so every configuration passes: the UC8279d's
+`txn.end()` is upstream's fix (Free-Ink PR #139, `c2d711a`), built ungated for the C3 X3
+and the Silkscreen 3.68" variant alike. A copy of the driver can be run instead with
+`UC8279_SOURCE` or `UC8253_SOURCE` (the controls: upstream's UC8279d source before that
+fix, `git show 0b60346:libs/display/FreeInkDisplay/src/driver/Uc8279Driver.cpp`, and the
+UC8253 without its `txn.end()`; both fail on `EpdBus::cmd(0x92) while a beginTxn()
+Transaction is alive`).
 
 For the board-profile and display-probe regression test, follow the
 [XteinkDetect host instructions](../libs/hardware/XteinkDetect/test/host/README.md),

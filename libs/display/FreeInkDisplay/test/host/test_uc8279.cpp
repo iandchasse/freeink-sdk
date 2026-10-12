@@ -63,7 +63,8 @@ int main() {
 
   // Per-strip upload, the reader's gray-page route on this driver (stripUploads): the PTL window in gate
   // space, the plane's RAM command, the rows bottom-first as ONE CS-low burst, then PTOUT once that
-  // burst's Transaction has ended. PTOUT inside the burst was the soft lock a grayscale image page caused.
+  // burst's Transaction has ended. PTOUT inside the burst was the deadlock a grayscale image page hit (the
+  // X3's UC8279d before upstream's fix, Free-Ink PR #139).
   {
     constexpr uint16_t kRows = 3, kY = 100, kWb = 792 / 8;
     std::vector<uint8_t> strip(size_t(kRows) * kWb);
