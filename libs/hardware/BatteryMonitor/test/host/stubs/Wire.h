@@ -32,5 +32,9 @@ class TwoWire {
     return static_cast<uint8_t>(rxLength_);
   }
   int read() { return rxPos_ < rxLength_ ? rx_[rxPos_++] : -1; }
+  // The shared sensor-bus helpers (SharedI2c.h), which the shared line's Rtc.cpp includes.
+  uint32_t getClock() { return 400000; }
+  bool setClock(uint32_t) { return true; }
+  void end() {}
 };
 inline TwoWire Wire;
