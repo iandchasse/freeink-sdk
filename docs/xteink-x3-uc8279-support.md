@@ -19,10 +19,11 @@ UC8279d and nothing else** (owner decision: decided 2026-10-11, made
 probe below, reads no VER, and keeps no verdict in RTC memory; a cold boot and a
 deep-sleep wake make no bus traffic for identification. It applies the same
 driver recipe, waveforms and refresh policy; the differences are the BUSY_N
-pull-up and the driver-free panel sleep (behind the Silkscreen probe policy)
-and, under `FREEINK_SILKSCREEN_368`, a `txn.end()` before PARTIAL_OUT in the
-strip upload (`4988be4`; upstream's copy holds a transaction across
-`bus.cmd()`). See the README's per-batch controller section.
+pull-up and the driver-free panel sleep (behind the Silkscreen probe policy).
+The strip upload's `txn.end()` before PARTIAL_OUT is upstream's own, ungated
+(Free-Ink PR #139): this line carried a gated copy of it (`4988be4`) until
+`b460001` reverted it, so the C3 X3 and the variant run the same text. See the
+README's per-batch controller section.
 
 **Observed signature of the module that set this decision.** The Xteink 3.68"
 panel marked `SEO368NQW25` (flex marking), on a Silkscreen board with the
@@ -42,14 +43,18 @@ complete: X3_PON (41 ms)`), and with the UC8279d driver forced by a local build
 flag it displayed a picture. That forced build then froze (no panic, no
 watchdog) on its first grayscale image page. The code reads as a bus transaction
 held across a bus command (a deadlock on arduino-esp32's non-recursive SPI
-mutex): that cause is inferred from the code, not from a backtrace. SDK
-`4988be4` ends the transaction first and the fix is visible in the images'
-disassembly; it has not yet been seen on glass. The owner also reported a quiet,
-harsh buzz at every display refresh, from the e-paper boost stage; it is
-unexplained, and the boost inductor `L1` (47 µH, sized to the SSD1677 reference
-and unverified for this panel: the Silkscreen board's HARDWARE.md §6.2) and the
-4.7 µF / 50 V X5R MLCCs `C11` and `C13`-`C17` are the usual singers. Nothing
-else has run on a board, and CrossInk's variant images have never been flashed.
+mutex): that cause is inferred from the code, not from a backtrace. Fixed
+upstream with the same one-line change (Free-Ink PR #139, `c2d711a`, merged as
+`7fcd3b3` on 2026-10-12: `txn.end()` before `PARTIAL_OUT`); this line's own
+gated copy (`4988be4`) was reverted by `b460001` to take upstream's text, and
+the C3 X3 build has the fix too. It is visible in the images' disassembly and
+has not been seen on glass here (the owner has not yet flashed it). The owner
+also reported a quiet, harsh buzz at every display refresh, from the e-paper
+boost stage; it is unexplained, and the boost inductor `L1` (47 µH, sized to
+the SSD1677 reference and unverified for this panel: the Silkscreen board's
+HARDWARE.md §6.2) and the 4.7 µF / 50 V X5R MLCCs `C11` and `C13`-`C17` are the
+usual singers. Nothing else has run on a board, and CrossInk's variant images
+have never been flashed.
 
 The detection section reflects the stock V6.3.15 protocol. The driver uses
 recovered external waveforms and register initialization; the initial OTP-only
