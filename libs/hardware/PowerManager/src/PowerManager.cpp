@@ -279,15 +279,10 @@ void driveLevel(const int8_t pin, const uint8_t level) {
 bool PowerManager::sleepPanelWithoutDriver() {
   const BoardConfig::DisplayPins& d = BoardConfig::ACTIVE.display;
   const BoardConfig::DisplayController controller = BoardConfig::ACTIVE.displayController;
-  // An UltraChip panel that a DisplayProbeConfig board's probe picked, or that its profile
-  // fixes (the Silkscreen 3.68" variant's UC8279d), takes its own deep-sleep command; BUSY_N
-  // is LOW while busy. A UC8253 is one too where its driver is linked on a board with the
-  // probe policy (no build today: the C3 X3 has no policy, and the variant links the UC8279d
-  // alone): the same DSLP 0x07 / 0xA5 that Uc8253X3Driver::deepSleep() sends.
-  const bool ultraChip = FREEINK_CAP_DISPLAY_PROBE_POLICY &&
-                         (controller == BoardConfig::DisplayController::UC8279 ||
-                          controller == BoardConfig::DisplayController::UC8179 ||
-                          (FREEINK_DRIVER_UC8253_X3 && controller == BoardConfig::DisplayController::UC8253));
+  // An UltraChip panel that a DisplayProbeConfig board's probe picked takes its own
+  // deep-sleep command; BUSY_N is LOW while busy.
+  const bool ultraChip = FREEINK_CAP_DISPLAY_PROBE_POLICY && (controller == BoardConfig::DisplayController::UC8279 ||
+                                                              controller == BoardConfig::DisplayController::UC8179);
   if ((controller != BoardConfig::DisplayController::SSD1677 && !ultraChip) || d.powerEnable >= 0 || d.rst < 0 ||
       d.cs < 0 || d.sclk < 0 || d.mosi < 0 || d.dc < 0) {
     return false;
@@ -299,8 +294,9 @@ bool PowerManager::sleepPanelWithoutDriver() {
   constexpr uint32_t RESET_LOW_MS = 10;
   constexpr uint32_t RESET_SETTLE_MS = 10;
 #if FREEINK_SILKSCREEN_368
-  // The 3.68" variant's panel is the X3's UC8279d: its driver takes 60 ms after the reset releases
-  // (EpdBus::reset()'s 10 ms and the extra 50 ms of Uc8279Driver::begin()), not the X4 UltraChip's 10.
+  // The 3.68" variant's panel is the X3's UC8279d, fixed in its profile and not probed: its driver takes
+  // 60 ms after the reset releases (EpdBus::reset()'s 10 ms and the extra 50 ms of Uc8279Driver::begin()),
+  // not the X4 UltraChip's 10.
   constexpr uint32_t X3_RESET_SETTLE_MS = 60;
 #endif
   constexpr uint32_t BUSY_WAIT_MAX_MS = 100;
