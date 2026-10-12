@@ -128,9 +128,6 @@ private:
   bool _pendingTurnOff = false;
   bool _pendingDoFullSync = false;
   bool _pendingFastMode = false;
-#if defined(FREEINK_DIAGNOSTICS) && FREEINK_DIAGNOSTICS
-  bool _diagBlocking = false;  // inside display(): the caller waits for the refresh (EpdBus::noteRefresh)
-#endif
 };
 
 PanelDriver& uc8253X3Driver();

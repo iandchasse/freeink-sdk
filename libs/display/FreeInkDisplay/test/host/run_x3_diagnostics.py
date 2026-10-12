@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the real X3 drivers (UC8253, UC8279d) with FREEINK_DIAGNOSTICS and a recording bus."""
+"""Compile the real X3 UC8279d driver with FREEINK_DIAGNOSTICS and a recording bus."""
 from pathlib import Path
 import os
 import shutil
@@ -12,12 +12,10 @@ with tempfile.TemporaryDirectory(prefix="x3-diagnostics-test-") as directory:
     root = Path(directory)
     for folder in ("driver", "bus", "lut"):
         (root / folder).mkdir()
-    for name in ("Uc8253X3Driver", "Uc8279Driver"):
-        for ext in ("cpp", "h"):
-            shutil.copy2(SOURCE / "driver" / f"{name}.{ext}", root / "driver" / f"{name}.{ext}")
+    for ext in ("cpp", "h"):
+        shutil.copy2(SOURCE / "driver" / f"Uc8279Driver.{ext}", root / "driver" / f"Uc8279Driver.{ext}")
     shutil.copy2(SOURCE / "driver/PanelDriver.h", root / "driver/PanelDriver.h")
-    for name in ("Uc8253X3Luts.h", "UltraChipDirectGrayLuts.h", "Uc8279X3Luts.h"):
-        shutil.copy2(SOURCE / "lut" / name, root / "lut" / name)
+    shutil.copy2(SOURCE / "lut" / "Uc8279X3Luts.h", root / "lut" / "Uc8279X3Luts.h")
     shutil.copy2(SOURCE.parent / "include/GrayscaleCapabilities.h", root / "GrayscaleCapabilities.h")
     panel = root / "driver/PanelDriver.h"
     panel.write_text(panel.read_text().replace("../../include/GrayscaleCapabilities.h", "../GrayscaleCapabilities.h"))
@@ -81,6 +79,5 @@ public:
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++17", "-Wall", "-Wextra",
                     "-Wno-unused-parameter", "-DFREEINK_DIAGNOSTICS=1", "-I" + str(root),
                     str(HERE / "test_x3_diagnostics.cpp"),
-                    str(root / "driver/Uc8253X3Driver.cpp"), str(root / "driver/Uc8279Driver.cpp"),
-                    "-o", str(exe)], check=True)
+                    str(root / "driver/Uc8279Driver.cpp"), "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True)

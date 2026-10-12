@@ -310,9 +310,9 @@ class FreeInkDisplay {
   // Bring-up diagnostics: the last BUSY wait and whether it timed out, and the
   // last refresh the driver ran, including the mode it actually used
   // (lastRefreshMode, in RefreshMode order) and its activation-to-completion
-  // time. The SSD1677, UC8279 X4 and X3 (UC8253, UC8279d) drivers report
-  // refreshes; the X3 pair report their B/W refreshes only, not the grayscale
-  // and settle passes or the destination refresh after a Direct-gray page.
+  // time. The SSD1677, UC8279 X4 and X3 UC8279d drivers report refreshes; the
+  // UC8279d reports its B/W refreshes only, not the grayscale passes or the
+  // destination refresh after a Direct-gray page.
   EpdBusDiagnostics busDiagnostics() const { return EpdBus::diagnostics(); }
   // SPI clock trial: the panel's transactions run at `hz` from the next one
   // on; 0 puts back the driver's clock, which begin() (every wake) also does.

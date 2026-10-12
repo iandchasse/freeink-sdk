@@ -42,14 +42,14 @@ struct EpdBusDiagnostics {
   static constexpr uint8_t kNoRefresh = 0xFF;
   uint8_t lastRefreshMode = kNoRefresh;
   // controller update-sequence byte: the SSD1677's 0x22 value, the UC8279 X4's TSSET (its CDI for
-  // the gray waveform), the X3 drivers' CDI byte (UC8253 0x29 / 0xA9, UC8279d 0x97 first, 0xD7 later)
+  // the gray waveform), the X3 UC8279d driver's CDI byte (0x97 first, 0xD7 later)
   uint8_t lastRefreshSequence = 0;
   bool lastRefreshAsync = false;      // fired without waiting (displayStart)
   bool lastRefreshTurnOff = false;    // the caller asked for power-down afterwards
   bool lastRefreshCustomLut = false;  // ran on a loaded (grayscale) LUT
   bool refreshInFlight = false;       // activation reported, completion wait not ended
-  // activation to the end of its completion wait: the first one, so a UC8253 FULL ends before its
-  // condition and settle passes, and a Direct-gray page's destination refresh is not in it
+  // activation to the end of its completion wait: the first one. The X3 UC8279d driver reports its
+  // B/W refreshes only: its grayscale passes and a Direct-gray page's destination refresh are not in it
   uint32_t lastRefreshMs = 0;
   bool lastRefreshTimedOut = false;   // that completion wait gave up
 };
