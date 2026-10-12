@@ -13,13 +13,16 @@ decided at boot.
 The UC8279d driver also drives the X3's panel on an ESP32-S3: Silkscreen's 3.68"
 variant (`-DFREEINK_DEVICE_SILKSCREEN=1 -DSILKSCREEN_PANEL_368=1`) links it, and
 only it (no UC8253 driver), for the profile `SILKSCREEN_368` (792×528, no touch),
-on Silkscreen's own pins rather than the X3's. **That variant supports the UC8279d
-and nothing else** (owner decision, 2026-10-11): its controller is fixed in the
-profile, so it never runs the stock probe below, reads no VER, and keeps no verdict
-in RTC memory; a cold boot and a deep-sleep wake make no bus traffic for
-identification. It applies the same driver recipe, waveforms and refresh policy,
-untouched; only the BUSY_N pull-up and the driver-free panel sleep are added,
-behind the Silkscreen probe policy. See the README's per-batch controller section.
+on Silkscreen's own pins rather than the X3's. **That variant supports the
+UC8279d and nothing else** (owner decision: decided 2026-10-11, made
+2026-10-12): its controller is fixed in the profile, so it never runs the stock
+probe below, reads no VER, and keeps no verdict in RTC memory; a cold boot and a
+deep-sleep wake make no bus traffic for identification. It applies the same
+driver recipe, waveforms and refresh policy; the differences are the BUSY_N
+pull-up and the driver-free panel sleep (behind the Silkscreen probe policy)
+and, under `FREEINK_SILKSCREEN_368`, a `txn.end()` before PARTIAL_OUT in the
+strip upload (`4988be4`; upstream's copy holds a transaction across
+`bus.cmd()`). See the README's per-batch controller section.
 
 **Observed signature of the module that set this decision.** The Xteink 3.68"
 panel marked `SEO368NQW25` (flex marking), on a Silkscreen board with the
@@ -28,9 +31,25 @@ and a LUT_VER byte of `0x00`, with no BUSY timeout. That is a driven UltraChip
 answer, and it is neither the `0x66` of the X3's own UC8279d module (the id the
 stock selection above keys on) nor the `0xFF` of a UC8253. The probe's unknown-id
 default ran the UC8253 recipe (`Wait complete: X3_PON (41 ms)`) and the glass stayed
-blank; with the UC8279d driver forced, the panel worked. One module, one bench
-session: nothing here says what other `SEO368NQW25` units, or other batches of
-the 3.68" panel, read. The variant's build does not read VER.
+blank; with the UC8279d driver forced, the panel displayed a picture. One module,
+one bench session: nothing here says what other `SEO368NQW25` units, or other
+batches of the 3.68" panel, read. The variant's build does not read VER.
+
+**What has run on a board (as of 2026-10-12).** One module (`SEO368NQW25`) has
+run, in the owner's first session (2026-10-11, a CrossPoint build): the stock X3
+probe read `VER=00 0F 00`, the UC8253 default recipe left it blank (`Wait
+complete: X3_PON (41 ms)`), and with the UC8279d driver forced by a local build
+flag it displayed a picture. That forced build then froze (no panic, no
+watchdog) on its first grayscale image page. The code reads as a bus transaction
+held across a bus command (a deadlock on arduino-esp32's non-recursive SPI
+mutex): that cause is inferred from the code, not from a backtrace. SDK
+`4988be4` ends the transaction first and the fix is visible in the images'
+disassembly; it has not yet been seen on glass. The owner also reported a quiet,
+harsh buzz at every display refresh, from the e-paper boost stage; it is
+unexplained, and the boost inductor `L1` (47 µH, sized to the SSD1677 reference
+and unverified for this panel: the Silkscreen board's HARDWARE.md §6.2) and the
+4.7 µF / 50 V X5R MLCCs `C11` and `C13`-`C17` are the usual singers. Nothing
+else has run on a board, and CrossInk's variant images have never been flashed.
 
 The detection section reflects the stock V6.3.15 protocol. The driver uses
 recovered external waveforms and register initialization; the initial OTP-only
