@@ -323,14 +323,6 @@ void Uc8279Driver::writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const 
   for (int r = static_cast<int>(numRows) - 1; r >= 0; r--) {
     txn.writeBytes(rows + static_cast<uint32_t>(r) * _wb, _wb);
   }
-#if FREEINK_SILKSCREEN_368
-  // End the strip's transaction before the next command. bus.cmd() opens a transaction of its own, and
-  // arduino-esp32's SPI.beginTransaction() takes a non-recursive mutex (SPIClass::paramLock) that this one
-  // still holds: the task blocked there for ever, with no panic and no watchdog, on the first grayscale
-  // image page. Uc8253X3Driver::writeGrayscalePlaneStrip() ends its transaction first, as here. Upstream
-  // has this bug on the C3 X3 too (same source): its build keeps upstream's lines.
-  txn.end();
-#endif
   bus.cmd(CMD_PARTIAL_OUT);
   if (plane == GrayPlane::Lsb) {
     _lsbValid = true;
