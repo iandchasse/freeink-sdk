@@ -1,6 +1,6 @@
 // PowerManager::sleepPanelWithoutDriver() on the 4.26" Silkscreen board and on its 3.68" variant
-// (SILKSCREEN_PANEL_368): the controller's own deep-sleep command, how long the reset settles before it,
-// the BUSY pull, and what is left alone. run_sleep_panel.py cuts the production function and its two
+// (SILKSCREEN_PANEL_368, a UC8279d panel): the controller's own deep-sleep command, how long the reset
+// settles before it, the BUSY pull, and what is left alone. run_sleep_panel.py cuts the production function and its two
 // helpers out of PowerManager.cpp into sleep_panel_under_test.inc, so this executes the text the
 // firmware compiles, over a recording GPIO model. Build it once per board (see README.md).
 // Every check below is an assert(), several of them around the call under test: a build with -DNDEBUG
@@ -150,12 +150,13 @@ void expectBytes(const Result& r, const int command, const int check) {
 
 int main() {
 #if SILKSCREEN_PANEL_368
-  // The 3.68" variant: the X3 pair, a UC8253 by default and a UC8279d when the probe says so. Both
-  // drivers wait 60 ms after their reset releases (10 ms in EpdBus::reset() and 50 more), so the DSLP is
-  // not sent to a controller that is still initialising. BUSY_N idles HIGH and is pulled up meanwhile.
+  // The 3.68" variant: the X3's UC8279d, which its profile fixes. Its driver waits 60 ms after its reset
+  // releases (10 ms in EpdBus::reset() and 50 more), so the DSLP is not sent to a controller that is still
+  // initialising. BUSY_N idles HIGH and is pulled up meanwhile.
   static_assert(FREEINK_SILKSCREEN_368, "the variant's build");
-  assert(BoardConfig::ACTIVE.displayController == Controller::UC8253);
-  for (const Controller controller : {Controller::UC8253, Controller::UC8279}) {
+  assert(BoardConfig::ACTIVE.displayController == Controller::UC8279);
+  {
+    const Controller controller = Controller::UC8279;
     Result r = run(controller, /*assertedMs=*/0, /*activeHigh=*/false);
     assert(r.ok);
     expectBytes(r, 0x07, 0xA5);  // DSLP, then its check code
@@ -173,6 +174,12 @@ int main() {
     r = run(controller, 1000000, false);
     assert(r.ok && r.settleMs >= 61 + 100 && r.settleMs <= 61 + 102);
     expectBytes(r, 0x07, 0xA5);
+  }
+  // A UC8253 has no driver in this build either (the variant links the UC8279d alone): the function
+  // returns false and leaves every pin alone.
+  {
+    const Result r = run(Controller::UC8253, 0, false);
+    assert(!r.ok && r.touched == 0);
   }
   std::puts("3.68\" variant: driver-free panel sleep checks passed");
 #else

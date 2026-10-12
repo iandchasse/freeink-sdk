@@ -279,10 +279,11 @@ void driveLevel(const int8_t pin, const uint8_t level) {
 bool PowerManager::sleepPanelWithoutDriver() {
   const BoardConfig::DisplayPins& d = BoardConfig::ACTIVE.display;
   const BoardConfig::DisplayController controller = BoardConfig::ACTIVE.displayController;
-  // An UltraChip panel that a DisplayProbeConfig board's probe picked takes its own
-  // deep-sleep command; BUSY_N is LOW while busy. The Silkscreen 3.68" variant's UC8253
-  // (FREEINK_DRIVER_UC8253_X3 is linked only there, on a board with the probe policy) sleeps
-  // with the same DSLP 0x07 / 0xA5 as its UC8279d (Uc8253X3Driver::deepSleep()).
+  // An UltraChip panel that a DisplayProbeConfig board's probe picked, or that its profile
+  // fixes (the Silkscreen 3.68" variant's UC8279d), takes its own deep-sleep command; BUSY_N
+  // is LOW while busy. A UC8253 is one too where its driver is linked on a board with the
+  // probe policy (no build today: the C3 X3 has no policy, and the variant links the UC8279d
+  // alone): the same DSLP 0x07 / 0xA5 that Uc8253X3Driver::deepSleep() sends.
   const bool ultraChip = FREEINK_CAP_DISPLAY_PROBE_POLICY &&
                          (controller == BoardConfig::DisplayController::UC8279 ||
                           controller == BoardConfig::DisplayController::UC8179 ||
@@ -298,8 +299,8 @@ bool PowerManager::sleepPanelWithoutDriver() {
   constexpr uint32_t RESET_LOW_MS = 10;
   constexpr uint32_t RESET_SETTLE_MS = 10;
 #if FREEINK_SILKSCREEN_368
-  // The X3 pair on the 3.68" variant: their drivers take 60 ms after the reset releases (EpdBus::reset()'s
-  // 10 ms and the extra 50 ms of Uc8253X3Driver::begin() and Uc8279Driver::begin()), not the X4 UltraChip's 10.
+  // The 3.68" variant's panel is the X3's UC8279d: its driver takes 60 ms after the reset releases
+  // (EpdBus::reset()'s 10 ms and the extra 50 ms of Uc8279Driver::begin()), not the X4 UltraChip's 10.
   constexpr uint32_t X3_RESET_SETTLE_MS = 60;
 #endif
   constexpr uint32_t BUSY_WAIT_MAX_MS = 100;
@@ -314,9 +315,7 @@ bool PowerManager::sleepPanelWithoutDriver() {
   delay(RESET_LOW_MS + 1);
   digitalWrite(d.rst, HIGH);
 #if FREEINK_SILKSCREEN_368
-  const bool x3Pair = controller == BoardConfig::DisplayController::UC8253 ||
-                      controller == BoardConfig::DisplayController::UC8279;
-  delay((x3Pair ? X3_RESET_SETTLE_MS : RESET_SETTLE_MS) + 1);
+  delay(X3_RESET_SETTLE_MS + 1);
 #else
   delay(RESET_SETTLE_MS + 1);
 #endif

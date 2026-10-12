@@ -106,16 +106,16 @@ Keep the block disabled in the file.
 pulse, a bounded wait for BUSY, then the controller's own command bit-banged. `PowerManager.cpp` cannot be compiled on
 a host (it needs the ESP-IDF sleep, RTC and ADC APIs), so `run_sleep_panel.py` cuts the function and its two helpers
 out of the production file, builds them with a recording GPIO model, and runs `test_sleep_panel.cpp` once for the
-4.26" board and once for the 3.68" variant. It stops if the file no longer holds exactly that function. It needs a
+4.26" board and once for the 3.68" variant (a UC8279d panel). It stops if the file no longer holds exactly that function. It needs a
 C++17 compiler, `CXX` or `c++`:
 
 ```sh
 python3 libs/hardware/PowerManager/test/host/run_sleep_panel.py
 ```
 
-What it checks: the bytes (SSD1677 `0x10`/`0x03`, an UltraChip `0x07`/`0xA5`, the 3.68" variant's UC8253 included), the
-pull on BUSY while it runs, that the 4.26" board settles 10 ms after the reset releases as it always did and leaves a
-UC8253 alone (no driver is linked for one there), that the variant settles 60 ms (what `Uc8253X3Driver::begin()` and
-`Uc8279Driver::begin()` give their controllers), and the 100 ms bound on a BUSY_N that stays asserted. `SLEEP_PANEL_SOURCE`
-names another copy of `PowerManager.cpp` to cut from: with the file as it was before the 60 ms settle the variant run
-fails, which is the negative control.
+What it checks: the bytes (SSD1677 `0x10`/`0x03`, an UltraChip `0x07`/`0xA5`: the 3.68" variant's UC8279d), the
+pull on BUSY while it runs, that the 4.26" board settles 10 ms after the reset releases as it always did, that neither
+build links a UC8253 driver, so the function leaves a UC8253 alone, that the variant settles 60 ms (what
+`Uc8279Driver::begin()` gives its controller), and the 100 ms bound on a BUSY_N that stays asserted.
+`SLEEP_PANEL_SOURCE` names another copy of `PowerManager.cpp` to cut from: with the file as it was before the 60 ms
+settle the variant run fails, which is the negative control.
