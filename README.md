@@ -264,16 +264,18 @@ watchdog) on its first grayscale image page. The code reads as a bus transaction
 held across a bus command (a deadlock on arduino-esp32's non-recursive SPI
 mutex): that cause is inferred from the code, not from a backtrace. Fixed
 upstream with the same one-line change (Free-Ink PR #139, `c2d711a`, merged as
-`7fcd3b3` on 2026-10-12: `txn.end()` before `PARTIAL_OUT`); this line's own
-gated copy (`4988be4`) was reverted by `b460001` to take upstream's text, and
-the C3 X3 build has the fix too. It is visible in the images' disassembly and
-has not been seen on glass here (the owner has not yet flashed it). The owner
-also reported a quiet, harsh buzz at every display refresh, from the e-paper
-boost stage; it is unexplained, and the boost inductor `L1` (47 µH, sized to
-the SSD1677 reference and unverified for this panel: the Silkscreen board's
-HARDWARE.md §6.2) and the 4.7 µF / 50 V X5R MLCCs `C11` and `C13`-`C17` are the
-usual singers. Nothing else has run on a board, and CrossInk's variant images
-have never been flashed.
+`7fcd3b3` on 2026-10-12: `txn.end()` before `PARTIAL_OUT`; CrossPoint's #3960
+bumped its pin); this line's own gated copy (`4988be4`) was reverted by
+`b460001` to take upstream's text, and the C3 X3 build has the fix too. The
+2026-10-12 builds show it in their disassembly (CrossPoint's `silkscreen-368`
+and the C3 X3's `c3check`: `Transaction::end()` ahead of `EpdBus::cmd(0x92)` in
+`writeGrayscalePlaneStrip()`); it has not been seen on glass here (the owner has
+not yet flashed it). The owner also reported a quiet, harsh buzz at every
+display refresh, from the e-paper boost stage; it is unexplained, and the boost
+inductor `L1` (47 µH, sized to the SSD1677 reference and unverified for this
+panel: the Silkscreen board's HARDWARE.md §6.2) and the 4.7 µF / 50 V X5R MLCCs
+`C11` and `C13`-`C17` are the usual singers. Nothing else has run on a board,
+and CrossInk's variant images have never been flashed.
 
 The rails, the gray waveforms, the deep-sleep current and the `BUSY_N` level in
 the panel's sleep are unmeasured.
