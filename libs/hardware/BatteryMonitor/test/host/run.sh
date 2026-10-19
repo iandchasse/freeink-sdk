@@ -2,8 +2,8 @@
 # Builds and runs the BQ27220 Design Capacity load against a model gauge, the
 # SGM41562 charger decode (Picco) against a model charger, and the usbDetect
 # external-power path (PaperS3: no charger IC and no gauge, so the profile's
-# detect pin is the only source for "is a cable attached"). Silkscreen's
-# charge-status ladder decoder runs first.
+# detect pin is the only source for "is a cable attached"; X3 must not read SDA).
+# Silkscreen's charge-status ladder decoder runs first.
 set -e
 cd "$(dirname "$0")"
 BUILD_DIR="${TMPDIR:-/tmp}/freeink-battery-tests"
