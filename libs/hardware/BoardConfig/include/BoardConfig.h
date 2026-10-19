@@ -1207,6 +1207,29 @@ struct BoardProfile {
   // a board with one sets it (EEGO A4).
   I2cFrontlightConfig i2cFrontlight = NO_I2C_FRONTLIGHT;
   HapticConfig haptic = {};
+  // Pixels the firmware lowers its header band's top edge (status line, title)
+  // from the theme's fixed position; the band's bottom edge stays put.
+  // Defaulted so existing profiles need no change.
+  int8_t headerOffsetY = 0;
+  // Radius of the panel's rounded viewable corners. Chrome placed in a corner
+  // (header status line, footer readouts) keeps at least this far from the
+  // side edges; viewableInsets stays the straight-edge clearance.
+  uint8_t cornerRadius = 0;
+  // Bottom tab bar fit to the panel: pixels it moves down, its drawn height as
+  // a percent of the theme's (bottom-aligned in the theme's slot, so the layout
+  // above keeps its size), and the share of the row its tabs spread across
+  // (centered). Defaults keep the theme's layout.
+  int8_t tabBarOffsetY = 0;
+  uint8_t tabBarHeightPct = 100;
+  uint8_t tabBarWidthPct = 100;
+  // WiFi transmit-power ceiling in 0.25 dBm units (esp_wifi_set_max_tx_power),
+  // applied whenever WiFi starts. 0 = the radio's default.
+  uint8_t wifiMaxTxPower = 0;
+  // Polarity of `usbDetect`. Default matches the documented "HIGH = USB present".
+  // False = the pin is driven LOW while a cable is attached (M5Stack PaperS3:
+  // measured floating/pull-up/pull-down all read 0 with USB connected), so
+  // consumers must read it with a pull-up and invert.
+  bool usbDetectActiveHigh = true;
   // The fields below come after every upstream field, so upstream's positional
   // profile initializers keep lining up. A profile that sets them (SILKSCREEN)
   // uses designated initializers, which a later upstream append cannot shift.
@@ -1806,7 +1829,7 @@ constexpr BoardProfile M5PAPER_S3 = {
     3,     // batteryAdc GPIO3 (ADC1_CH2)
     4,     // batteryChargeStatus GPIO4, LOW = charging (LGS4056H STAT)
     2.0f,  // divider 2:1 (M5Unified's _adc_ratio; pending hardware validation)
-    5,     // usbDetect GPIO5, HIGH = USB present
+    5,     // usbDetect GPIO5, active-LOW: driven low while a cable is attached
     // GT911 on the internal I2C bus SDA41/SCL42 (shared with the BM8563 RTC +
     // BMI270 IMU), INT=GPIO48, no reset wired (self-loads its config), 0x5D alt
     // 0x14. Portrait digitizer (540x960) on the landscape panel -> swapXY, rawMax
@@ -1829,7 +1852,19 @@ constexpr BoardProfile M5PAPER_S3 = {
     // via Rtc alarm), not an ESP32 GPIO. BMI270 IMU (0x68) unsupported — omitted.
     {41, 42, 400000, 0x51, 0, 0, 0, RtcType::Pcf8563, ImuType::None},
     1.2f,  // uiScale: 4.7" 960x540 touch (~234 PPI) — finger-sized chrome, like LilyGo/M5Paper
-    {}};   // no power latch: the PMS150G self-latches; off = GPIO44 pulse (BoardPaperS3::powerOff)
+    {},     // power: no latch (PMS150G self-latches; off = GPIO44 pulse via BoardPaperS3)
+    0,      // displayControllerVariant
+    {},     // viewableInsets
+    false,  // batteryChargeStatusActiveHigh: GPIO4 STAT is LOW = charging (LGS4056H)
+    NO_I2C_FRONTLIGHT,
+    {},     // haptic: none
+    0,      // headerOffsetY
+    0,      // cornerRadius: flat panel
+    0,      // tabBarOffsetY
+    100,    // tabBarHeightPct
+    100,    // tabBarWidthPct
+    0,      // wifiMaxTxPower: radio default
+    false};  // usbDetectActiveHigh: GPIO5 is driven LOW while a cable is attached
 
 // --- EEGO Reader A4 — ESP32-S3 N16R8, UC8279C (768x552) + GSLX680 touch -------
 // CrossPoint fork device; pins/resolution/calibration from stock-firmware RE,
@@ -1853,8 +1888,8 @@ constexpr BoardProfile EEGO_A4 = {
     11,      // batteryChargeStatus
     1.559f,  // divider
     PIN_UNASSIGNED,
-    // GSLX680: pollGslx680 applies the 1.2.7 calibration and returns panel-native
-    // x=0..767, y=0..551, so no raw-range/swap/flip mapping is needed here.
+    // GSLX680: pollGslx680 applies the stock factory calibration and returns
+    // panel-native x=0..767, y=0..551, so the range here is the identity.
     {TouchController::Gslx680, 2, 1, PIN_UNASSIGNED, 3, 0x40, 0, 767, 0, 551, false, 0, false, false,
      PIN_UNASSIGNED, false, false, false, true, true},  // powerEnable, swapXY, flipX, flipY, hasHomeKey, pwrEnActiveHigh
     // The frontlight is an LM3630A driven via the i2cFrontlight field below, not
@@ -1870,17 +1905,23 @@ constexpr BoardProfile EEGO_A4 = {
     1.2f,
     {4},  // power latch GPIO4
     0,    // displayControllerVariant (UC8279C, not probed)
-    // Rounded-corner panel: pull the sides (left/right in the portrait frame) in a
-    // lot so text/status icons aren't clipped by the curved bezel. Tune on hardware.
+    // Straight-edge clearance; the rounded corners are cornerRadius below.
     // {top, right, bottom, left}
-    {24, 24, 8, 24},
+    {24, 8, 16, 8},
     // Charger STAT GPIO11 is driven HIGH while charging, like the X4 Pro
     // (hardware verified: with the active-low default the charging indicator
     // lit only when USB was unplugged).
     true,
     // LM3630A on the shared I2C bus (SDA2/SCL1), enable GPIO12.
     // Probed at runtime: some retail A4 units have no frontlight.
-    {I2cFrontlightController::Lm3630a, 2, 1, 400000, 0x36, 12}};
+    {I2cFrontlightController::Lm3630a, 2, 1, 400000, 0x36, 12},
+    {},  // haptic: none
+    6,    // headerOffsetY: header band top edge 6px lower
+    24,   // cornerRadius
+    18,   // tabBarOffsetY
+    80,   // tabBarHeightPct
+    80,   // tabBarWidthPct
+    60};  // wifiMaxTxPower: 15 dBm, the cap stock V1.0.3 applies
 
 static_assert(EEGO_A4.displayWidth / 8 * EEGO_A4.displayHeight == 52992,
               "EEGO A4 framebuffer must be 52,992 bytes (768/8 x 552)");
