@@ -57,6 +57,11 @@ class OpdsTransport {
   // Resolve a possibly-relative href against a base URL, applying whatever URL
   // normalisation the HTTP client requires.
   virtual std::string resolveUrl(const std::string& base, const std::string& ref) = 0;
+
+  // True when the platform wants blocking network work to stop (the firmware's low-battery cutoff). The
+  // client's own login chain, which makes its requests itself rather than through get() and postForm(),
+  // polls it between and inside its requests. Default: never.
+  virtual bool shouldAbort() { return false; }
 };
 
 }  // namespace freeink::opds

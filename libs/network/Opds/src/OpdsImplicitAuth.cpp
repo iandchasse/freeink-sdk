@@ -55,7 +55,8 @@ std::string hostOf(const std::string& url) {
 }  // namespace
 
 bool opdsImplicitAuthenticate(const std::string& authenticateUrl, const std::string& username,
-                              const std::string& password, std::string& outToken) {
+                              const std::string& password, std::string& outToken,
+                              const std::function<bool()>& shouldAbort) {
   OpdsCookieJar jar;
   std::string url = authenticateUrl;
   ensureImplicitAuthParams(url);
@@ -64,6 +65,11 @@ bool opdsImplicitAuthenticate(const std::string& authenticateUrl, const std::str
   bool passwordSubmitted = false;
 
   for (int step = 0; step < MAX_STEPS; ++step) {
+    // The platform's stop request (the firmware's low-battery cutoff) ends the chain between requests ...
+    if (shouldAbort && shouldAbort()) {
+      LOG_ERR("OPDS", "Implicit auth: stopped before step %d", step);
+      return false;
+    }
     freeink::SecureHttpClient http;
     http.setTimeout(AUTH_TIMEOUT_MS);
     http.setInsecure();
@@ -83,9 +89,14 @@ bool opdsImplicitAuthenticate(const std::string& authenticateUrl, const std::str
       page.append(reinterpret_cast<const char*>(data), len < room ? len : room);
       return true;
     };
-    const int status =
-        isPost ? http.sendRequest("POST", reinterpret_cast<const uint8_t*>(postBody.data()), postBody.size(), onData)
-               : http.GET(onData);
+    const int status = isPost ? http.sendRequest("POST", reinterpret_cast<const uint8_t*>(postBody.data()),
+                                                 postBody.size(), onData, shouldAbort)
+                              : http.GET(onData, shouldAbort);
+    // ... and inside one: a stopped request returns the status line of the page it cut short.
+    if (http.aborted()) {
+      LOG_ERR("OPDS", "Implicit auth: stopped at step %d", step);
+      return false;
+    }
     if (status < 0) {
       LOG_ERR("OPDS", "Implicit auth: request failed at step %d", step);
       return false;
@@ -148,7 +159,8 @@ bool opdsImplicitAuthenticate(const std::string& authenticateUrl, const std::str
 
 #else
 
-bool opdsImplicitAuthenticate(const std::string&, const std::string&, const std::string&, std::string&) {
+bool opdsImplicitAuthenticate(const std::string&, const std::string&, const std::string&, std::string&,
+                              const std::function<bool()>&) {
   LOG_ERR("OPDS", "Implicit OAuth requires the wolfSSL HTTP client");
   return false;
 }

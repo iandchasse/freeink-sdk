@@ -227,7 +227,7 @@ bool OpdsClient::authenticate(const std::string& resourceUrl) {
   if (doc.hasOauthImplicit && !doc.implicitUrl.empty()) {
     const std::string implicitUrl = http.resolveUrl(resourceUrl, doc.implicitUrl);
     std::string token;
-    if (opdsImplicitAuthenticate(implicitUrl, username, password, token)) {
+    if (opdsImplicitAuthenticate(implicitUrl, username, password, token, [this] { return http.shouldAbort(); })) {
       bearerToken = std::move(token);
       // Implicit grant issues no refresh token; re-login on expiry.
       refreshTokenValue.clear();
