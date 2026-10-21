@@ -589,8 +589,7 @@ bool piccoWaitInt(int8_t irq, unsigned long timeoutMs);
 
 bool InputManager::prepareForDeepSleep() {
 #if FREEINK_DEVICE_EEGO_A4
-  const auto& t = BoardConfig::ACTIVE.touch;
-  if (t.controller == BoardConfig::TouchController::Gslx680) {
+  if (const auto& t = BoardConfig::ACTIVE.touch; t.controller == BoardConfig::TouchController::Gslx680) {
     const uint8_t halt = 0x88;
     const bool ok = gslWrite(0xE0, &halt, 1);
     delay(5);
@@ -609,8 +608,8 @@ bool InputManager::prepareForDeepSleep() {
   }
 #endif
 #if FREEINK_DEVICE_PICCO
-  const auto& t = BoardConfig::ACTIVE.touch;
-  if (t.controller == BoardConfig::TouchController::PiccoCst && t.i2cAddress != 0) {
+  if (const auto& t = BoardConfig::ACTIVE.touch;
+      t.controller == BoardConfig::TouchController::Tma525c && t.i2cAddress != 0) {
     // Stock FUN_4200c730: SET_POWER(SLEEP) to command register 0x0005, wait
     // for the response, then pull RST/INT/GPIO12 down. deepSleep() floats the
     // digital pad config, so the pulldowns are set in the RTC domain.
@@ -1047,6 +1046,8 @@ bool InputManager::isPowerButtonPressed() const { return isPressed(BTN_POWER); }
 //   * CHSC6x (Murphy M3) — IRQ-driven, hand-rolled 16-byte frame decode.
 //   * GT911  (LilyGo)    — polled status/point registers over I2C.
 //   * FT5x06 (Paper Mono FT6336) — active-low IRQ + 0x02 point frame.
+// Each backend is compiled only when its FREEINK_TOUCH_<CONTROLLER> flag is set;
+// BoardConfig.h derives those from the selected devices' profiles.
 // Coordinates are delivered raw-panel-oriented; the app owns rotation.
 // ============================================================================
 
@@ -1736,37 +1737,64 @@ void InputManager::beginTouch() {
 void InputManager::beginTouchController() {
 #if FREEINK_CAP_TOUCH
   const auto& t = BoardConfig::ACTIVE.touch;
+  // Each driver is compiled only when its FREEINK_TOUCH_* flag is set (BoardConfig.h).
+#if FREEINK_TOUCH_CST816S
   if (t.controller == BoardConfig::TouchController::Cst816s) {
     beginCst816s();
     return;
   }
+#endif
+#if FREEINK_TOUCH_GT911
   if (t.controller == BoardConfig::TouchController::Gt911) {
     beginGt911();
     return;
   }
+#endif
+#if FREEINK_TOUCH_FT5X06
   if (t.controller == BoardConfig::TouchController::Ft5x06) {
     beginFt5x06();
     return;
   }
+#endif
+#if FREEINK_TOUCH_FT6336U
   if (t.controller == BoardConfig::TouchController::Ft6336u) {
     beginFt6336u();
     return;
   }
+#endif
+#if FREEINK_TOUCH_GSLX680
   if (t.controller == BoardConfig::TouchController::Gslx680) {
     beginGslx680();
     return;
   }
-  if (t.controller == BoardConfig::TouchController::PiccoCst) {
-    beginPiccoTouch();
+#endif
+#if FREEINK_TOUCH_TMA525C
+  if (t.controller == BoardConfig::TouchController::Tma525c) {
+    beginTma525c();
     return;
   }
-  // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
-  // this controller, so detection polls I2C and gates on the frame's touch bit
-  // instead (see decodeChsc6xFrame / updateTouchFromIrq).
-  if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
-    freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
-    Wire.setTimeOut(4);
-    touchDataEnabled = true;
+#endif
+#if FREEINK_TOUCH_CHSC6X
+  if (t.controller == BoardConfig::TouchController::Chsc6x) {
+    // CHSC6x: I2C bus only. The IRQ is left unconfigured — it's a brief pulse on
+    // this controller, so detection polls I2C and gates on the frame's touch bit
+    // instead (see decodeChsc6xFrame / updateTouchFromIrq).
+    if (t.sda >= 0 && t.scl >= 0 && t.i2cAddress != 0) {
+      freeink::i2c::beginBus(Wire, t.sda, t.scl, freeink::i2c::busHz(t.sda, t.scl, 100000));
+      Wire.setTimeOut(4);
+      touchDataEnabled = true;
+    }
+    return;
+  }
+#endif
+  // The controller's driver is compiled out. BoardConfig's static_asserts rule
+  // that out for every profile in the build, so only a runtime change to
+  // ACTIVE.touch lands here: touch stays disabled, and says so once.
+  static bool reportedMissingDriver = false;
+  if (!reportedMissingDriver) {
+    reportedMissingDriver = true;
+    esp_rom_printf("[touch] no driver for touch controller %u in this build (FREEINK_TOUCH_*); touch disabled\n",
+                   static_cast<unsigned>(t.controller));
   }
 #endif
 }
@@ -1903,22 +1931,46 @@ uint8_t InputManager::serviceTouch() {
     resetMultiTouchGesture();
   }
 
-  if (t.controller == BoardConfig::TouchController::Cst816s) {
-    pollCst816s(now);
-  } else if (t.controller == BoardConfig::TouchController::Gt911) {
-    pollGt911(now);
-  } else if (t.controller == BoardConfig::TouchController::Ft5x06) {
-    pollFt5x06(now);
-  } else if (t.controller == BoardConfig::TouchController::Ft6336u) {
-    pollFt6336u(now);
-  } else if (t.controller == BoardConfig::TouchController::Gslx680) {
-    pollGslx680(now);
-  } else if (t.controller == BoardConfig::TouchController::PiccoCst) {
-    pollPiccoTouch(now);
-  } else {
-    updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
-    // Synthesized confirm tracks an actually-detected press, not the IRQ line.
-    if (touchPressedEvent) touchIrqPulseUntil = now + TOUCH_IRQ_PULSE_MS;
+  switch (t.controller) {
+#if FREEINK_TOUCH_CST816S
+    case BoardConfig::TouchController::Cst816s:
+      pollCst816s(now);
+      break;
+#endif
+#if FREEINK_TOUCH_GT911
+    case BoardConfig::TouchController::Gt911:
+      pollGt911(now);
+      break;
+#endif
+#if FREEINK_TOUCH_FT5X06
+    case BoardConfig::TouchController::Ft5x06:
+      pollFt5x06(now);
+      break;
+#endif
+#if FREEINK_TOUCH_FT6336U
+    case BoardConfig::TouchController::Ft6336u:
+      pollFt6336u(now);
+      break;
+#endif
+#if FREEINK_TOUCH_GSLX680
+    case BoardConfig::TouchController::Gslx680:
+      pollGslx680(now);
+      break;
+#endif
+#if FREEINK_TOUCH_TMA525C
+    case BoardConfig::TouchController::Tma525c:
+      pollTma525c(now);
+      break;
+#endif
+#if FREEINK_TOUCH_CHSC6X
+    case BoardConfig::TouchController::Chsc6x:
+      updateTouchFromIrq(now, 0);  // detection polls I2C; the IRQ is unused now
+      // Synthesized confirm tracks an actually-detected press, not the IRQ line.
+      if (touchPressedEvent) touchIrqPulseUntil = now + TOUCH_IRQ_PULSE_MS;
+      break;
+#endif
+    default:
+      break;  // driver compiled out: beginTouch() reported it and left touch disabled
   }
 
   // Long-press classification, beside the tap/swipe machinery it shares state
@@ -1929,7 +1981,9 @@ uint8_t InputManager::serviceTouch() {
     touchLongPressEvent = true;
   }
 
+#if FREEINK_TOUCH_CST816S
   if (t.controller == BoardConfig::TouchController::Cst816s) return cstVirtualButtons;
+#endif
   return (t.synthesizeConfirm && now < touchIrqPulseUntil) ? (1 << BTN_CONFIRM) : 0;
 #else
   return 0;
@@ -1938,6 +1992,7 @@ uint8_t InputManager::serviceTouch() {
 
 #if FREEINK_CAP_TOUCH
 
+#if FREEINK_TOUCH_CHSC6X
 void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw) {
   // Poll the controller over I2C on a fixed cadence, independent of the IRQ.
   // The CHSC6x IRQ is a brief (~24ms) pulse at touch-down, not a level held for
@@ -2029,6 +2084,7 @@ bool InputManager::decodeChsc6xFrame(const uint8_t* data, const size_t len, Touc
   point.timestamp = millis();
   return true;
 }
+#endif  // FREEINK_TOUCH_CHSC6X
 
 uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const uint16_t rawMax,
                                     const uint16_t outMax) const {
@@ -2092,6 +2148,7 @@ bool InputManager::gt911Sleep() {
 
 // --- FT5x06 / FT6336 (M5Stack Paper Mono) ----------------------------------
 
+#if FREEINK_TOUCH_FT5X06 || FREEINK_TOUCH_CST816S  // the register helpers serve both
 bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
@@ -2113,7 +2170,9 @@ bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf, const uint8_t 
   for (uint8_t i = 0; i < len; ++i) buf[i] = Wire.read();
   return true;
 }
+#endif
 
+#if FREEINK_TOUCH_FT5X06
 void InputManager::beginFt5x06() {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
@@ -2213,7 +2272,9 @@ void InputManager::beginFt5x06() {
       touchDataEnabled, wrMode, rdId, wrIrq, id[0], id[3], id[5], t.irq);
 #endif
 }
+#endif  // FREEINK_TOUCH_FT5X06
 
+#if FREEINK_TOUCH_CST816S
 // CST816S can NACK until the first touch: never gate availability on an ID
 // probe. Its 0x02..0x06 point frame uses the same packing as FT5x06, but its
 // interrupt/sleep behavior and off-screen cover keys need their own poll path.
@@ -2320,7 +2381,9 @@ void InputManager::pollCst816s(const unsigned long now) {
     if (dx > TOUCH_TAP_RELEASE_SLOP_PX || dy > TOUCH_TAP_RELEASE_SLOP_PX) touchMovedBeyondTapReleaseSlop = true;
   }
 }
+#endif  // FREEINK_TOUCH_CST816S
 
+#if FREEINK_TOUCH_FT5X06
 void InputManager::pollFt5x06(const unsigned long now) {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (now < touchReadAt) return;
@@ -2409,12 +2472,14 @@ void InputManager::pollFt5x06(const unsigned long now) {
     }
   }
 }
+#endif  // FREEINK_TOUCH_FT5X06
 
 // --- GSLX680 (EEGO A4) ------------------------------------------------------
 // Silead GSLX680: needs its firmware uploaded over I2C at boot before it reports
 // anything. Sequence, register values, and coordinate packing were recovered from
 // the stock firmware; the firmware blob (gsl/EegoA4GslFirmware.h) is byte-verified.
 
+#if FREEINK_TOUCH_GSLX680
 bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_t len) {
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
@@ -2689,22 +2754,8 @@ void InputManager::pollGslx680(const unsigned long now) {
       touchMovedBeyondTapReleaseSlop = true;
   }
 }
+#endif  // FREEINK_TOUCH_GSLX680
 
-// --- Onyx Picco (PiccoCst, I2C 0x24) — TAP-DUMP SCAFFOLD --------------------
-//
-// Recovered from the retail firmware (Ghidra). Init/reset/INT are HIGH
-// confidence; the coordinate read is only PARTIALLY recovered, so this driver
-// brings the controller up and reads on INT but does NOT yet publish touch
-// coordinates. Enough is known to finish it from a hardware tap-dump:
-//   * INT (irq): active-low, falls when a sample is ready (attachInterrupt
-//     FALLING in FUN_4200bcc4). Here it is polled.
-//   * RST: pulse HIGH -> 1ms -> LOW -> 10ms -> HIGH, then ~50ms settle (FUN_4200b984).
-//   * The firmware writes a framed command (header 0x04, length, marker 0x2F/0x40,
-//     cmd, 16-bit checksum) then reads a 0x108-byte status block. In that block
-//     buf[0x36]==0x1F is the report id and buf[0x38]&0x7F is the touch-point count.
-//     The per-point X/Y byte offsets were NOT recovered (handler is in a packed
-//     .irom region). Build -DTOUCH_PROBE_DEBUG, tap a unit, read the dumped bytes
-//     to locate X/Y, then mirror pollFt6336u's publish/slop/press-release logic.
 // --- Onyx Picco: Parade/Cypress TMA525C (PIP protocol) -----------------------
 // Recovered from the stock firmware (build 2912, "TMA525C" driver). Every read is
 // a 2-byte little-endian length followed by a re-read of the whole report from its
@@ -2713,6 +2764,7 @@ void InputManager::pollGslx680(const unsigned long now) {
 // rec[1] bits 0-4 = touch ID, bits 5-6 = event (3 = lift-off), rec[2..3] = X,
 // rec[4..5] = Y (LE). Stock inverts both against the native 480x800 portrait
 // digitizer (x = 480 - X, y = 800 - Y).
+#if FREEINK_TOUCH_TMA525C
 namespace {
 constexpr uint16_t PICCO_TOUCH_W = 480;
 constexpr uint16_t PICCO_TOUCH_H = 800;
@@ -2751,7 +2803,7 @@ uint16_t piccoCrc(const uint8_t* p, size_t n) {
 }
 }  // namespace
 
-void InputManager::beginPiccoTouch() {
+void InputManager::beginTma525c() {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.sda < 0 || t.scl < 0 || t.i2cAddress == 0) return;
 
@@ -2810,7 +2862,7 @@ void InputManager::beginPiccoTouch() {
 #endif
 }
 
-void InputManager::pollPiccoTouch(const unsigned long now) {
+void InputManager::pollTma525c(const unsigned long now) {
   if (!touchDataEnabled) return;
   const auto& t = BoardConfig::ACTIVE.touch;
 
@@ -2879,9 +2931,11 @@ void InputManager::pollPiccoTouch(const unsigned long now) {
   touchPressed = true;
   touchReleaseAt = now + PICCO_TOUCH_STALE_MS;
 }
+#endif  // FREEINK_TOUCH_TMA525C
 
 // --- GT911 (LilyGo) ---------------------------------------------------------
 
+#if FREEINK_TOUCH_GT911
 void InputManager::beginGt911() {
   const auto& t = BoardConfig::ACTIVE.touch;
 
@@ -2978,7 +3032,9 @@ void InputManager::gt911ClearStatus() {
   Wire.write(static_cast<uint8_t>(0x00));
   Wire.endTransmission();
 }
+#endif  // FREEINK_TOUCH_GT911 (pollGt911 is further down)
 
+#if FREEINK_TOUCH_FT6336U
 #if FREEINK_DEVICE_MURPHY_M4
 // The M4 uses the ESP-IDF I2C master driver on controller 1. Keeping this bus
 // separate from Arduino Wire mirrors the factory firmware and avoids conflicts
@@ -3224,7 +3280,9 @@ void InputManager::pollFt6336u(const unsigned long now) {
     touchPoint.valid = false;
   }
 }
+#endif  // FREEINK_TOUCH_FT6336U
 
+#if FREEINK_TOUCH_GT911
 void InputManager::pollGt911(const unsigned long now) {
   if (gt911Addr == 0) {
     return;
@@ -3359,5 +3417,6 @@ void InputManager::pollGt911(const unsigned long now) {
 
   gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
 }
+#endif  // FREEINK_TOUCH_GT911
 
 #endif  // FREEINK_CAP_TOUCH

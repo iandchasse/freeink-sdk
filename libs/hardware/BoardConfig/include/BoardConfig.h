@@ -234,14 +234,54 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 #endif
 
 // --- 4) Derive default capabilities (override with -DFREEINK_CAP_*=0/1) -------
-// The Silkscreen 3.68" variant has no touch hardware at all, so it defaults the
-// touch code out with its profile's NO_TOUCH data (both are asserted below).
-#ifndef FREEINK_CAP_TOUCH
-#define FREEINK_CAP_TOUCH                                                                                    \
-  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY ||      \
+// Every device whose profile has a touch controller. Adding a touch device or
+// controller: follow the checklist in docs/adding-a-touch-controller.md.
+#define FREEINK_TOUCH_DEVICE_SELECTED                                                                   \
+  (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
    FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || \
-   FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO ||                       \
+   FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || \
    (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368))
+#ifndef FREEINK_CAP_TOUCH
+#define FREEINK_CAP_TOUCH FREEINK_TOUCH_DEVICE_SELECTED
+#endif
+// Touch-controller drivers, one flag per BoardConfig::TouchController. InputManager
+// dispatches on ACTIVE.touch.controller at runtime and selectDevice() can switch
+// ACTIVE, so without these a touch build carries every driver. Each flag is 1 when
+// a selected device's profile names that controller; a multi-device binary gets
+// the union over its devices. Override any with -DFREEINK_TOUCH_<CONTROLLER>=0/1:
+// switching off a driver a selected profile needs fails the static_asserts after
+// DEFAULT_DEVICE, so it is a build error rather than a touchscreen that never
+// answers. A touch build whose selected profiles name no controller (CAP_TOUCH
+// forced on for touchless devices, or a device not classified here yet) keeps
+// every driver, as before; -DFREEINK_TOUCH_ALL_DRIVERS=1 forces that anywhere.
+#ifndef FREEINK_TOUCH_ALL_DRIVERS
+#define FREEINK_TOUCH_ALL_DRIVERS (!FREEINK_TOUCH_DEVICE_SELECTED)
+#endif
+#ifndef FREEINK_TOUCH_CHSC6X  // Murphy M3
+#define FREEINK_TOUCH_CHSC6X (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_MURPHY))
+#endif
+#ifndef FREEINK_TOUCH_GT911  // LilyGo T5 S3, M5Paper v1.1, PaperS3, Sticky, X4 Pro; Silkscreen alternate jumpers
+#define FREEINK_TOUCH_GT911                                                                              \
+  (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || \
+                         FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
+                         (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && SILKSCREEN_TOUCH_ALT_JUMPERS)))
+#endif
+#ifndef FREEINK_TOUCH_FT5X06  // Paper Mono and Silkscreen (FT6336 on the FT5x06 register set)
+#define FREEINK_TOUCH_FT5X06 \
+  (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PAPERMONO || \
+                         (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368)))
+#endif
+#ifndef FREEINK_TOUCH_FT6336U  // Murphy M4
+#define FREEINK_TOUCH_FT6336U (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_MURPHY_M4))
+#endif
+#ifndef FREEINK_TOUCH_GSLX680  // EEGO A4
+#define FREEINK_TOUCH_GSLX680 (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_EEGO_A4))
+#endif
+#ifndef FREEINK_TOUCH_CST816S  // Metalio E-Ink 4
+#define FREEINK_TOUCH_CST816S (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_METALIO_EINK4))
+#endif
+#ifndef FREEINK_TOUCH_TMA525C  // Onyx Picco
+#define FREEINK_TOUCH_TMA525C (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PICCO))
 #endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 // EEGO A4's frontlight is an I2C LED driver (viaI2cLed), not LEDC PWM — the
@@ -543,11 +583,8 @@ enum class DisplayController : uint8_t {
 };
 
 // Optional capacitive touch controller.
-// PiccoCst: the Onyx Picco's capacitive controller at I2C 0x24 (suspected
-// Chipsemi/Hynitron CST-series). Init/reset/INT are recovered; the framed
-// coordinate protocol is only partially recovered (per-point X/Y byte offsets
-// unknown), so the driver is a tap-dump scaffold — see InputManager.cpp.
-enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u, Gslx680, Cst816s, PiccoCst };
+// Tma525c: Parade TMA525C (PIP protocol), Onyx Picco at I2C 0x24.
+enum class TouchController : uint8_t { None, Chsc6x, Gt911, Ft5x06, Ft6336u, Gslx680, Cst816s, Tma525c };
 
 // Optional audio output path. Murphy M3 ships an ES8388-compatible stereo
 // codec (I2S slave, control over the shared touch I2C bus) — the contract was
@@ -2099,9 +2136,6 @@ constexpr BoardProfile METALIO_EINK4 = {
 //
 // Pending hardware validation / deeper RE (shipped conservatively here):
 //   * Buttons — up=21 / down=9 confirmed on hardware; GPIO5's role is not.
-//   * Touch — controller model is unknown (I2C 0x24 is non-standard) and the INT
-//     pin was not recovered, so touch can't function yet → NO_TOUCH for now
-//     (recovered so far: RST=11, addr=0x24, native 480x800 portrait digitizer).
 //   * Frontlight — it's a 2-channel warm/cool I2C LED driver @0x38 (not PWM, not
 //     the LM3630A the I2cFrontlight backend supports) → NO_FRONTLIGHT until a
 //     driver is added.
@@ -2139,14 +2173,10 @@ constexpr BoardProfile PICCO = {
     PIN_UNASSIGNED,  // batteryChargeStatus: no STAT pin; charge state comes from the SGM41562
     2.0f,
     PIN_UNASSIGNED,  // usbDetect
-    // Capacitive touch (PiccoCst @ I2C 0x24 on the shared bus SDA7/SCL8, RST=10,
+    // Capacitive touch (Parade TMA525C @ I2C 0x24 on the shared bus SDA7/SCL8, RST=10,
     // INT=11 active-low). Native digitizer is 480x800 portrait on the 800x480
     // landscape panel, so swapXY maps it to panel axes (like the Sticky).
-    // TAP-DUMP SCAFFOLD: init/reset/INT are recovered and the driver reads on INT,
-    // but the per-point X/Y byte offsets in the status block are NOT yet recovered,
-    // so coordinates are not published until a hardware tap-dump identifies them
-    // (build with -DTOUCH_PROBE_DEBUG to log raw frames). flipX/flipY pending HW.
-    {TouchController::PiccoCst, 7, 8, 11, 10, 0x24, 0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true,
+    {TouchController::Tma525c, 7, 8, 11, 10, 0x24, 0, 799, 0, 479, false, 0, true, false, PIN_UNASSIGNED, true,
      false, true},  // swapXY; flipX=false; flipY=true (portrait horizontal was reversed on hardware)
     NO_FRONTLIGHT,   // no LEDC pins; the frontlight is the I2C driver in i2cFrontlight below
     NO_AUDIO,
@@ -3090,6 +3120,66 @@ static_assert(!FREEINK_SILKSCREEN_368 ||
               "DEFAULT_DEVICE is the profile ACTIVE starts as");
 static_assert(FREEINK_SILKSCREEN_368 || silkscreen_368::sameProfile(DEFAULT_DEVICE, SILKSCREEN),
               "the Silkscreen 4.26\" build must boot as SILKSCREEN: DEFAULT_DEVICE is the profile ACTIVE starts as");
+#endif
+
+// True when this build compiles InputManager's driver for `c` (FREEINK_TOUCH_*).
+constexpr bool touchDriverCompiled(TouchController c) {
+  switch (c) {
+    case TouchController::None:
+      return true;
+    case TouchController::Chsc6x:
+      return FREEINK_TOUCH_CHSC6X;
+    case TouchController::Gt911:
+      return FREEINK_TOUCH_GT911;
+    case TouchController::Ft5x06:
+      return FREEINK_TOUCH_FT5X06;
+    case TouchController::Ft6336u:
+      return FREEINK_TOUCH_FT6336U;
+    case TouchController::Gslx680:
+      return FREEINK_TOUCH_GSLX680;
+    case TouchController::Cst816s:
+      return FREEINK_TOUCH_CST816S;
+    case TouchController::Tma525c:
+      return FREEINK_TOUCH_TMA525C;
+  }
+  return false;
+}
+
+// Every profile selectDevice() can make ACTIVE in this build must find its touch
+// driver compiled in. A device listed here with a touchless profile still gets
+// its line, so a profile that later gains a controller is checked too. Builds
+// with FREEINK_CAP_TOUCH=0 drop touch outright (InputManager::hasTouch() is false).
+#if FREEINK_CAP_TOUCH
+#define FREEINK_CHECK_TOUCH_DRIVER(device, profile)                         \
+  static_assert(!(device) || touchDriverCompiled(profile.touch.controller), \
+                #profile ".touch.controller has no InputManager driver in this build (see FREEINK_TOUCH_*)")
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X4, XTEINK_X4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X3, XTEINK_X3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X3, XTEINK_X3_UC8279);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_M5, M5STACK_PAPER_COLOR);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_MURPHY, MURPHY_M3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_MURPHY_M4, MURPHY_M4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_DELINK, DE_LINK);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_LILYGO, LILYGO_T5S3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_M5PAPER, M5PAPER_V11);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_STICKY, STICKY);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X4PRO, XTEINK_X4_PRO);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_X4CLASSIC, XTEINK_X4_CLASSIC);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PAPERMONO, PAPER_MONO);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PAPERS3, M5PAPER_S3);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_EEGO_A4, EEGO_A4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_ONEPAGE, ONEPAGE);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_METALIO_EINK4, METALIO_EINK4);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_WS397, WS_EPAPER_397);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PICCO, PICCO);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368, SILKSCREEN);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_SILKSCREEN && SILKSCREEN_PANEL_368, SILKSCREEN_368);
+#if FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368
+static_assert(touchDriverCompiled(SILKSCREEN.touch.fallbackController),
+              "Silkscreen touch fallback has no InputManager driver in this build (see FREEINK_TOUCH_*)");
+#endif
+FREEINK_CHECK_TOUCH_DRIVER(1, DEFAULT_DEVICE);  // a device missing above still boots as this
+#undef FREEINK_CHECK_TOUCH_DRIVER
 #endif
 
 // Runtime-active profile. Defaults to DEFAULT_DEVICE — identical to the old

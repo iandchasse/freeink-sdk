@@ -482,6 +482,7 @@ class InputManager {
 
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
   // BoardConfig::ACTIVE.touch.controller (CHSC6x, GT911, or FT5x06/FT6336).
+  // Each driver's definitions exist only when its FREEINK_TOUCH_* flag is set.
   void beginTouch();
   void beginTouchController();  // begin ACTIVE.touch.controller; sets touchDataEnabled
   bool pulseTouchReset();       // TouchConfig::resetPulseMs sequence; false when not configured
@@ -512,8 +513,8 @@ class InputManager {
   static void gslCalibrate(uint16_t rawX, uint16_t rawY, int16_t& screenX, int16_t& screenY);
   bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
   bool gslRead(uint8_t reg, uint8_t* buf, uint8_t len);
-  void beginPiccoTouch();               // Onyx Picco PiccoCst (I2C 0x24) init/reset
-  void pollPiccoTouch(unsigned long now);  // tap-dump scaffold — see InputManager.cpp
+  void beginTma525c();               // Onyx Picco Parade TMA525C (I2C 0x24) init/reset
+  void pollTma525c(unsigned long now);
   bool gslUploadFirmware();
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };
