@@ -10,6 +10,7 @@ namespace freeink {
 SecureClient::~SecureClient() = default;
 void SecureClient::setCACert(const char*) {}
 void SecureClient::setInsecure() {}
+void SecureClient::reserveFullRecord() {}
 int SecureClient::connect(IPAddress, uint16_t) { return 0; }
 int SecureClient::connect(const char*, uint16_t) { return 0; }
 size_t SecureClient::write(uint8_t) { return 0; }

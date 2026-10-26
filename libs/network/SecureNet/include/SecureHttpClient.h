@@ -66,6 +66,9 @@ class SecureHttpClient {
   // Skip peer verification (SecureClient does likewise). Required today because
   // the wolfSSL transport has no CA bundle wired up; see setCACert().
   void setInsecure() { _insecure = true; }
+  // Bulk download: lend wolfSSL a full-record buffer once the request is sent
+  // (see SecureClient::reserveFullRecord()). Applies to https connections.
+  void setReserveFullRecord(bool on) { _reserveFullRecord = on; }
   // Verify against a single PEM root. Clears the insecure flag.
   void setCACert(const char* rootCA) {
     _rootCA = rootCA;
@@ -119,9 +122,18 @@ class SecureHttpClient {
   // Closes the kept-alive connection (if any). Call when done with a server;
   // the next request transparently reconnects.
   void end() { closeConnection(); }
+  // Opens (or keeps) the connection for the URL given to begin(). Optional:
+  // sendRequest() connects on demand. Connecting before addHeader() keeps large
+  // headers out of the heap while the TLS handshake needs its working set.
+  bool connect(const AbortCallback& shouldAbort = nullptr) { return ensureConnected(shouldAbort); }
 
   void addHeader(const std::string& name, const std::string& value) {
-    _headers.push_back(name + ": " + value + "\r\n");
+    // Sized once: chained operator+ grows the string by doubling, so a few-KB
+    // cookie would take twice its size from the block the TLS handshake needs.
+    std::string line;
+    line.reserve(name.size() + value.size() + 4);
+    line.append(name).append(": ").append(value).append("\r\n");
+    _headers.push_back(std::move(line));
   }
 
   int GET() { return sendRequest("GET", nullptr, 0); }
@@ -218,6 +230,7 @@ class SecureHttpClient {
         if (reusing && attempt == 0) continue;
         return -1;
       }
+      if (_reserveFullRecord && _connHttps) _secure.reserveFullRecord();
 
       const unsigned long headerDeadline = millis() + _timeoutMs;
       std::string line;
@@ -466,8 +479,13 @@ class SecureHttpClient {
   // Request line + headers (+ body). Write results are checked: a stale
   // keep-alive socket often surfaces first as a failed write.
   bool writeRequest(const char* method, const uint8_t* payload, size_t payloadLen) {
-    std::string req = std::string(method) + " " + _path + " HTTP/1.1\r\nHost: " + hostHeader() + "\r\n";
-    req += "User-Agent: " + _userAgent + "\r\n";
+    // Reserved up front so a few-KB cookie isn't doubled by append growth.
+    size_t size = 256 + _path.size() + _host.size() + _userAgent.size() + 2 * (_authUser.size() + _authPass.size());
+    for (const std::string& h : _headers) size += h.size();
+    std::string req;
+    req.reserve(size);
+    req.append(method).append(" ").append(_path).append(" HTTP/1.1\r\nHost: ").append(hostHeader()).append("\r\n");
+    req.append("User-Agent: ").append(_userAgent).append("\r\n");
     req += _reuse ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     if (!_authUser.empty()) {
       const std::string creds = _authUser + ":" + _authPass;
@@ -596,6 +614,7 @@ class SecureHttpClient {
   // Kept-alive connection state. _conn points at _secure or _plain while a
   // connection is held open, and null otherwise.
   WiFiClient _plain;
+  bool _reserveFullRecord = false;
   SecureClient _secure;
   Client* _conn = nullptr;
   std::string _connHost;

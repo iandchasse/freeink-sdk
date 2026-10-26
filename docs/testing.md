@@ -99,6 +99,20 @@ the command bytes, the BUSY pull, the reset's settle time (10 ms on the 4.26"
 board, 60 ms for the variant's UC8279d) and the BUSY_N bound. The README next to
 it has the details and the negative control.
 
+## Motion sensors
+
+```sh
+sh libs/hardware/Imu/test/host/run.sh
+```
+
+Compiles `Imu` with the Metalio EInk4 profile against a model SC7A20H (and
+the QMI8658 and LSM6DS3 scaling), once more with `FREEINK_CAP_IMU=0`, and with
+the Paper Mono profile against a model BMI270: `begin()` must only identify
+the part, the first `wake()` or `read()` must stream the whole configuration
+file through the INIT window in order with a longer bus timeout, a warm part
+must skip the upload, and the board's axis flips apply. The model does not run
+the configuration file, so the sensor's data path still needs a device.
+
 ## Fonts
 
 ```sh
