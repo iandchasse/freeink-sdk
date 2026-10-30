@@ -34,3 +34,7 @@ struct SerialStub {
   explicit operator bool() const { return false; }
 };
 inline SerialStub Serial;
+
+using adc_attenuation_t = int;
+#define RTC_DATA_ATTR
+#define RTC_NOINIT_ATTR

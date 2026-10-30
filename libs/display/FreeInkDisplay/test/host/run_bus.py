@@ -20,6 +20,7 @@ with tempfile.TemporaryDirectory(prefix="freeink-bus-test-") as directory:
 #define LOW 0
 #define INPUT 0
 #define INPUT_PULLUP 2
+#define INPUT_PULLDOWN 5
 #define OUTPUT 3
 #define CHANGE 4
 #define DRAM_ATTR
@@ -60,11 +61,15 @@ struct FakeSPI {
 inline FakeSPI SPI;
 ''')
     (root / "BoardConfig.h").write_text('''#pragma once
-namespace BoardConfig { inline bool isOnePage() { return false; } }
+namespace BoardConfig {
+inline bool isOnePage() { return false; }
+inline bool displayBusyPullUp() { return false; }
+}
 ''')
     (root / "driver/gpio.h").write_text('''#pragma once
 using gpio_num_t = int;
 inline void gpio_hold_dis(gpio_num_t) {}
+inline void gpio_set_level(gpio_num_t, int) {}
 ''')
     (root / "freertos/FreeRTOS.h").write_text('''#pragma once
 using BaseType_t = int;

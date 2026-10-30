@@ -143,8 +143,12 @@ struct WireStub {
   void resetCounters() {
     configWriteTxns = applies = configReads = statusReadAttempts = statusClears = statusClearAttempts = 0;
   }
+  uint32_t getClock() { return 400000; }
+  bool setClock(uint32_t) { return true; }
+  void end() {}
 };
 
+using TwoWire = WireStub;
 inline WireStub Wire;
 
 // The begin() reset dance raises RST: the controller reloads its stored table.

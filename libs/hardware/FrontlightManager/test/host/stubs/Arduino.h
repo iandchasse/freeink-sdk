@@ -13,3 +13,10 @@ constexpr int HIGH = 1, LOW = 0, OUTPUT = 3;
 inline int Serial = 0;
 inline void pinMode(int, int) {}
 inline void digitalWrite(int, int) {}
+
+using adc_attenuation_t = int;
+constexpr int INPUT = 1;
+inline uint32_t analogReadMilliVolts(uint8_t) { return 0; }
+inline uint16_t analogRead(uint8_t) { return 0; }
+inline void analogSetAttenuation(adc_attenuation_t) {}
+inline void delayMicroseconds(uint32_t us) { fakeNow += us / 1000; }
