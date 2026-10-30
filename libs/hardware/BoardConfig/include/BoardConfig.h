@@ -283,6 +283,12 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 #ifndef FREEINK_TOUCH_TMA525C  // Onyx Picco
 #define FREEINK_TOUCH_TMA525C (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PICCO))
 #endif
+// GT911 INT as a light-sleep wake source (InputManager::touchWakeIrqPin). OPT-IN
+// (default off), not board-derived. Inert unless FREEINK_TOUCH_GT911 is also set:
+// a build without the GT911 driver compiles none of it and the accessor reports -1.
+#ifndef FREEINK_GT911_INT_WAKE
+#define FREEINK_GT911_INT_WAKE 0
+#endif
 #ifndef FREEINK_CAP_FRONTLIGHT
 // EEGO A4's frontlight is an I2C LED driver (viaI2cLed), not LEDC PWM — the
 // FrontlightManager I2C backend drives it.
@@ -813,7 +819,11 @@ struct TouchConfig {
   uint16_t rawMinY, rawMaxY;
   bool synthesizeConfirm;  // emit a CONFIRM button event on tap
   uint8_t i2cAddressAlt;   // alternate I2C address to probe (GT911 0x14; 0 = none)
-  bool irqActiveLow;       // touch IRQ asserted LOW (CHSC6x)
+  // Asserted level of the irq pin (true = LOW). Reported by
+  // InputManager::touchWakeIrqActiveLow() so a host can arm the right level as a
+  // light-sleep wake source; the GT911 INT-wake path also refuses to configure a
+  // profile that claims active-high, since it only programs a low-level hold.
+  bool irqActiveLow;
   // GT911 point-frame layout: false = datasheet standard (track-id at 0x8150, so
   // coords start at byte 1); true = coords start at byte 0 (no track-id), as seen
   // on M5Paper's GT911 which boots without a reset/config dance. Ignored (CHSC6x).
@@ -952,6 +962,19 @@ struct FrontlightConfig {
   // of a dark gap, a re-enable and a full loadProbeWindowMs. 0 = go dark and run
   // the full window.
   uint16_t blendConfirmWindowMs = 0;
+  // Boost-driver floors, in permille of full duty. Zero on boards whose LED
+  // hangs directly off the PWM pin, which leaves the dimming curve untouched.
+  //
+  // On a board that PWMs a boost converter's EN pin, an on-time shorter than the
+  // boost's start-up window produces NO light rather than dim light, so a
+  // perceptual dimming curve has to land its bottom on the boost's floor rather
+  // than on one duty LSB.
+  //   minStartPermille: lowest duty the boost reliably IGNITES from cold.
+  //   minHoldPermille:  lowest duty it stays lit at once running (<= start;
+  //                     FrontlightManager bridges the gap with a brief kick at
+  //                     start level when turning on into the hold band).
+  uint16_t minStartPermille = 0;
+  uint16_t minHoldPermille = 0;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven
@@ -1927,11 +1950,13 @@ constexpr BoardProfile EEGO_A4 = {
     DisplayController::UC8279C,
     768,
     552,
-    {42, 45, 21, 14, 13, 41, PIN_UNASSIGNED},  // SCLK MOSI CS DC RST BUSY (no panel power enable)
+    // GPIO6: display enable (HIGH) here, which units without the CW2015 need for
+    // GPIO10 battery readings. SDCardManager reassigns it to SD power (active-low)
+    // when the gauge answers. See docs/eego-a4-support.md.
+    {42, 45, 21, 14, 13, 41, 6},
     20000000,
-    // Dedicated HSPI SD: SCLK MISO MOSI CS. GPIO6 is the card's power enable,
-    // active-low, as stock V1.0.3 drives it ("SD power enabled: GPIO6 active-low").
-    {39, 40, 38, 47, 6, true, 20000000, false},
+    // SD power enable: set at runtime (GPIO6, active-low) on units with the CW2015.
+    {39, 40, 38, 47, PIN_UNASSIGNED, true, 20000000},
     // UP DOWN POWER. Power is active-HIGH (press drives 3V3) with a weak
     // external pull-down; INPUT_PULLDOWN required (InputManager honors the
     // polarity for pinMode). An internal pull-up leaves the pin mid-rail and
@@ -2286,6 +2311,8 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // internal config on the standard reset dance — no host config upload needed. Mounted PORTRAIT
     // (reports X:0..480, Y:0..800) on the 800x480 landscape panel → swapXY=true; rawMax describe the
     // post-swap panel axes. Coords start at byte 0 of the 0x8150 read → gt911CoordsAtByte0=true.
+    // irqActiveLow=true: the GT911 INT asserts LOW in the low-level hold mode the driver programs
+    // for wake (FREEINK_GT911_INT_WAKE) and idles HIGH on its pull-up between report frames.
     // flipX/flipY pending a corner-tap test. {ctrl,sda,scl,irq,rst,addr,rawMinX,rawMaxX,rawMinY,rawMaxY,
     //  synthConfirm,altAddr,irqActiveLow,coordsAtByte0,powerEnable,swapXY,flipX,flipY,hasHomeKey,pwrActiveHigh}
     {TouchController::Gt911,
@@ -2300,7 +2327,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
      479,
      false,
      0x14,
-     false,
+     true,
      true,
      2,
      true,
@@ -2344,8 +2371,9 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // board_begin at IROM 0x420a23dc). Carried as power.latch0 so holdPowerRails() asserts it
     // early — without it the panel rail and the SD slot both stay unpowered (the bring-up
     // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
-    // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
-    // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
+    // driven LOW: the touch controller's active-LOW rail, modeled above as the TouchConfig
+    // powerEnable=2 / powerEnableActiveHigh=false pair. NOTE: GPIO1/GPIO2 are therefore NOT the
+    // ADC button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
     {1},
     0,  // displayControllerVariant: filled by the boot probe
     // Bezel overlap: the panel sits recessed, and 7px is the empirically-tuned

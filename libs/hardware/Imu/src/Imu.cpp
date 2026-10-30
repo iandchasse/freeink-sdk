@@ -6,6 +6,7 @@
 
 #include <SharedI2c.h>
 #include <Wire.h>
+#include <I2cBusLock.h>
 #include <soc/soc_caps.h>
 
 #include <cstring>
@@ -145,6 +146,7 @@ void ensureWire() {
 }
 
 bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -154,6 +156,7 @@ bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
 }
 
 bool writeRegs(uint8_t addr, uint8_t reg, const uint8_t* src, size_t len) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -163,6 +166,7 @@ bool writeRegs(uint8_t addr, uint8_t reg, const uint8_t* src, size_t len) {
 }
 
 bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);

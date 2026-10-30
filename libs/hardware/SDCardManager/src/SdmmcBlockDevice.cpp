@@ -55,7 +55,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // it. The read timeouts we chased earlier were a mount-sequencing problem, not a
   // clock-margin one — see the retry loop below.
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-  host.max_freq_khz = pins.maxFreqKhz != 0 ? pins.maxFreqKhz : SDMMC_FREQ_DEFAULT;
+  host.max_freq_khz = pins.maxFreqKhz != 0 ? pins.maxFreqKhz : SDMMC_FREQ_HIGHSPEED;
 
   // Slot pin map. The ESP32-S3 routes SDMMC through the GPIO matrix, so the data
   // and clock/command lines are assignable (unlike the classic ESP32's fixed slot).

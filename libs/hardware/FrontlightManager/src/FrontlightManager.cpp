@@ -4,7 +4,7 @@
 #include <M5Pm1.h>
 #include <SharedAdc.h>
 #include <Wire.h>
-#include <driver/gpio.h>
+#include <driver/gpio.h>  // gpio_hold_en/dis in prepareForDeepSleep()/begin()
 #ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/ledc.h>
 // esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
@@ -242,6 +242,32 @@ class GateGuard {
  private:
   SemaphoreHandle_t lock_;
 };
+// Release a pad hold left by a previous prepareForDeepSleep(). gpio_hold_en
+// survives the deep-sleep wake reset, and a held pad silently ignores both the
+// LEDC routing and any GPIO write -- the light would never come back on.
+void releasePinHold(int8_t gpio) {
+  if (gpio == BoardConfig::PIN_UNASSIGNED) return;
+  gpio_hold_dis(static_cast<gpio_num_t>(gpio));
+}
+
+// Hand the pad from LEDC back to plain GPIO, drive the LED's INACTIVE level and
+// latch it for deep sleep. Deliberately not left to
+// esp_sleep_config_gpio_isolate(): an isolated pad floats, and what the light
+// then does depends on an external pull that is a board-layout detail (on a
+// board whose PWM gates a boost converter's EN pin through a pull-up, floating
+// reads as ON). A lit frontlight is by far the largest load a sleeping reader
+// can carry, so it gets driven off explicitly rather than assumed off. LEDC is
+// stopped first, or the peripheral output keeps overriding the GPIO write at the
+// pad.
+void parkPinForSleep(int8_t gpio, uint8_t ch, bool activeHigh) {
+  if (gpio == BoardConfig::PIN_UNASSIGNED) return;
+  detachChannel(gpio, ch);
+  const auto g = static_cast<gpio_num_t>(gpio);
+  gpio_hold_dis(g);
+  pinMode(gpio, OUTPUT);
+  digitalWrite(gpio, activeHigh ? LOW : HIGH);
+  gpio_hold_en(g);
+}
 }  // namespace
 #endif
 
@@ -346,6 +372,11 @@ void FrontlightManager::begin() {
 #endif
     }
   }
+  // prepareForDeepSleep() latched these pads at the LED's off level, and the
+  // hold survives the wake reset. Release it before LEDC claims the pins, or the
+  // frontlight is dead after the first sleep/wake cycle.
+  releasePinHold(fl.gpio);
+  releasePinHold(fl.gpioWarm);
 
   bool attachOk = attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
@@ -539,11 +570,20 @@ bool FrontlightManager::piccoUpdate(const uint8_t reg, const uint8_t mask, const
 }
 
 bool FrontlightManager::configurePicco() {
+  // The LM3630A-style controller needs time to leave software sleep before
+  // brightness/current writes (also used by the Linux lm3630a driver). Only
+  // pay this settling delay on the first on after boot/off, not slider ticks.
+  if (!piccoUpdate(0x00, 0x80, 0x00)) {
+    LOG_ERR("FrontlightMgr", "Picco frontlight wake failed");
+    return false;
+  }
+  delay(2);
   // Recovered power-on sequence (FUN_42008cc4): filter/mode/config registers.
   bool ok = piccoWrite(0x50, 0x03);
   ok = piccoUpdate(0x01, 0x07, 0x00) && ok;
   ok = piccoWrite(0x02, 0x38) && ok;
   _i2cConfigured = ok;
+  if (!ok) LOG_ERR("FrontlightMgr", "Picco frontlight configuration failed");
   return ok;
 }
 
@@ -567,9 +607,8 @@ void FrontlightManager::applyPicco() {
   const uint8_t coolPwm = e[0], warmPwm = e[1], coolCur = static_cast<uint8_t>(e[2] & 0x1f),
                 warmCur = static_cast<uint8_t>(e[3] & 0x1f);
 
-  piccoUpdate(0x00, 0x80, 0x00);  // leave standby
-  piccoWrite(0x03, coolPwm);      // cool brightness
-  piccoWrite(0x04, warmPwm);      // warm brightness
+  piccoWrite(0x03, coolPwm);  // cool brightness
+  piccoWrite(0x04, warmPwm);  // warm brightness
   piccoUpdate(0x05, 0x1f, coolCur);
   piccoUpdate(0x06, 0x1f, warmCur);
   piccoUpdate(0x00, 0x14, (coolPwm || coolCur) ? 0x04 : 0x00);  // cool channel enable
@@ -618,6 +657,18 @@ void FrontlightManager::apply() {
     applyGated(totalDuty, full);
     return;
   }
+  // Boost-EN floor. On a light whose PWM gates a boost converter's EN pin, an
+  // on-time under the boost's start-up window produces NO light, so the dim end
+  // of any curve must land on the physical floor, not on one LSB -- that is how
+  // a plain gamma curve can black the light out at every ordinary reading
+  // brightness. Remap (0, full] onto [holdFloor, full]: the curve keeps its
+  // shape, 1% becomes the dimmest level the hardware can actually sustain, and
+  // boards with no floor configured are untouched (holdFloor == 0 leaves the
+  // identity mapping).
+  const uint32_t holdFloor = (full * fl.minHoldPermille + 500u) / 1000u;
+  if (totalDuty > 0 && holdFloor > 0) {
+    totalDuty = holdFloor + static_cast<uint32_t>((static_cast<uint64_t>(totalDuty) * (full - holdFloor)) / full);
+  }
   uint32_t warmDuty = 0;
   uint32_t coolDuty = totalDuty;
   if (dual) {
@@ -627,6 +678,21 @@ void FrontlightManager::apply() {
 #ifdef FREEINK_FRONTLIGHT_LS
   updateLsKeepAlive(totalDuty != 0);
 #endif
+  // Kick-start: a boost sustains below the duty it can ignite from. Turning on
+  // from dark into the hold band gets a brief burst at the ignition floor, then
+  // settles to the target -- which is what lets minHoldPermille sit below
+  // minStartPermille and 1% reach a level the boost could never start at.
+  const uint32_t startFloor = (full * fl.minStartPermille + 500u) / 1000u;
+  if (_lastTotalDuty == 0 && totalDuty > 0 && startFloor > 0 && totalDuty < startFloor) {
+    const uint32_t kickWarm = dual ? (startFloor * _warmPercent + 50u) / 100u : 0;
+    writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(startFloor - kickWarm, full, fl.activeHigh));
+    if (dual) {
+      writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(kickWarm, full, fl.activeHigh));
+    }
+    delay(30);  // one boost soft-start; the output cap carries the dip that follows
+  }
+  _lastTotalDuty = totalDuty;
+
   writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(coolDuty, full, fl.activeHigh));
 
   if (dual) {
@@ -1370,6 +1436,25 @@ FrontlightManager::ProbeDiagnostics FrontlightManager::probeDiagnostics() const 
 #endif
 }
 #endif
+
+void FrontlightManager::prepareForDeepSleep() {
+#if FREEINK_CAP_FRONTLIGHT
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (gatedPath(fl)) {
+    prepareForSleep();
+    return;
+  }
+  if (fl.viaPm1Pwm) {
+    // Paper Mono: the PWM lives in the M5PM1, so there is no ESP pad to park.
+    // Zero the duty (clearing the channel-enable bit) so the AW9967 is dark even
+    // if the EPD rail feeding it is still up when we sleep.
+    if (_begun) pm1FrontlightWrite(0);
+    return;
+  }
+  parkPinForSleep(fl.gpio, LEDC_CH_COOL, fl.activeHigh);
+  parkPinForSleep(fl.gpioWarm, LEDC_CH_WARM, fl.activeHigh);
+#endif
+}
 
 void FrontlightManager::off() { setBrightness(0); }
 void FrontlightManager::on() { setBrightness(_lastBrightness); }

@@ -301,7 +301,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
     digitalWrite(pins.rst, HIGH);
     gpio_hold_dis(rst);
   }
-  if (busy == BusyPolarity::ActiveLow) {
+  if (busy == BusyPolarity::ActiveLow || busy == BusyPolarity::ActiveLowReady) {
     pinMode(pins.busy, INPUT_PULLUP);
   } else if (busy == BusyPolarity::ActiveHigh && pins.busyPullDown) {
     pinMode(pins.busy, INPUT_PULLDOWN);  // no external pull: a missing panel reads not-busy
@@ -443,9 +443,13 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
       }
       if (millis() - start > 30000) break;
     }
-  } else if (p == BusyPolarity::ActiveLow) {
+  } else if (p == BusyPolarity::ActiveLow || p == BusyPolarity::ActiveLowReady) {
+    // Seeed's SSD2677 driver checks ready HIGH directly (Seeed_GFX2,
+    // Driver_SSD2677::busyWait). Allow one tick for command propagation, but
+    // don't add 100 ms when a command has already finished or never asserts BUSY.
+    if (p == BusyPolarity::ActiveLowReady) delay(1);
     bool busy = digitalRead(_pins.busy) == LOW;
-    if (!busy) {
+    if (!busy && p == BusyPolarity::ActiveLow) {
       while (millis() - start < 100) {
         if (digitalRead(_pins.busy) == LOW) {
           busy = true;
@@ -546,6 +550,9 @@ void EpdBus::waitRefreshComplete(const char* tag) {
 #endif
     return;
   }
+  // Keep refresh assertion grace even when command waits use the faster
+  // ready-level policy. Both polling fallbacks must still catch a late BUSY.
+  const BusyPolarity refreshPolarity = _busy == BusyPolarity::ActiveLowReady ? BusyPolarity::ActiveLow : _busy;
   // A host that installed a busy-wait slice hook (e.g. CrossPoint light-sleeping
   // through the refresh) must keep the polling path: waitBusy() invokes the slice
   // hook on each idle step, while this ISR path sleeps the task on a semaphore and
@@ -570,7 +577,7 @@ void EpdBus::waitRefreshComplete(const char* tag) {
         delayMicroseconds(200);
       }
     }
-    waitBusy(tag);
+    waitBusy(refreshPolarity, tag);
 #if FREEINK_DIAGNOSTICS
     closeRefresh();
 #endif
@@ -580,7 +587,7 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   // exact BUSY completion edge, instead of polling every 1 ms. Falls back to
   // polling if the semaphore could not be created.
   if (!s_epdRefreshDone) {
-    waitBusy(tag);
+    waitBusy(refreshPolarity, tag);
 #if FREEINK_DIAGNOSTICS
     closeRefresh();
 #endif

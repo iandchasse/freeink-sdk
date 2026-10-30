@@ -4,6 +4,16 @@ Run these commands from the repository root. Host tests use production code
 with desktop adapters or hardware stubs; they do not require a device or PlatformIO.
 You need a C/C++ compiler with C++17 support, Python 3, and a POSIX shell.
 
+## Serial transport
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_serial.py
+```
+
+Checks that native USB Serial/JTAG output is serviced without a blocking flush,
+and that UART, TinyUSB, Sticky's UART bridge, and simulator builds remain no-ops.
+Device tests must also verify timely acknowledgements and intact transfer data.
+
 ## UI, books, credentials, and input
 
 ```sh
@@ -142,9 +152,22 @@ report decode into key events, auto-reconnect, scanning and teardown order.
 The fake has no radio, so pairing, link timing and memory use still need a
 device.
 
+## Frontlight driver
+
+```sh
+sh libs/hardware/FrontlightManager/test/host/run.sh
+```
+
+Compiles the Picco frontlight backend and real board profile against a register
+model with a wake-settling interval. Covers the first nonzero brightness write,
+off/on level restoration, warm/cool channels, slider updates without repeated
+wake delays, and retry after a failed wake transaction. Physical light output
+and the actual controller settling time still require a device check.
+
 ## Display drivers
 
 ```sh
+python3 libs/display/FreeInkDisplay/test/host/run_bus.py
 python3 libs/display/FreeInkDisplay/test/host/run_pro.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
@@ -154,7 +177,9 @@ python3 libs/display/FreeInkDisplay/test/host/run_picco.py
 ```
 
 These compile production drivers against recording buses. The Pro suite also
-compiles the facade in single- and dual-buffer modes. The Picco suite builds the
+compiles the facade in single- and dual-buffer modes, checks every concrete driver
+header against the shared interface, and verifies selected controller identity
+independently of board metadata. The Picco suite builds the
 SSD1677/SSD2677 drivers as a Picco and as a Sticky, including each board's
 bit-banged panel probe. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
@@ -234,3 +259,12 @@ or measure device heap. Consumers without `FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER`
 use ordinary on-demand record growth without proactive reservation. Reservations
 use wolfSSL's own connection-owned buffer and allocator, with no global allocator
 replacement or cross-client loan.
+
+## Streaming JSON previews
+
+```sh
+sh libs/network/JsonSax/test/host/run.sh
+```
+
+Checks optional bounded string prefixes, unchanged default overflow handling,
+continued parsing after long strings, and rejection of oversized keys under ASan/UBSan.

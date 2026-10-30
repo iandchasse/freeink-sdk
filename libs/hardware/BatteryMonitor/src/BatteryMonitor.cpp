@@ -4,6 +4,7 @@
 #include <initializer_list>  // BoardConfig.h range-for over the latch pins
 #include <BoardConfig.h>
 #include <Logging.h>
+#include <I2cBusLock.h>
 #include <M5Pm1.h>
 #include <SharedAdc.h>
 #include <esp_idf_version.h>
@@ -54,6 +55,7 @@ void ensureWire() {
 }
 
 bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
+  const freeink::I2cBusLock busLock;
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -68,6 +70,7 @@ bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
 }
 
 bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
+  const freeink::I2cBusLock busLock;
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -80,6 +83,7 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
 }
 
 bool readRegs(uint8_t addr, uint8_t reg, uint8_t* out, uint8_t length) {
+  const freeink::I2cBusLock busLock;
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -93,6 +97,7 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* out, uint8_t length) {
 
 // True when a device acknowledges its address (an empty write).
 bool i2cAcks(uint8_t addr) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   TwoWire& w = gaugeWire();
   w.beginTransmission(addr);
@@ -100,6 +105,7 @@ bool i2cAcks(uint8_t addr) {
 }
 
 bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
+  const freeink::I2cBusLock busLock;
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -111,6 +117,7 @@ bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
 
 // One I2C write per word: the X3's BQ27220 ignores a Control() subcommand split in two.
 bool writeReg16(uint8_t addr, uint8_t reg, uint16_t val) {
+  const freeink::I2cBusLock busLock;
   ensureWire();
   TwoWire& w = gaugeWire();
   delayMicroseconds(66);  // BQ27220 bus-free time between transactions
