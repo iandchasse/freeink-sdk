@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the real UC8253 X3 driver with a recording bus and host Arduino shims.
-
-The recording bus models EpdBus's transaction contract (epdbus_txn_model.h): a bus call made while a
-beginTxn() Transaction is alive would block its task for ever on hardware, and the test fails on it.
-"""
+"""Compile the real UC8253 X3 driver with a recording bus and host Arduino shims."""
 from pathlib import Path
 import os
 import shutil
@@ -12,16 +8,12 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE.parents[1] / "src"
-# UC8253_SOURCE names another copy of Uc8253X3Driver.cpp to run (a control: without the strip's txn.end() the
-# transaction test below must fail)
-DRIVER = Path(os.environ.get("UC8253_SOURCE", str(SOURCE / "driver/Uc8253X3Driver.cpp")))
 with tempfile.TemporaryDirectory(prefix="uc8253_power-test-") as directory:
     root = Path(directory)
     for folder in ("driver", "bus", "lut"):
         (root / folder).mkdir()
-    for name in ("Uc8253X3Driver.h", "PanelDriver.h"):
+    for name in ("Uc8253X3Driver.cpp", "Uc8253X3Driver.h", "PanelDriver.h"):
         shutil.copy2(SOURCE / "driver" / name, root / "driver" / name)
-    shutil.copy2(DRIVER, root / "driver" / "Uc8253X3Driver.cpp")
     shutil.copy2(SOURCE / "lut/Uc8253X3Luts.h", root / "lut/Uc8253X3Luts.h")
     shutil.copy2(SOURCE / "lut/UltraChipDirectGrayLuts.h", root / "lut/UltraChipDirectGrayLuts.h")
     shutil.copy2(SOURCE.parent / "include/GrayscaleCapabilities.h", root / "GrayscaleCapabilities.h")
@@ -48,6 +40,7 @@ inline struct { unsigned short displayWidth=792, displayHeight=528; unsigned dis
 #include <cstdint>
 #include <cstddef>
 #include <vector>
+#include <cstring>
 #include "../epdbus_txn_model.h"
 namespace freeink {
 enum class BusyPolarity { X3TwoPhase };
@@ -63,7 +56,7 @@ class EpdBus {
   }
 public:
   std::vector<uint8_t> oldPlane, newPlane, lastBank, rawRegisters;
-  unsigned powerOns=0, refreshes=0;
+  unsigned powerOns=0, refreshes=0, pollingRefreshWaits=0, interruptWaits=0;
   // The real bus opens a Transaction for each call below and holds one for beginTxn(): see the model.
   EpdBusTxnModel model;
   using Transaction = EpdBusTxn;
@@ -89,8 +82,8 @@ public:
     (c == 0x10 ? oldPlane : newPlane).assign(size_t(h)*wb,v);
   }
   void reset(int) {}
-  void waitBusy(const char*) {}
-  void waitRefreshComplete(const char*) {}
+  void waitBusy(const char* tag) { if (!std::strcmp(tag, " X3_DRF")) ++pollingRefreshWaits; }
+  void waitRefreshComplete(const char*) { ++interruptWaits; }
   struct Pins { int8_t busy=0; };
   Pins pins() const { return {}; }
   Transaction beginTxn() { return Transaction(&model); }
@@ -98,7 +91,6 @@ public:
 }
 ''')
     (root / "test.cpp").write_text("""
-#undef NDEBUG
 #include <algorithm>
 #include <cassert>
 #include <vector>
@@ -111,7 +103,17 @@ int main() {
  assert(caps.supported() && caps.stripUploads && !caps.asyncBase && !caps.stagingWhileBusy);
  assert(d.grayscaleCapabilities(freeink::GrayscaleMode::Direct).base == freeink::GrayscaleBase::Combined);
  std::vector<uint8_t> fb(792/8*528, 0xAA); d.begin(bus);
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
+ // Rollback: both splash and first real screen clean; only the third paint is fast.
+ assert(!d.supportsAsyncDisplay());
+ assert(!d.displayStart(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false));
+ assert(bus.refreshes == 2 && bus.pollingRefreshWaits == 2);
+ assert(bus.oldPlane == fb && bus.newPlane == fb);
+ d.displayFinish(bus,fb.data());
+ assert(bus.refreshes == 2);
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
+ assert(bus.refreshes == 5 && bus.pollingRefreshWaits == 5);
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
+ assert(bus.refreshes == 6 && bus.pollingRefreshWaits == 6 && bus.interruptWaits == 0);
  assert(bus.powerOns == 1);
  d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
  assert(bus.powerOns == 1);
@@ -132,9 +134,15 @@ int main() {
    d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Full,false);
    assert(bus.newPlane == fb && bus.oldPlane == fb);
  }
- // Nothing above may have called the bus while a beginTxn() Transaction was held (the second blocks for ever).
- assert(bus.model.nestedCalls == 0);
-
+ // Rollback: restored B/W RAM permits a differential gray base after an AA pass.
+ d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);
+ d.copyGrayscaleLsb(bus, fb.data());
+ d.copyGrayscaleMsb(bus, fb.data());
+ d.displayGray(bus, fb.data(), false, nullptr, false);
+ d.cleanupGrayscaleBuffers(bus, fb.data());
+ const auto before = bus.refreshes;
+ d.beginGrayscale(bus, fb.data(), freeink::GrayscaleMode::Absolute, freeink::RefreshMode::Half, false);
+ assert(bus.refreshes == before + 1 && bus.interruptWaits == 0);
  // Per-strip upload (the direct-gray route and the reader's gray pages): the PTL window in gate space, the
  // plane's RAM command, the rows bottom-first as ONE CS-low burst, then PTOUT once that burst has ended.
  {
@@ -160,49 +168,8 @@ int main() {
      assert(log[5 + kRows].kind == BusEvent::Cmd && log[5 + kRows].value == 0x92);
    }
  }
- assert(bus.model.nestedCalls == 0 && bus.model.alive == 0);
- // A grayscale base after an AA page must not run as a differential. The reader's AA pass
- // leaves greys on the glass that cleanupGrayscaleBuffers() restores the RAM around but does
- // not remove; the differential base then gives those pixels the gentle WW settle and the
- // absolute gray pass idles the endpoints, so the page's text outline survives onto the next
- // grayscale image (X3, 2026-09-23). The clean branch costs one extra refresh: display(Half)
- // plus the settle, versus the differential's single settle -- which is how the two are told
- // apart here.
- const auto absolute = freeink::GrayscaleMode::Absolute;
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Fast,false);          // B/W base, as the reader pushes it
- d.copyGrayscaleLsb(bus, fb.data());
- d.copyGrayscaleMsb(bus, fb.data());
- d.displayGray(bus, fb.data(), false, nullptr, false);                        // overlay gc nudge: greys now on glass
- d.cleanupGrayscaleBuffers(bus, fb.data());                                   // RAM restored; glass untouched
- auto before = bus.refreshes;
- d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
- assert(bus.refreshes == before + 2);                                         // clean base, not differential
- d.copyGrayscaleLsb(bus, fb.data());
- d.copyGrayscaleMsb(bus, fb.data());
- d.displayGray(bus, fb.data(), false, nullptr, true);                         // absolute pass: greys on glass again
- d.cleanupGrayscaleBuffers(bus, fb.data());
- // A half drives every pixel to its target, which is what retires the claim: the next
- // grayscale base may diff again.
- d.display(bus,fb.data(),nullptr,freeink::RefreshMode::Half,false);
- before = bus.refreshes;
- d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Half, false);
- assert(bus.refreshes == before + 1);                                         // differential base
- // The reader's page turn asks for a _fast base. The clean branch's display(Fast) gives the
- // same gentle WW cell as the differential, so greys on the glass must not double the refresh.
- d.copyGrayscaleLsb(bus, fb.data());
- d.copyGrayscaleMsb(bus, fb.data());
- d.displayGray(bus, fb.data(), false, nullptr, false);
- d.cleanupGrayscaleBuffers(bus, fb.data());
- for (int page = 0; page < 3; ++page) {
-   before = bus.refreshes;
-   d.beginGrayscale(bus, fb.data(), absolute, freeink::RefreshMode::Fast, false);
-   assert(bus.refreshes == before + 1);                                       // single differential base
-   d.copyGrayscaleLsb(bus, fb.data());
-   d.copyGrayscaleMsb(bus, fb.data());
-   d.displayGray(bus, fb.data(), false, nullptr, false);
-   d.cleanupGrayscaleBuffers(bus, fb.data());
- }
- std::cout << "PASS: UC8253 cold power-on, warm Full, power-off/wake, strip uploads, and clean gray base after AA\\n";
+ assert(bus.model.nestedCalls == 0);
+ std::cout << "PASS: UC8253 rollback boot cleans, blocking polling, gray baseline, power and Direct grayscale\\n";
 }
 """)
     exe = root / "test_uc8253_power"
