@@ -33,12 +33,12 @@ static_assert(!FREEINK_CAP_DISPLAY_PROBE_POLICY || FREEINK_XTEINK_DISPLAY_PROBE,
 namespace freeink {
 
 // =============================================================================
-// The Silkscreen 3.68" variant: nothing to probe.
+// Silkscreen variants with a fixed controller: nothing to probe.
 // =============================================================================
-#if FREEINK_SILKSCREEN_368
+#if FREEINK_SILKSCREEN_368 || FREEINK_SILKSCREEN_750
 
-// The panel is the X3's newer-batch UC8279d and the profile says so: SILKSCREEN_368 has displayController UC8279
-// and a forced probe policy with no verdict cache, and BoardConfig.h asserts it. Nothing is probed, so no probe
+// The profile fixes the controller: UC8279d for SILKSCREEN_368, UC8179 for SILKSCREEN_750.
+// Both have a forced probe policy with no verdict cache. Nothing is probed, so no probe
 // is compiled into this image: not the X3 stock VER read, not the two-pass VER/FLG/MTP read, no verdict cache.
 // A cold boot and a deep-sleep wake make no bus traffic for identification. The API keeps its shape for the
 // consumers that call it (the test firmware's panel page and main.cpp's log line).
@@ -64,7 +64,7 @@ bool displayControllerCached() { return false; }
 void forgetCachedDisplayController() {}  // there is no verdict to drop
 
 bool applyXteinkDisplayController() {
-  // The 4.26" board's forced path, without the probe code behind it: leave the bus alone.
+  // The fixed-panel path has no identification traffic.
   controllerSource = DisplayControllerSource::Forced;
   if (Serial) {
     Serial.printf("[%lu] [XTDET] controller forced by the build: %s (not probed)\n", millis(),

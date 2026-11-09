@@ -23,3 +23,9 @@ The header has no hardware dependency, so no stubs are needed. The probe itself
 (the readings of `LED_MONIT` on the monitor timer after the enable pulse, the rail
 wait before the colour select moves) runs only on a board: the Silkscreen test firmware's T9 and
 T10 report it.
+
+`test_brightness_startup.cpp` covers the 100-percent interpolated range, no-increase
+migration from both earlier formats, idle/rise verdicts, reset eligibility and wrap-safe holdoff.
+The CrossPoint host runner `test/test_frontlight_startup.py` also executes the
+production SDK duty/probe paths and both apps' HAL restore/cancellation paths
+against recording adapters. Electrical thresholds still need board validation.

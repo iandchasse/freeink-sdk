@@ -4,6 +4,7 @@
 #include <cstring>
 #include <type_traits>
 #include <vector>
+#include <atomic>
 // Inspect private state without adding test-only methods to the SDK API.
 #define private public
 #include "FreeInkDisplay.h"
@@ -82,6 +83,114 @@ static void testStream(bool reverse, unsigned gateOffset) {
   assert(lastRegister(bus, 0xe5) == 0x1e);  // honor Full even after an AA page
   for (const auto& w : bus.writes)
     if (w.command == 0x10 || w.command == 0x13) assert(w.transactions == 1);
+}
+
+static void testStandardHalfRefresh() {
+  Ssd1677Config cfg = ssd1677DefaultConfig();
+  cfg.booster[4] = 0xc0;
+  cfg.fullSeqOverride = 0;
+  cfg.halfSeqOverride = 0;
+  cfg.halfUsesFullWaveform = true;
+  const auto pixels = frame(71);
+  // Existing cold-start promotion selects HALF even for FULL/FAST requests.
+  for (bool standard : {false,true}) {
+    for (auto mode : {RefreshMode::Full,RefreshMode::Half,RefreshMode::Fast}) {
+      EpdBus coldBus;
+      Ssd1677Driver coldDriver(cfg);
+      coldDriver.begin(coldBus);
+      coldDriver.setStandardHalfRefresh(standard);
+      coldBus.clear();
+      coldDriver.display(coldBus,pixels.data(),nullptr,mode,false);
+      assert(lastRegister(coldBus,0x22) == (standard ? 0xd4 : 0xf4));
+      bool wroteTemperature = false;
+      for (const auto& write : coldBus.writes) {
+        if (write.command == 0x1a) {
+          wroteTemperature = true;
+          assert(write.bytes == Bytes{0x5a});
+        }
+      }
+      assert(wroteTemperature == standard);
+      assert(lastPlane(coldBus,0x26) == pixels);
+    }
+  }
+  EpdBus bus;
+  Ssd1677Driver driver(cfg);
+  FreeInkDisplay display(12,11,13,18,14,6);
+  display._driver = &driver;
+  driver.begin(bus);
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Full,false);
+  bus.clear();
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Half,false);
+  assert(lastRegister(bus,0x22) == 0x34); // default still uses the board's full clean
+
+  // Toggle the same live driver both ways and inspect the emitted waveform.
+  for (bool standard : {true,false}) {
+    display.setStandardHalfRefresh(standard);
+    bus.clear();
+    driver.display(bus,pixels.data(),nullptr,RefreshMode::Half,false);
+    assert(lastRegister(bus,0x22) == (standard ? 0xd4 : 0x34));
+    bool wroteTemperature = false;
+    for (const auto& write : bus.writes) {
+      if (write.command == 0x1a) {
+        wroteTemperature = true;
+        assert(write.bytes == Bytes{0x5a});
+      }
+    }
+    assert(wroteTemperature == standard);
+    assert(lastPlane(bus,0x26) == pixels); // next FAST keeps its previous-frame baseline
+  }
+
+  // A change while BUSY applies to the next refresh, not the pending activation.
+  display.setStandardHalfRefresh(true);
+  bus.clear();
+  assert(driver.displayStart(bus,pixels.data(),pixels.data(),RefreshMode::Half,false));
+  assert(lastRegister(bus,0x22) == 0xd4 && bus.waits == 0);
+  display.setStandardHalfRefresh(false);
+  driver.displayFinish(bus,pixels.data());
+  unsigned activations = 0;
+  for (const auto& write : bus.writes) if (write.command == 0x22) ++activations;
+  assert(activations == 1 && bus.waits == 1 && lastRegister(bus,0x22) == 0xd4);
+  bus.clear();
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Half,false);
+  assert(lastRegister(bus,0x22) == 0x34);
+
+  // Leaving grayscale promotes FAST to HALF without changing its RAM baseline.
+  for (bool standard : {false,true}) {
+    display.setStandardHalfRefresh(standard);
+    driver.displayGray(bus,pixels.data(),false,nullptr,false);
+    bus.clear();
+    driver.display(bus,pixels.data(),nullptr,RefreshMode::Fast,false);
+    assert(lastRegister(bus,0x22) == (standard ? 0xd4 : 0x34));
+    assert(lastPlane(bus,0x26) == pixels);
+  }
+
+  display.setStandardHalfRefresh(true);
+  bus.clear();
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Full,false);
+  assert(lastRegister(bus,0x22) == 0x34);
+  bus.clear();
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Fast,false);
+  assert(lastRegister(bus,0x22) == 0xfc);
+  bus.clear();
+  driver.displayGray(bus,pixels.data(),false,nullptr,false);
+  assert(lastRegister(bus,0x22) == 0xcc);
+  bus.clear();
+  driver.displayGray(bus,pixels.data(),true,nullptr,false);
+  assert(lastRegister(bus,0x22) == 0xcf);
+  bus.clear();
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Half,true);
+  assert(lastRegister(bus,0x22) == 0xd7 && !driver._isScreenOn);
+
+  display.setStandardHalfRefresh(false);
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Full,false);
+  bus.clear();
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Half,true);
+  assert(lastRegister(bus,0x22) == 0x37 && !driver._isScreenOn);
+  driver.display(bus,pixels.data(),nullptr,RefreshMode::Full,false);
+  bus.clear();
+  driver.deepSleep(bus);
+  assert(lastRegister(bus,0x22) == 0x03);
+  assert(lastRegister(bus,0x10) == 0x03);
 }
 
 static void testSsd() {
@@ -770,6 +879,7 @@ int main(int argc, char** argv) {
   testStream<Uc8179Driver>(true, 0);
   testStream<Uc8279X4Driver>(false, 120);
   testSsd();
+  testStandardHalfRefresh();
   testAsyncFrame<Uc8179Driver>();
   testAsyncFrame<Uc8279X4Driver>();
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE

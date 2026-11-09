@@ -11,6 +11,8 @@
 // Ssd1677Config. A board reuses the generic driver by passing its own config;
 // the firmware just calls the generic EInkDisplay API and gets device behavior.
 
+#include <atomic>
+
 #include "PanelDriver.h"
 
 namespace freeink {
@@ -90,6 +92,9 @@ class Ssd1677Driver : public PanelDriver {
  public:
   const char* controllerName() const override { return "SSD1677"; }
   explicit Ssd1677Driver(const Ssd1677Config& cfg = ssd1677DefaultConfig());
+  void setStandardHalfRefresh(bool enabled) override {
+    _standardHalfRefresh.store(enabled, std::memory_order_relaxed);
+  }
 
   uint32_t spiHz() const override;
   BusyPolarity busyPolarity() const override { return BusyPolarity::ActiveHigh; }
@@ -151,6 +156,8 @@ class Ssd1677Driver : public PanelDriver {
   void displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff, bool async);
 
   const Ssd1677Config& _cfg;
+  // The settings task can update this while the render task selects a waveform.
+  std::atomic<bool> _standardHalfRefresh{false};
 
   uint16_t _w;
   uint16_t _h;

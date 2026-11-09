@@ -16,6 +16,7 @@
 // selectDevice); ACTIVE defaults to a compile-time default until then.
 
 #include <Arduino.h>
+#include <initializer_list>
 #include <driver/gpio.h>  // gpio_hold_dis in releaseSdRail()
 #include <esp_rom_sys.h>  // esp_rom_printf in holdPowerRails()
 
@@ -105,6 +106,17 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 // This build is the Silkscreen 3.68" variant. The libraries key on this, not on the macro itself.
 #define FREEINK_SILKSCREEN_368 (FREEINK_DEVICE_SILKSCREEN && SILKSCREEN_PANEL_368)
 
+// Experimental GDEY075T7 on the same board and connector, with no touch tail.
+#ifndef SILKSCREEN_PANEL_750
+#define SILKSCREEN_PANEL_750 0
+#endif
+static_assert(SILKSCREEN_PANEL_750 == 0 || SILKSCREEN_PANEL_750 == 1, "SILKSCREEN_PANEL_750 must be 0 or 1");
+static_assert(!SILKSCREEN_PANEL_750 || FREEINK_DEVICE_SILKSCREEN,
+              "SILKSCREEN_PANEL_750 needs -DFREEINK_DEVICE_SILKSCREEN=1");
+static_assert(!(SILKSCREEN_PANEL_750 && SILKSCREEN_PANEL_368), "Select only one Silkscreen panel variant");
+#define FREEINK_SILKSCREEN_750 (FREEINK_DEVICE_SILKSCREEN && SILKSCREEN_PANEL_750)
+#define FREEINK_DRIVER_UC8179_750 FREEINK_SILKSCREEN_750
+
 #ifndef FREEINK_DEVICE_METALIO_EINK4
 #define FREEINK_DEVICE_METALIO_EINK4 0
 #endif
@@ -149,7 +161,7 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 // carries the X3's UC8279d panel and links that driver below instead.
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_DELINK || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
     FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_MURPHY_M4 || FREEINK_DEVICE_ONEPAGE || FREEINK_DEVICE_WS397 || \
-    FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368)
+    FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && !SILKSCREEN_PANEL_750)
 #define FREEINK_DRIVER_SSD1677 1
 #else
 #define FREEINK_DRIVER_SSD1677 0
@@ -187,7 +199,7 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 #define FREEINK_DRIVER_UC8179 0
 #endif
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
-    (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368)
+    (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && !SILKSCREEN_PANEL_750)
 #define FREEINK_DRIVER_UC8279_X4 1
 #else
 #define FREEINK_DRIVER_UC8279_X4 0
@@ -244,7 +256,7 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
   (FREEINK_DEVICE_MURPHY || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || FREEINK_DEVICE_STICKY || \
    FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_MURPHY_M4 || \
    FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO || \
-   (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368))
+   (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && !SILKSCREEN_PANEL_750))
 #ifndef FREEINK_CAP_TOUCH
 #define FREEINK_CAP_TOUCH FREEINK_TOUCH_DEVICE_SELECTED
 #endif
@@ -268,12 +280,12 @@ static_assert(!SILKSCREEN_PANEL_368 || FREEINK_DEVICE_SILKSCREEN,
 #define FREEINK_TOUCH_GT911                                                                              \
   (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_M5PAPER || \
                          FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || \
-                         (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && SILKSCREEN_TOUCH_ALT_JUMPERS)))
+                         (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && !SILKSCREEN_PANEL_750 && SILKSCREEN_TOUCH_ALT_JUMPERS)))
 #endif
 #ifndef FREEINK_TOUCH_FT5X06  // Paper Mono and Silkscreen (FT6336 on the FT5x06 register set)
 #define FREEINK_TOUCH_FT5X06 \
   (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_PAPERMONO || \
-                         (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368)))
+                         (FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && !SILKSCREEN_PANEL_750)))
 #endif
 #ifndef FREEINK_TOUCH_FT6336U  // Murphy M4
 #define FREEINK_TOUCH_FT6336U (FREEINK_CAP_TOUCH && (FREEINK_TOUCH_ALL_DRIVERS || FREEINK_DEVICE_MURPHY_M4))
@@ -979,6 +991,14 @@ struct FrontlightConfig {
   //                     start level when turning on into the hold band).
   uint16_t minStartPermille = 0;
   uint16_t minHoldPermille = 0;
+  // 0 preserves the original curve. Otherwise 1..100% spans legacy 1% to this endpoint.
+  uint8_t maximumLegacyPercent = 0;
+  uint16_t restoreHoldoffMs = 0;
+  // First enable after reset: idle-rail bounds and minimum rise in the probe window.
+  // Zero disables these checks on existing profiles.
+  uint16_t startupIdleMinMv = 0;
+  uint16_t startupIdleMaxMv = 0;
+  uint16_t startupRiseMinMv = 0;
 };
 
 // I2C frontlight controller (LM3630A on the EEGO A4). The controller is driven
@@ -2721,7 +2741,12 @@ constexpr BoardProfile SILKSCREEN = {
                    .railSafeV = 15,
                    .loadProbePeriodMs = 20,
                    .colorBlendHz = SILKSCREEN_FRONTLIGHT_BLEND_HZ,
-                   .blendConfirmWindowMs = 500},
+                   .blendConfirmWindowMs = 500,
+                   .maximumLegacyPercent = 50,
+                   .restoreHoldoffMs = 250,
+                   .startupIdleMinMv = 1000,
+                   .startupIdleMaxMv = 6000,
+                   .startupRiseMinMv = 6000},
     .audio = NO_AUDIO,
     .leds = NO_LEDS,
     .orientation = NO_FLIP,
@@ -2889,6 +2914,13 @@ static_assert(SILKSCREEN.displayWidth / 8 * SILKSCREEN.displayHeight == 48000,
               "Silkscreen framebuffer must be 48,000 bytes (800/8 x 480)");
 static_assert(40000000u / SILKSCREEN.frontlight.pwmFrequency >= (1u << SILKSCREEN.frontlight.pwmResolutionBits),
               "Silkscreen front-light LEDC resolution is not reachable from the 40 MHz XTAL at this frequency");
+static_assert(SILKSCREEN.frontlight.maximumLegacyPercent > 0 && SILKSCREEN.frontlight.maximumLegacyPercent < 100,
+              "Silkscreen frontlight needs a reduced legacy brightness range");
+static_assert(SILKSCREEN.frontlight.startupIdleMinMv > 0 &&
+                  SILKSCREEN.frontlight.startupIdleMinMv < SILKSCREEN.frontlight.startupIdleMaxMv &&
+                  SILKSCREEN.frontlight.startupIdleMaxMv <= SILKSCREEN.frontlight.startupRiseMinMv &&
+                  SILKSCREEN.frontlight.startupRiseMinMv < SILKSCREEN.frontlight.monitorTripMv,
+              "Silkscreen frontlight startup bounds must precede its over-voltage trip");
 static_assert(SILKSCREEN.frontlight.colorBlendHz == 0 ||
                   40000000u / SILKSCREEN.frontlight.colorBlendHz >= (1u << SILKSCREEN.frontlight.pwmResolutionBits),
               "Silkscreen colour-blend resolution is not reachable from the 40 MHz XTAL at this frequency");
@@ -2914,7 +2946,7 @@ static_assert(SILKSCREEN.input.powerExternalPull,
 // needs the touch code. A board with no tail loses nothing, since the probe caches
 // it as absent. The 3.68" variant has no J4 and no tail: its profile is NO_TOUCH
 // (asserted below), so it builds without the touch code, and must.
-static_assert(FREEINK_CAP_TOUCH || !FREEINK_DEVICE_SILKSCREEN || SILKSCREEN_PANEL_368 ||
+static_assert(FREEINK_CAP_TOUCH || !FREEINK_DEVICE_SILKSCREEN || SILKSCREEN_PANEL_368 || SILKSCREEN_PANEL_750 ||
                   !SILKSCREEN.touch.hibernateInSleep,
               "Silkscreen needs FREEINK_CAP_TOUCH: a fitted touch tail must be hibernated before deep sleep");
 // The eight keys exist only as ADC-ladder data.
@@ -3022,6 +3054,35 @@ constexpr bool sameProfile(const BoardProfile& a, const BoardProfile& b) {
 
 constexpr BoardProfile SILKSCREEN_368 = silkscreen_368::derive(SILKSCREEN);
 
+constexpr BoardProfile SILKSCREEN_750 = [] {
+  auto panel = SILKSCREEN;
+  panel.name = "silkscreen_750";
+  panel.displayController = DisplayController::UC8179;
+  panel.displaySpiHz = 10000000;
+  panel.display.busyPullDown = false;
+  panel.display.busyPullUp = true;
+  panel.touch = NO_TOUCH;
+  panel.displayProbe.forced = true;
+  panel.displayProbe.cacheAcrossDeepSleep = false;
+  panel.displayProbe.ultraChipController = DisplayController::UC8179;
+  return panel;
+}();
+static_assert(SILKSCREEN_750.displayWidth == 800 && SILKSCREEN_750.displayHeight == 480,
+              "Silkscreen 7.5-inch requires the 800x480 GDEY075T7");
+static_assert(silkscreen_368::same(SILKSCREEN_750.display, SILKSCREEN.display) &&
+                  silkscreen_368::same(SILKSCREEN_750.sdmmc, SILKSCREEN.sdmmc) &&
+                  silkscreen_368::same(SILKSCREEN_750.input, SILKSCREEN.input) &&
+                  silkscreen_368::sameParkedPins(SILKSCREEN_750, SILKSCREEN),
+              "Silkscreen 7.5-inch retains the board wiring and parked pins");
+static_assert(!FREEINK_SILKSCREEN_750 || (!FREEINK_CAP_TOUCH && !SILKSCREEN_TOUCH_ALT_JUMPERS),
+              "SILKSCREEN_PANEL_750 has no touch hardware");
+static_assert(!FREEINK_SILKSCREEN_750 || (!FREEINK_DRIVER_SSD1677 && !FREEINK_DRIVER_UC8279 &&
+                                          !FREEINK_DRIVER_UC8253_X3 && !FREEINK_DRIVER_UC8179 &&
+                                          !FREEINK_DRIVER_UC8279_X4),
+              "SILKSCREEN_PANEL_750 links only the GDEY075T7 UC8179 driver");
+static_assert(!FREEINK_SILKSCREEN_750 || !silkscreen_display::FORCED,
+              "SILKSCREEN_PANEL_750 fixes UC8179; remove SILKSCREEN_DISPLAY_CONTROLLER");
+
 // The 3.68" framebuffer is 99 bytes a row, 52,272 bytes in all (the X3's X3_BUFFER_SIZE).
 static_assert(SILKSCREEN_368.displayWidth / 8 == 99 &&
                   SILKSCREEN_368.displayWidth / 8 * SILKSCREEN_368.displayHeight == 52272,
@@ -3117,6 +3178,8 @@ static_assert(!FREEINK_SILKSCREEN_368 || MAX_FRAMEBUFFER_BYTES >= 52272u,
 #if FREEINK_DEVICE_SILKSCREEN
 #if SILKSCREEN_PANEL_368
 constexpr BoardProfile DEFAULT_DEVICE = SILKSCREEN_368;
+#elif SILKSCREEN_PANEL_750
+constexpr BoardProfile DEFAULT_DEVICE = SILKSCREEN_750;
 #else
 constexpr BoardProfile DEFAULT_DEVICE = SILKSCREEN;
 #endif
@@ -3171,8 +3234,10 @@ static_assert(!FREEINK_SILKSCREEN_368 ||
                    silkscreen_368::sameProfile(DEFAULT_DEVICE, SILKSCREEN_368)),
               "the Silkscreen 3.68\" build must boot as SILKSCREEN_368 (792x528, no touch, \"silkscreen_368\"): "
               "DEFAULT_DEVICE is the profile ACTIVE starts as");
-static_assert(FREEINK_SILKSCREEN_368 || silkscreen_368::sameProfile(DEFAULT_DEVICE, SILKSCREEN),
+static_assert(FREEINK_SILKSCREEN_368 || FREEINK_SILKSCREEN_750 || silkscreen_368::sameProfile(DEFAULT_DEVICE, SILKSCREEN),
               "the Silkscreen 4.26\" build must boot as SILKSCREEN: DEFAULT_DEVICE is the profile ACTIVE starts as");
+static_assert(!FREEINK_SILKSCREEN_750 || silkscreen_368::sameProfile(DEFAULT_DEVICE, SILKSCREEN_750),
+              "the Silkscreen 7.5-inch build must boot as SILKSCREEN_750");
 #endif
 
 // True when this build compiles InputManager's driver for `c` (FREEINK_TOUCH_*).
@@ -3225,9 +3290,9 @@ FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_ONEPAGE, ONEPAGE);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_METALIO_EINK4, METALIO_EINK4);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_WS397, WS_EPAPER_397);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_PICCO, PICCO);
-FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368, SILKSCREEN);
+FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && !SILKSCREEN_PANEL_750, SILKSCREEN);
 FREEINK_CHECK_TOUCH_DRIVER(FREEINK_DEVICE_SILKSCREEN && SILKSCREEN_PANEL_368, SILKSCREEN_368);
-#if FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368
+#if FREEINK_DEVICE_SILKSCREEN && !SILKSCREEN_PANEL_368 && !SILKSCREEN_PANEL_750
 static_assert(touchDriverCompiled(SILKSCREEN.touch.fallbackController),
               "Silkscreen touch fallback has no InputManager driver in this build (see FREEINK_TOUCH_*)");
 #endif
@@ -3345,6 +3410,8 @@ inline bool selectDevice(Board which) {
     case Board::Silkscreen:
 #if SILKSCREEN_PANEL_368
       ACTIVE = SILKSCREEN_368;  // same board value; the profile carries the 3.68" panel
+#elif SILKSCREEN_PANEL_750
+      ACTIVE = SILKSCREEN_750;
 #else
       ACTIVE = SILKSCREEN;
 #endif
@@ -3619,7 +3686,7 @@ constexpr bool rtcIdentityCheck() { return false; }
 #endif
 // The 4.26" board's probe maps every UltraChip answer to the UC8279 X4 driver. The 3.68" variant's
 // UltraChip answer is the X3's UC8279d, whose driver (Uc8279Driver) is asserted linked with the profile.
-static_assert(!FREEINK_DEVICE_SILKSCREEN || SILKSCREEN_PANEL_368 || FREEINK_DRIVER_UC8279_X4,
+static_assert(!FREEINK_DEVICE_SILKSCREEN || SILKSCREEN_PANEL_368 || SILKSCREEN_PANEL_750 || FREEINK_DRIVER_UC8279_X4,
               "Silkscreen's probe maps every UltraChip answer to the UC8279 driver, which must be linked");
 
 // Part names, for logs and diagnostics screens.

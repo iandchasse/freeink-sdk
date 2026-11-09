@@ -9,6 +9,7 @@ set -e
 cd "$(dirname "$0")"
 BUILD_DIR="${TMPDIR:-/tmp}/freeink-battery-tests"
 mkdir -p "$BUILD_DIR"
+"${PYTHON:-python3}" -I -B -X utf8 run_display_filter.py
 c++ -std=c++17 -Wall -Wextra -Werror test_charge_ladder_decoder.cpp -o "$BUILD_DIR/test_charge_ladder_decoder"
 "$BUILD_DIR/test_charge_ladder_decoder"
 c++ -std=c++17 -Wall -Wextra -Werror \
@@ -32,6 +33,7 @@ c++ -std=c++17 -Wall -Wextra -Werror \
   test_adc_usb_detect.cpp ../../src/BatteryMonitor.cpp -o "$BUILD_DIR/test_adc_usb_detect"
 "$BUILD_DIR/test_adc_usb_detect"
 
-c++ -std=c++17 -Wall -Wextra -Werror -I../../include \
+c++ -std=c++17 -Wall -Wextra -Werror -DFREEINK_DEVICE_PICCO=1 \
+  -Istubs -I../../include -I../../../BoardConfig/include -I../../../XteinkDetect/test/host/stubs \
   test_estimate.cpp -o "$BUILD_DIR/test_estimate"
 "$BUILD_DIR/test_estimate"

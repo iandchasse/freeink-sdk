@@ -251,6 +251,7 @@ class PanelDriver {
   // requestCompleteWaveformNextRefresh() through each call site. Default off:
   // consumers that page with Full (readers) keep the fast behavior.
   virtual void setFullRefreshCompletesWaveform(bool enabled) { (void)enabled; }
+  virtual void setStandardHalfRefresh(bool enabled) { (void)enabled; }
   // Accent color planes (ED2208, Spectra-6): each `plane` is a 1-bit buffer
   // with the same logical geometry and layout as the framebuffer; a SET bit
   // recolors that pixel's ink (a 0/black framebuffer bit) to that slot's

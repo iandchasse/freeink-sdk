@@ -39,6 +39,9 @@
 #if FREEINK_DRIVER_UC8179
 #include "driver/Uc8179Driver.h"
 #endif
+#if FREEINK_DRIVER_UC8179_750
+#include "driver/Gdey075t7Driver.h"
+#endif
 #if FREEINK_DRIVER_UC8279_X4
 #include "driver/Uc8279X4Driver.h"
 #endif
@@ -206,6 +209,12 @@ void FreeInkDisplay::selectDriver() {
 #endif
     case PanelSel::X4:
     default:
+#if FREEINK_DRIVER_UC8179_750
+      if (BoardConfig::ACTIVE.displayController == BoardConfig::DisplayController::UC8179) {
+        _driver = &gdey075t7Driver();
+        break;
+      }
+#endif
 #if FREEINK_DRIVER_UC8179
       // Newer X4 / X4 Pro batches swap the SSD1677 for an UltraChip part.
       // Which silicon a unit carries is decided before begin() by the boot-time
@@ -1182,6 +1191,10 @@ void FreeInkDisplay::requestCompleteWaveformNextRefresh() {
 
 void FreeInkDisplay::setFullRefreshCompletesWaveform(bool enabled) {
   if (_driver) _driver->setFullRefreshCompletesWaveform(enabled);
+}
+
+void FreeInkDisplay::setStandardHalfRefresh(bool enabled) {
+  if (_driver) _driver->setStandardHalfRefresh(enabled);
 }
 
 void FreeInkDisplay::setAccentPlaneSlot(uint8_t slot, const uint8_t* plane, uint8_t colorCode) {

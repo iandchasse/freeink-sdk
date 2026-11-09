@@ -46,9 +46,11 @@ class Rtc {
 
   // Reads the current time. Returns false on I2C error or if the RTC reports its
   // oscillator stopped (low voltage / never set) — the time is then unreliable.
+  // PCF85063/RV-8263 also reject STOP, test mode and unsupported 12-hour mode.
   bool now(DateTime& out);
 
-  // Sets the time. Returns false on I2C error.
+  // Sets the time. PCF85063/RV-8263 restart in normal 24-hour mode and verify
+  // the run/oscillator flags. Returns false on I2C or verification failure.
   bool set(const DateTime& dt);
 
   // RX8130 countdown only. Above 65535 seconds, round up to whole minutes.

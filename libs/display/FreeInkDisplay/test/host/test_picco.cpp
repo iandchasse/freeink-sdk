@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <atomic>
 #define private public
 #include "FreeInkDisplay.h"
 #include "src/driver/Ssd1677Driver.h"

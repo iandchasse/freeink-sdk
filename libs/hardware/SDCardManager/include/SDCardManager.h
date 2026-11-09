@@ -126,19 +126,10 @@ class SDCardManager {
   };
   CardInfo cardInfo();
 #endif
-#if FREEINK_SD_SDMMC
-  // Stop the card for deep sleep: write SdFat's cached sectors back
-  // (syncVolume()), unmount the volume, stop the SDMMC host, and float the bus
-  // pads so their pull-ups stop back-feeding the card's VDD net through sleep.
-  // Idempotent; call only after all file users have stopped. A deep-sleep wake
-  // resets the MCU and remounts through begin().
+  // Flush volume caches before sleep. SDMMC also unmounts, stops the host and
+  // parks the bus pads; SPI only flushes before rail removal. Idempotent; call
+  // after all file users stop. A deep-sleep wake remounts through begin().
   void shutdown();
-#else
-  // SPI/SdFat boards: sleep either cuts power entirely (C3 Xteink) or gates the
-  // SD rail in powerDownRailsForSleep(); there is no host to stop, so this only
-  // writes SdFat's cached sectors back (syncVolume()) before the power goes.
-  void shutdown();
-#endif
 
  static SDCardManager& getInstance() { return instance; }
 

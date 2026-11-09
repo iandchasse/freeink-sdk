@@ -46,6 +46,9 @@ class FreeInkDisplay {
   // images (clock/dashboard apps); readers that page with Full keep the
   // default (off). No-op on other panels.
   void setFullRefreshCompletesWaveform(bool enabled);
+  // SSD1677: opt into its standard warmed HALF waveform instead of a board's
+  // full-waveform HALF override. Default off; other controllers ignore it.
+  void setStandardHalfRefresh(bool enabled);
 
   // M5 PaperColor (Spectra-6) accent color planes: 1-bit buffers with the
   // framebuffer's geometry/layout. A set bit recolors that pixel's ink (a

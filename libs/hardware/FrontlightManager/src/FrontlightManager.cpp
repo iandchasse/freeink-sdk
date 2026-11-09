@@ -40,27 +40,6 @@
 namespace {
 constexpr uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
 
-// Perception-weighted percent -> duty, gamma 1.6554: 16-bit fixed-point table
-// of round(65535 * (pct/100)^1.6554). The exponent is log(2*1023)/log(100),
-// picked so on a 10-bit duty range 1% rounds up to exactly 1 LSB (the dimmest
-// possible light) and every 1% step maps to a distinct duty — gamma 2 was too
-// steep and collapsed 1-4% into the same single-LSB duty.
-static constexpr uint16_t GAMMA_TABLE[101] = {
-    0,     32,    101,   197,   318,   460,   622,   803,   1001,  1217,  1449,  1697,  1960,  2237,  2529,
-    2835,  3155,  3488,  3834,  4193,  4565,  4949,  5345,  5753,  6173,  6604,  7047,  7502,  7967,  8444,
-    8931,  9429,  9938,  10457, 10987, 11527, 12077, 12638, 13208, 13789, 14379, 14979, 15588, 16208, 16836,
-    17474, 18122, 18779, 19445, 20120, 20804, 21497, 22200, 22911, 23631, 24360, 25097, 25843, 26598, 27362,
-    28134, 28914, 29703, 30500, 31306, 32120, 32942, 33772, 34611, 35457, 36312, 37175, 38045, 38924, 39811,
-    40705, 41608, 42518, 43436, 44361, 45295, 46236, 47185, 48141, 49105, 50076, 51055, 52042, 53036, 54037,
-    55046, 56062, 57086, 58117, 59155, 60200, 61253, 62313, 63380, 64454, 65535};
-
-constexpr uint32_t perceptualDuty(uint32_t pct, uint32_t full) {
-  if (pct == 0) return 0;
-  if (pct > 100) pct = 100;
-  const uint32_t duty = (full * GAMMA_TABLE[pct] + 32767u) / 65535u;
-  return duty ? duty : 1u;
-}
-
 // Paper Mono: the PWM lives in the M5PM1 PMIC, not the ESP. PM1 GPIO3 routed to
 // alt-function PWM0 drives the AW9967 frontlight driver. Duty register is
 // 12-bit; the high byte's bit 4 is the channel-enable bit. Perception-weighted
@@ -369,6 +348,10 @@ void FrontlightManager::begin() {
       if (_monitorTimer == nullptr) {
         // Never run the light unwatched on a board that declares a monitor.
         LOG_ERR("FrontlightMgr", "begin: LED monitor unavailable, light disabled");
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+        if (fl.startupRiseMinMv != 0)
+          _startupFault.store(freeink::frontlight::StartupFault::NoSamples, std::memory_order_release);
+#endif
         return;
       }
 #if FREEINK_CAP_FRONTLIGHT_PROBE
@@ -759,7 +742,13 @@ void FrontlightManager::apply() {
     const uint32_t n = static_cast<uint32_t>(_brightnessLevel - 1u);
     totalDuty = 1u + (n * n * (full - 1u)) / (254u * 254u);
   } else if (!_useLevel) {
-    totalDuty = perceptualDuty(_brightness, full);
+    totalDuty = freeink::frontlight::legacyDuty(_brightness, full);
+  }
+  if (fl.maximumLegacyPercent != 0) {
+    const uint8_t percent = _useLevel && _brightnessLevel != 0
+                                ? static_cast<uint8_t>((static_cast<uint16_t>(_brightnessLevel) * 100u + 254u) / 255u)
+                                : _brightness;
+    totalDuty = freeink::frontlight::mappedDuty(percent, full, fl.maximumLegacyPercent);
   }
   if (gatedPath(fl)) {
     applyGated(totalDuty, full);
@@ -821,7 +810,7 @@ void FrontlightManager::applyGated(const uint32_t duty, const uint32_t full) {
     goDark(full);
     return;
   }
-  if (_fault) return;  // tripped: stays dark until switched off or clearFault()
+  if (_fault || startupBlocked()) return;  // tripped: stays dark until switched off or clearFault()
   const freeink::frontlight::ColourPlan plan = colourPlan();
 #if FREEINK_CAP_FRONTLIGHT_PROBE
   if (_probe.phase != ProbePhase::Idle) {
@@ -978,6 +967,7 @@ void FrontlightManager::lightUp(const uint32_t duty, const uint32_t full, const 
     beginRailWait(duty, warm, secondTry);
     return;
   }
+  if (!checkStartupIdle()) return;
   stopMonitor();  // a rail watch may be running
 #else
   (void)secondTry;
@@ -1168,7 +1158,15 @@ void FrontlightManager::probeTick() {
       return;
     }
   }
-  if (nowUs - _probe.startUs >= static_cast<int64_t>(_probe.windowMs) * 1000) probePassed();
+  if (nowUs - _probe.startUs < static_cast<int64_t>(_probe.windowMs) * 1000) return;
+  if (fl.startupRiseMinMv != 0) {
+    const auto verdict = freeink::frontlight::riseVerdict(_probe.samples, _probe.peakLedMv, fl.startupRiseMinMv);
+    if (verdict != freeink::frontlight::StartupFault::None) {
+      failStartup(verdict);
+      return;
+    }
+  }
+  probePassed();
 }
 
 // No load on the probed string: dark at once, and the rail counts as charged. The
@@ -1463,9 +1461,66 @@ void FrontlightManager::releaseOnWake() {
 #endif
 #endif
 
+void FrontlightManager::clearFault() {
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+  const GateGuard guard(_gateLock);
+  if (startupBlocked()) {
+    if (!_begun || _startupRetryUsed) {
+      LOG_ERR("FrontlightMgr", "Startup check retry unavailable; light remains off until reset");
+      return;
+    }
+    _startupRetryUsed = true;
+    _startupChecked = false;
+    _startupFault.store(freeink::frontlight::StartupFault::None, std::memory_order_release);
+  }
+#endif
+  _fault = false;
+}
+
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+bool FrontlightManager::checkStartupIdle() {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (_startupChecked || fl.startupIdleMaxMv == 0) return true;
+  uint32_t pinMv = 0;
+  bool sampled = false;
+  {
+    const freeink::adc::Lock adc(MONITOR_ADC_WAIT);
+    if (adc.held()) {
+      pinMv = analogReadMilliVolts(fl.monitorAdc);
+      sampled = true;
+    }
+  }
+  const uint32_t railMv = pinMv * fl.monitorScaleX1000 / 1000u;
+  LOG_INF("FrontlightMgr", "Startup idle LED rail: %u mV (sampled=%d)", static_cast<unsigned>(railMv), sampled);
+  const auto verdict = freeink::frontlight::idleRailVerdict(sampled, railMv, fl.startupIdleMinMv, fl.startupIdleMaxMv);
+  if (verdict != freeink::frontlight::StartupFault::None) {
+    failStartup(verdict);
+    return false;
+  }
+  _startupChecked = true;
+  return true;
+}
+
+void FrontlightManager::failStartup(const freeink::frontlight::StartupFault reason) {
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  _startupFault.store(reason, std::memory_order_release);
+  _fault = true;
+  const uint32_t full = maxDuty(fl.pwmResolutionBits);
+  padToGpio(fl.gpio, darkLevel(fl));
+  writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(0, full, fl.activeHigh));
+  _gatedLit = false;
+  _darkSinceUs = esp_timer_get_time();
+  abandonProbe();
+  goDark(full);
+  LOG_ERR("FrontlightMgr", "Startup check failed: reason=%u samples=%u peak=%u mV; light off",
+          static_cast<unsigned>(reason), static_cast<unsigned>(_probe.samples),
+          static_cast<unsigned>(_probe.peakLedMv));
+}
+#endif
+
 void FrontlightManager::setBrightness(uint8_t percent) {
 #if FREEINK_CAP_FRONTLIGHT
-  if (percent > 100) percent = 100;
+  percent = normalizeBrightness(percent);
   _brightness = percent;
   _brightnessLevel = (static_cast<uint16_t>(percent) * 255u) / 100u;
   _useLevel = false;

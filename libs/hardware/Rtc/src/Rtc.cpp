@@ -28,6 +28,9 @@ constexpr uint8_t PCF8563_VL_FLAG = 0x80;  // seconds reg bit7: oscillator stopp
 // stopped) flag, and Months carries no century bit. Micro Crystal's RV-8263-C7
 // shares the map. Control_2 bits 2:0 select the CLKOUT frequency; 111 = off.
 constexpr uint8_t PCF85063_REG_CONTROL1 = 0x00;
+constexpr uint8_t PCF85063_TEST = 0x80;
+constexpr uint8_t PCF85063_STOP = 0x20;
+constexpr uint8_t PCF85063_12_HOUR = 0x02;
 constexpr uint8_t PCF85063_REG_CONTROL2 = 0x01;
 constexpr uint8_t PCF85063_CLKOUT_MASK = 0x07;
 constexpr uint8_t PCF85063_REG_TIME = 0x04;
@@ -237,15 +240,19 @@ bool Rtc::now(DateTime& out) {
       return true;
     }
     case BoardConfig::RtcType::Pcf85063: {
-      if (!readRegs(addr, PCF85063_REG_TIME, raw, sizeof(raw))) return false;
-      if (raw[0] & PCF85063_OS_FLAG) return false;  // oscillator stopped -> time not trustworthy
-      out.second = bcdToDec(raw[0] & 0x7FU);
-      out.minute = bcdToDec(raw[1] & 0x7FU);
-      out.hour = bcdToDec(raw[2] & 0x3FU);
-      out.day = bcdToDec(raw[3] & 0x3FU);
-      out.weekday = bcdToDec(raw[4] & 0x07U);
-      out.month = bcdToDec(raw[5] & 0x1FU);
-      out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
+      // One access snapshots the control bits and all seven calendar registers.
+      uint8_t registers[PCF85063_REG_TIME + sizeof(raw)] = {};
+      if (!readRegs(addr, PCF85063_REG_CONTROL1, registers, sizeof(registers))) return false;
+      if (registers[PCF85063_REG_CONTROL1] & (PCF85063_TEST | PCF85063_STOP | PCF85063_12_HOUR)) return false;
+      const uint8_t* time = registers + PCF85063_REG_TIME;
+      if (time[0] & PCF85063_OS_FLAG) return false;
+      out.second = bcdToDec(time[0] & 0x7FU);
+      out.minute = bcdToDec(time[1] & 0x7FU);
+      out.hour = bcdToDec(time[2] & 0x3FU);
+      out.day = bcdToDec(time[3] & 0x3FU);
+      out.weekday = bcdToDec(time[4] & 0x07U);
+      out.month = bcdToDec(time[5] & 0x1FU);
+      out.year = static_cast<uint16_t>(2000 + bcdToDec(time[6]));
       return true;
     }
     case BoardConfig::RtcType::Ds3231: {
@@ -322,6 +329,11 @@ bool Rtc::set(const DateTime& dt) {
            writeReg(addr, RX8130_REG_FLAGS, RX8130_CLEAR_VLF);  // W0C: clear VLF after setting time.
   }
   if (rtcType == BoardConfig::RtcType::Pcf85063) {
+    uint8_t control = 0;
+    if (!readRegs(addr, PCF85063_REG_CONTROL1, &control, 1)) return false;
+    // Reset the divider while writing, then run on the crystal in 24-hour mode.
+    const uint8_t running = static_cast<uint8_t>(control & ~(PCF85063_TEST | PCF85063_STOP | PCF85063_12_HOUR));
+    if (!writeReg(addr, PCF85063_REG_CONTROL1, static_cast<uint8_t>(running | PCF85063_STOP))) return false;
     wire.beginTransmission(addr);
     wire.write(PCF85063_REG_TIME);
     wire.write(decToBcd(dt.second));  // also clears OS once a valid time is written
@@ -331,7 +343,10 @@ bool Rtc::set(const DateTime& dt) {
     wire.write(decToBcd(dt.weekday));
     wire.write(decToBcd(dt.month));
     wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
-    return wire.endTransmission() == 0;
+    const bool written = wire.endTransmission() == 0;
+    const bool restarted = writeReg(addr, PCF85063_REG_CONTROL1, running);
+    DateTime checked;
+    return written && restarted && now(checked);
   }
   wire.beginTransmission(addr);
   wire.write(rtcType == BoardConfig::RtcType::Pcf8563 ? PCF8563_REG_TIME : DS3231_REG_TIME);

@@ -55,6 +55,8 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <FrontlightLoad.h>
+#include <FrontlightBrightness.h>
+#include <FrontlightStartup.h>
 #if FREEINK_CAP_FRONTLIGHT
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -72,12 +74,24 @@ class FrontlightManager {
   // Set brightness as a 0-100 percentage, mapped to duty through a perceptual
   // gamma-1.6554 curve (1% is the smallest non-zero duty step, not 1% linear
   // duty). 0 turns the light off. On a warm/cool board this is the TOTAL
-  // brightness; the current color-temperature split is preserved.
+  // brightness; the current color-temperature split is preserved. A profile's
+  // maximumLegacyPercent remaps all 100 selections into a reduced original range.
   void setBrightness(uint8_t percent);
 
   // Set brightness with 8-bit control and a perceptual curve. Level 1 maps to the
-  // smallest non-zero hardware duty, making dim night reading possible.
+  // smallest non-zero hardware duty, making dim night reading possible. Reduced
+  // profiles map it into the same bounded percentage curve as setBrightness().
   void setBrightnessLevel(uint8_t level);
+
+  static uint8_t normalizeBrightness(uint8_t percent) {
+    return freeink::frontlight::normalizeBrightness(percent);
+  }
+  static uint8_t brightnessStep() { return 1; }
+  static uint8_t migrateLegacyBrightness(uint8_t percent, bool tenLevelSource = false) {
+    const auto& fl = BoardConfig::ACTIVE.frontlight;
+    return freeink::frontlight::migrateBrightnessDown(percent, (1u << fl.pwmResolutionBits) - 1u,
+                                                    fl.maximumLegacyPercent, tenLevelSource);
+  }
 
   // Convenience: fully off / restore last brightness.
   void off();
@@ -160,7 +174,14 @@ class FrontlightManager {
   // (brightness 0) or clearFault() re-arms it; the next non-zero brightness then
   // runs the full enable sequence.
   bool fault() const { return _fault; }
-  void clearFault() { _fault = false; }
+  void clearFault();
+  bool startupBlocked() const {
+#if FREEINK_CAP_FRONTLIGHT_PROBE
+    return _startupFault.load(std::memory_order_acquire) != freeink::frontlight::StartupFault::None;
+#else
+    return false;
+#endif
+  }
 
   // A switch-on (or a colour change while lit) is still deciding its load: its
   // probe window, or the wait for the LED rail before the other string. load(),
@@ -357,6 +378,8 @@ class FrontlightManager {
   void railWaitTick();
   void probeTripped(int64_t tripAtUs);
   void probePassed();
+  bool checkStartupIdle();
+  void failStartup(freeink::frontlight::StartupFault reason);
   void noteProbeEnd(bool tripped, int64_t tripAtUs);
   void noteRailWait(int64_t sinceUs, bool safe);
   void restColourSelectAfterTrip();
@@ -368,6 +391,9 @@ class FrontlightManager {
   freeink::frontlight::LoadRecord _loadRecord;
   Probe _probe;
   std::atomic<bool> _probing{false};  // _probe.phase != Idle, for probing()
+  std::atomic<freeink::frontlight::StartupFault> _startupFault{freeink::frontlight::StartupFault::None};
+  bool _startupChecked = false;
+  bool _startupRetryUsed = false;
   bool _railCharged = false;          // a trip left the boost output charged
   int64_t _railChargedAtUs = 0;       // esp_timer time of that trip
   // Each string lit through a probe since the chip last reset (RAM, so a wake

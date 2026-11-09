@@ -28,6 +28,7 @@ HEADER = INCLUDE / "BoardConfig.h"
 
 SILK = ["-DFREEINK_DEVICE_SILKSCREEN=1"]
 V368 = SILK + ["-DSILKSCREEN_PANEL_368=1"]
+V750 = SILK + ["-DSILKSCREEN_PANEL_750=1"]
 PROBE = "SILKSCREEN_DISPLAY_CONTROLLER"
 
 TU = "#include <BoardConfig.h>\nint main() { return BoardConfig::ACTIVE.displayWidth; }\n"
@@ -43,6 +44,30 @@ class Case:
 
 
 CASES = [
+    Case("7.5-inch experimental GDEY075T7", V750,
+         tu='static_assert(BoardConfig::DEFAULT_DEVICE.displayController == BoardConfig::DisplayController::UC8179);\n'
+            'static_assert(BoardConfig::DEFAULT_DEVICE.displayProbe.forced);\n'
+            'static_assert(!BoardConfig::DEFAULT_DEVICE.displayProbe.cacheAcrossDeepSleep);\n'
+            'static_assert(BoardConfig::MAX_FRAMEBUFFER_BYTES == 48000);\n'
+            'static_assert(FREEINK_DRIVER_UC8179_750 && !FREEINK_CAP_TOUCH);\n'),
+    Case("7.5-inch experimental with touch", V750 + ["-DFREEINK_CAP_TOUCH=1"],
+         refused="SILKSCREEN_PANEL_750 has no touch hardware"),
+    Case("7.5-inch experimental with alternate touch jumpers", V750 + ["-DSILKSCREEN_TOUCH_ALT_JUMPERS=1"],
+         refused="SILKSCREEN_PANEL_750 has no touch hardware"),
+    Case("7.5-inch with the 3.68-inch selector", V750 + ["-DSILKSCREEN_PANEL_368=1"],
+         refused="Select only one Silkscreen panel variant"),
+    Case("7.5-inch without Silkscreen", ["-DFREEINK_DEVICE_X4PRO=1", "-DSILKSCREEN_PANEL_750=1"],
+         refused="SILKSCREEN_PANEL_750 needs -DFREEINK_DEVICE_SILKSCREEN=1"),
+    Case("SILKSCREEN_PANEL_750=2", SILK + ["-DSILKSCREEN_PANEL_750=2"],
+         refused="SILKSCREEN_PANEL_750 must be 0 or 1"),
+    Case("7.5-inch controller override", V750 + [f"-D{PROBE}=uc8279"],
+         refused="SILKSCREEN_PANEL_750 fixes UC8179"),
+    Case("7.5-inch combined with another controller", V750 + ["-DFREEINK_DEVICE_X4PRO=1"],
+         refused="SILKSCREEN_PANEL_750 links only the GDEY075T7 UC8179 driver"),
+    Case("7.5-inch incorrect boot profile", V750,
+         refused="the Silkscreen 7.5-inch build must boot as SILKSCREEN_750",
+         edits=[("constexpr BoardProfile DEFAULT_DEVICE = SILKSCREEN_750;",
+                 "constexpr BoardProfile DEFAULT_DEVICE = SILKSCREEN;")]),
     # --- must compile -------------------------------------------------------------------------------------------
     Case("4.26\" board", SILK),
     Case("4.26\" board, SILKSCREEN_PANEL_368=0 written out", SILK + ["-DSILKSCREEN_PANEL_368=0"]),

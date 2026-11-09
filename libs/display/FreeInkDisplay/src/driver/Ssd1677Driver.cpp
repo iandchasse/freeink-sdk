@@ -578,7 +578,7 @@ void Ssd1677Driver::refresh(EpdBus& bus, RefreshMode mode, bool turnOff, bool as
   if (mode == RefreshMode::Full) {
     displayMode |= 0x34;
   } else if (mode == RefreshMode::Half) {
-    if (_cfg.halfUsesFullWaveform) {
+    if (_cfg.halfUsesFullWaveform && !_standardHalfRefresh.load(std::memory_order_relaxed)) {
       displayMode |= 0x34;  // full waveform: no temperature spoof (see the field)
     } else {
       bus.cmd(CMD_WRITE_TEMP);

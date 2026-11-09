@@ -62,6 +62,10 @@ colon-separated list of files to check real-world images too.
 
 ## Battery gauge
 
+Silkscreen display-estimator checks also cover cold-start seeding, frontlight
+sag calibration and charging-step learning with 1001, 1017 and 1300 ms sample
+intervals. These catch three-reading windows that only work at exactly 1 Hz.
+
 ```sh
 sh libs/hardware/BatteryMonitor/test/host/run.sh
 ```
@@ -293,3 +297,34 @@ sh libs/network/JsonSax/test/host/run.sh
 
 Checks optional bounded string prefixes, unchanged default overflow handling,
 continued parsing after long strings, and rejection of oversized keys under ASan/UBSan.
+
+## Experimental Silkscreen GDEY075T7
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_profile_asserts.py
+python3 libs/display/FreeInkDisplay/test/host/run_uc8179_750.py
+```
+
+The 7.5-inch tests cover the PR80 GDEY075T7 driver: native 800x480 initialization,
+factory fast-full/partial selection, unflipped single-transaction 48,000-byte
+planes, supplied/retained previous-frame selection, reset/wake resynchronization,
+power-off/sleep, blocking async fallback, and monochrome capability reporting
+in both framebuffer modes. Controller NEW-to-OLD copying needs hardware testing.
+The existing Pro driver suite remains a separate regression check.
+
+The fixed-controller test requires zero identification traffic across boot,
+wake and reset. Run it once without `SILKSCREEN_DISPLAY_CONTROLLER`; this panel
+does not accept a controller override.
+
+```sh
+mkdir -p .cache/silkscreen-750-probe
+c++ -std=c++17 -Wall -Wextra -Werror \
+  -DFREEINK_DEVICE_SILKSCREEN=1 -DSILKSCREEN_PANEL_750=1 \
+  -Ilibs/hardware/XteinkDetect/test/host/stubs \
+  -Ilibs/hardware/BoardConfig/include \
+  -Ilibs/hardware/XteinkDetect/include \
+  libs/hardware/XteinkDetect/test/host/test_silkscreen_750_policy.cpp \
+  libs/hardware/XteinkDetect/src/XteinkDetect.cpp \
+  -o .cache/silkscreen-750-probe/test_policy
+.cache/silkscreen-750-probe/test_policy
+```
